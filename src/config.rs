@@ -2,9 +2,9 @@
 //!
 //! All knobs live in a single TOML file (default `.precommit-audit.toml` at the
 //! repo root). Everything has a sensible built-in default, so a project with no
-//! config file still gets the generic checks. Project-specific policy (e.g. the
-//! AEGIS API-namespace split or canonical `.env` paths) is expressed as
-//! data-driven `[[rules]]`, never hard-coded into the binary.
+//! config file still gets the generic checks. Project-specific policy (e.g. an
+//! API-namespace split or canonical `.env` paths) is expressed as data-driven
+//! `[[rules]]`, never hard-coded into the binary.
 
 use serde::Deserialize;
 use std::path::Path;
@@ -35,7 +35,7 @@ pub struct Config {
     pub linters: Linters,
 
     /// Optional subagent-review contract (Claude Code specific). Disabled by
-    /// default; AEGIS enables it.
+    /// default; opt in per project.
     pub review_contract: ReviewContract,
 
     /// Project-specific regex rules over added diff lines.
@@ -125,7 +125,7 @@ pub struct Checks {
 impl Default for Checks {
     fn default() -> Self {
         // duplicate_function defaults OFF: it is heuristic and noisy without a
-        // tuned allowlist. Projects opt in (AEGIS does).
+        // tuned allowlist. Projects opt in.
         Checks {
             missing_test: true,
             hardcoded_ip: true,

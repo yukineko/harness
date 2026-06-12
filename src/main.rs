@@ -87,7 +87,6 @@ fn resolve_root(arg: Option<PathBuf>) -> PathBuf {
 
 fn resolve_mode(arg: Option<String>) -> String {
     arg.or_else(|| std::env::var("AUDIT_MODE").ok().filter(|s| !s.is_empty()))
-        .or_else(|| std::env::var("AEGIS_AUDIT_MODE").ok().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| "stop".to_string())
 }
 

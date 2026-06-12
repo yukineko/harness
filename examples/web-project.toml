@@ -1,0 +1,33 @@
+# Example: a generic web/Python project config.
+# Copy to your repo root as `.precommit-audit.toml` and adjust.
+
+audit_dir = ".audit"   # where to keep state files (or ".claude" for Claude Code)
+
+[checks]
+duplicate_function = true   # opt into the shared-code-reuse heuristic
+
+[linters]
+# eslint/tsc run inside these project roots (they own node_modules/.bin).
+node_projects = ["frontend", "packages/ui"]
+timeout_secs  = 30
+
+# --- Project-specific rules: regex over added (`+`) diff lines ---------------
+
+# Ban console.log in shipped frontend code (but allow it in scripts/).
+[[rule]]
+id            = "no-console-log"
+pattern       = '\bconsole\.log\('
+include_globs = ["frontend/src/**", "packages/**"]
+exclude_globs = ["**/scripts/**"]
+skip_comments = true
+severity      = "block"
+message       = "Use the logger, not console.log."
+
+# Nudge (warn, not block) on leftover debug prints in Python.
+[[rule]]
+id            = "py-debug-print"
+pattern       = '^\+\s*print\('
+unless        = ['logging\.', 'click\.echo']
+include_globs = ["**/*.py"]
+severity      = "warn"
+message       = "Stray print()? Prefer the logger."

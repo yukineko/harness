@@ -227,11 +227,11 @@ missing_test = false
 [[rule]]
 id = "noncanonical-env"
 pattern = 'load_dotenv'
-unless = ['/etc/aegis/global\.env']
+unless = ['/etc/myapp/app\.env']
 message = "canonical env only"
 "#;
     write(&dir, ".precommit-audit.toml", cfg);
-    write(&dir, "a.py", "load_dotenv(\"/etc/aegis/global.env\")\n");
+    write(&dir, "a.py", "load_dotenv(\"/etc/myapp/app.env\")\n");
     let (code, err) = run(&dir);
     assert_eq!(code, 0, "unless allowlist must exempt the line; stderr: {err}");
 }
