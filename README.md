@@ -36,6 +36,35 @@ cargo install --path .
 cargo build --release   # -> target/release/precommit-audit
 ```
 
+## Adopting in a new project
+
+The binary is project-agnostic — nothing about any one repo is baked in. To use
+it in another project:
+
+1. **Install the binary** once (`cargo install --path .`), so `precommit-audit`
+   is on your `PATH`.
+2. **(Optional) add a config.** Drop a `.precommit-audit.toml` at the repo root.
+   With no config the generic checks still run; add config only to tune them or
+   to declare project-specific `[[rule]]`s. Start from the documented template
+   [`.precommit-audit.toml`](.precommit-audit.toml), or see
+   [`examples/web-project.toml`](examples/web-project.toml) for a worked example.
+3. **Wire it into a hook** — either the pre-commit framework or a raw git hook:
+
+   ```sh
+   # .git/hooks/pre-commit   (chmod +x)
+   #!/bin/sh
+   exec precommit-audit --mode precommit
+   ```
+
+   or the pre-commit-framework / Claude Code Stop forms shown under
+   [Usage](#usage) below.
+4. **Add project rules as you go.** Each new policy is a `[[rule]]` block (regex
+   over added lines, with glob scoping and an allowlist) — you never touch the
+   binary. Disable any built-in check you don't want under `[checks]`.
+
+That's it: the same binary serves every repo; each repo's `.precommit-audit.toml`
+carries its own policy.
+
 ## Usage
 
 ```sh
