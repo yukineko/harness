@@ -1,0 +1,60 @@
+# precommit-audit config reproducing the AEGIS PowerShell hook's behaviour.
+# Copy to the AEGIS repo root as `.precommit-audit.toml`.
+
+audit_dir = ".claude"
+
+[classify]
+source_exts = [".py", ".ts", ".tsx", ".js", ".jsx", ".sh", ".ps1"]
+scan_exts   = [".py", ".ts", ".tsx", ".js", ".jsx", ".sh", ".ps1", ".yml", ".yaml", ".toml", ".conf"]
+# AEGIS additionally excludes the distribution archive and the hook dir itself.
+exclude     = ["node_modules/", ".next/", "__pycache__/", "dist/", ".venv/",
+               ".git/", ".claude/", "aegis.tar.gz"]
+
+[checks]
+missing_test       = true
+hardcoded_ip       = true
+hardcoded_secret   = true
+swallowed_error    = true
+duplicate_function = true   # AEGIS enables the shared-code-reuse heuristic
+local_capture      = true
+markdown_links     = true
+line_endings       = true
+file_length        = true
+custom_rules       = true
+linters            = true
+
+[file_length]
+limit = 500
+
+[local_capture]
+doc_ref = "docs/development/shell-error-handling.md"
+
+[linters]
+node_projects = ["web/admin-web", "web/tenant-web"]
+timeout_secs  = 25
+
+[review_contract]
+enabled = true
+path    = ".claude/last-review.json"
+
+# --- Check 2d: non-canonical .env reference ----------------------------------
+[[rule]]
+id      = "noncanonical-env"
+pattern = '''^\+.*(load_dotenv|EnvironmentFile|source\s+[^\s]+\.env|\.env["']|\.env\s*$)'''
+unless  = ['/etc/aegis/global\.env', '/etc/aegis/secrets\.env']
+message = "Use /etc/aegis/global.env + /etc/aegis/secrets.env only."
+
+# --- Check 2g-a: Tauri client must call cert-api only -------------------------
+[[rule]]
+id            = "client-api-namespace"
+include_globs = ["client/aegis-vpn-app/**"]
+skip_comments = true
+pattern       = '''("/admin/api/|'/admin/api/|"/tenant/api/|'/tenant/api/|"/api/(cert|device|vpn)/|'/api/(cert|device|vpn)/)'''
+message       = "Windows client (Tauri) must talk to cert-api only, under /cert/api/*. Charter: docs/architecture/api-namespace-split.md"
+
+# --- Check 2g-b: admin-api must not register client-facing routes ------------
+[[rule]]
+id            = "admin-route-client-facing"
+include_globs = ["admin/api/routes/**"]
+pattern       = '''@[A-Za-z_]\w*\.route\(\s*["']/api/(cert|device|vpn)/'''
+message       = "/api/cert|device|vpn/ are client paths; they belong in cert-api (web/aegis_cert_api.py). Charter: docs/architecture/api-namespace-split.md"

@@ -1,0 +1,74 @@
+# precommit-audit configuration (template).
+#
+# Drop this file at your repo root as `.precommit-audit.toml`. Every value below
+# is also the built-in default, so an empty file (or no file at all) still runs
+# the generic checks. Uncomment and edit to tune. Project-specific policy goes in
+# the [[rule]] section at the bottom — never hard-code it into a fork of the
+# binary.
+
+# Directory holding hook state (skip marker, block marker, audit log, review
+# artifact). Claude Code convention is ".claude".
+audit_dir = ".claude"
+
+[classify]
+source_exts = [".py", ".ts", ".tsx", ".js", ".jsx", ".sh", ".ps1"]
+scan_exts   = [".py", ".ts", ".tsx", ".js", ".jsx", ".sh", ".ps1", ".yml", ".yaml", ".toml", ".conf"]
+exclude     = ["node_modules/", ".next/", "__pycache__/", "dist/", ".venv/", ".git/"]
+
+[checks]
+missing_test       = true   # source changed but no test changed/added -> block
+hardcoded_ip       = true
+hardcoded_secret   = true
+swallowed_error    = true
+duplicate_function = false  # heuristic; opt in with a tuned common_names list
+local_capture      = true   # local VAR=$(...) inside `set -e` scripts
+markdown_links     = true
+line_endings       = true
+file_length        = true   # WARNING only, never blocks
+custom_rules       = true
+linters            = true   # py_compile/ruff/bash -n/eslint/tsc/radon/semgrep/gitleaks
+
+[file_length]
+limit = 500
+
+[hardcoded_ip]
+# Prefixes treated as benign (loopback, public DNS, RFC 5737 test-nets).
+benign = ["127.0.0.1", "0.0.0.0", "255.255.255", "8.8.8.8", "1.1.1.1",
+          "192.0.2.", "198.51.100.", "203.0.113."]
+
+[hardcoded_secret]
+# Substrings that mark a matching line as an env getter / placeholder.
+allow = ["os.environ", "getenv", "process.env", "${", "<REDACTED>", "EXAMPLE", "CHANGEME"]
+
+[line_endings]
+crlf_exts = [".ps1", ".cmd", ".bat"]
+lf_exts   = [".sh"]
+
+[linters]
+py_compile    = true
+ruff          = true
+bash_n        = true
+eslint        = true
+tsc           = true
+radon         = true
+semgrep       = true
+gitleaks      = true
+node_projects = []     # e.g. ["web/admin-web", "web/tenant-web"] for eslint/tsc
+timeout_secs  = 25
+
+[review_contract]
+enabled = false                       # Claude Code only; opt in
+path    = ".claude/last-review.json"
+
+# --- Project-specific rules (data-driven; this is where policy lives) --------
+# Each rule is matched against added (`+`) diff lines.
+#
+# [[rule]]
+# id            = "no-print-debug"
+# pattern       = 'print\('                 # regex over the added line
+# unless        = ['logging\.']             # allowlist: skip if also matches
+# include_globs = ["src/**"]                # only these files (empty = all)
+# exclude_globs = []                        # never these files
+# skip_comments = true                      # ignore commented-out lines
+# severity      = "block"                   # "block" or "warn"
+# message       = "Use the logger, not print()."
