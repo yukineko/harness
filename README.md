@@ -25,8 +25,8 @@ files) and reports findings. Built-in **generic** checks:
 
 **Project-specific** policy is expressed as data-driven `[[rule]]` entries
 (regex over added lines, with glob scoping and an allowlist) — never hard-coded.
-See [`examples/aegis.toml`](examples/aegis.toml) for a full real-world config
-(API-namespace split, canonical `.env` paths, …).
+See [`examples/web-project.toml`](examples/web-project.toml) for a worked config
+(node project roots, `console.log` / `print()` rules with glob scoping).
 
 ## Install
 
