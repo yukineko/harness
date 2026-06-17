@@ -13,7 +13,9 @@ sentinel = ".specguard-pending"
 [[area]]
 name = "core"
 globs = ["src/**"]
-canon = ["README.md", "specguard.example.toml"]
+# INSTALL.md included so its behavioral claims (flags, install, decisions/D3)
+# are audited against src — it is a live doc that can drift.
+canon = ["README.md", "specguard.example.toml", "INSTALL.md"]
 
 [[area]]
 name = "prompt"
@@ -22,5 +24,5 @@ canon = ["README.md"]
 
 [[invariant]]
 name = "marker contract"
-description = "prompt template marker token matches parse::MARKER"
-canon = ["src/parse.rs", "templates/audit-prompt.md"]
+description = "both prompt templates' marker trailer matches parse::MARKER"
+canon = ["src/parse.rs", "templates/audit-prompt.md", "templates/decisions-prompt.md"]

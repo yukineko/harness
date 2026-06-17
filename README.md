@@ -62,9 +62,10 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
   たる権威を与え**、「番人を誰が見張る」の無限後退を止める。prompt は read-only + HOTL ゆえ
   *object 正典の権威にはならない* (findings を出すだけで canon を書き換えない)。
 
-監査の 3 次元:
-- **D1 実装↔正典 drift**: 実装が正典からずれていないか。矛盾は `A 誤読 / B コード違反 /
-  C 正典が陳腐化 / 判別不能` に分類。
+監査の 3 次元（**分類・verdict 語彙・規律の正典は監査プロンプト
+`templates/audit-prompt.md` / `templates/decisions-prompt.md`**。ここでは概要のみ。重複を避け
+詳細はそちらを指す）:
+- **D1 実装↔正典 drift**: 実装が正典からずれていないか（矛盾は誤読/コード違反/正典陳腐化等に分類）。
 - **D2 仕様品質**: 正典 doc 自体の **沈黙・矛盾・重複**。
 - **D3 決定ログ (ADR) の鮮度・陳腐化**: 仕様変更の *理由* を canon commit に pin して
   記録 (`specguard decide`) し、決定が指す canon が今も一致するか (鮮度) と、決定の
@@ -152,6 +153,8 @@ AEGIS の元実装を再現する設定例は `examples/aegis.toml`。
 | 3 | いずれかの shard の出力に marker が無い (レポートは保存。baseline 前進・sentinel はしない) |
 | 4 | いずれかの shard のエージェントが非ゼロ終了 (真の終了コードは stderr に出力) |
 | 5 | prompt(メタ正典)が未批准/変更あり (`require_ratification` 有効時)。`accept-prompt` が必要 |
+
+一次情報は `src/main.rs` の `EXIT_*` 定数 (この表が唯一の doc 表。他 doc は再掲せずここを指す)。
 
 - エージェント由来の終了コードは **そのまま伝播しない**。specguard 自身が `2`(usage) /
   `3`(no-marker) を予約しており、生伝播すると「agent が 3 で死んだ」のか「marker 欠落」
