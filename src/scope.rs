@@ -57,9 +57,14 @@ pub const ALL_TRACKED: &str = "(all tracked files)";
 
 /// Resolve the set of changed files via a 3-tier fallback so a first run on a
 /// young repo never hard-errors:
-///   1. the requested `baseline` (`baseline...HEAD`),
+///   1. the requested `baseline` (`baseline..HEAD`),
 ///   2. the configured `fallback` ref,
-///   3. all tracked files (diff against the empty tree).
+///   3. all tracked files (`git ls-tree HEAD`).
+///
+/// Uses a two-dot diff (`baseline..HEAD`), i.e. "what HEAD changed relative to
+/// baseline" — NOT three-dot, which diffs from the merge-base and would miss
+/// changes that came in on the baseline side. Only committed state is audited;
+/// uncommitted working-tree edits are out of scope by design.
 ///
 /// Returns (files, ref-actually-used, fell_back).
 pub fn changed_files(
@@ -87,12 +92,12 @@ fn git_diff_names(repo_root: &Path, baseline: &str) -> Result<Vec<String>> {
         .arg(repo_root)
         .arg("diff")
         .arg("--name-only")
-        .arg(format!("{baseline}...HEAD"))
+        .arg(format!("{baseline}..HEAD"))
         .output()
         .context("spawning git")?;
     if !out.status.success() {
         anyhow::bail!(
-            "git diff {baseline}...HEAD failed: {}",
+            "git diff {baseline}..HEAD failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }

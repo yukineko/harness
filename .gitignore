@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock IS committed: specguard ships a binary, so a pinned lockfile gives
+# reproducible builds.
 # specguard's own outputs when dogfooding
 /reports
 /.specguard-pending

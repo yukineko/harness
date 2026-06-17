@@ -3,10 +3,8 @@
 name = "specguard"
 root = "."
 
-[agent]
-command = "claude"
-args = ["--print", "--permission-mode", "bypassPermissions",
-        "--disallowedTools", "Edit", "Write", "NotebookEdit"]
+# No [agent] block: use the built-in read-only default (Read/Glob/Grep +
+# read-only git, all writes/network denied). See config.rs DEFAULT_AGENT_ARGS.
 
 [output]
 report_dir = "reports/spec-audit"

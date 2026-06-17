@@ -29,18 +29,31 @@ pub fn read_last_ref(paths: &Paths) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Write the report body and advance `.last-ref` to `head`. Returns nothing;
-/// the sentinel is handled separately so a no-marker run can skip it.
-pub fn write_report(paths: &Paths, body: &str, head: &str) -> Result<()> {
+/// Write the report body. Advancing the baseline is a SEPARATE step
+/// ([`advance_baseline`]) so a run that leaves findings pending can persist the
+/// report without moving the baseline past the unfixed drift.
+pub fn write_report(paths: &Paths, body: &str) -> Result<()> {
     if let Some(dir) = paths.report.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating report dir {}", dir.display()))?;
     }
     std::fs::write(&paths.report, format!("{}\n", body.trim_end()))
         .with_context(|| format!("writing report {}", paths.report.display()))?;
+    Ok(())
+}
+
+/// Advance the recorded baseline (`.last-ref`) to `head`. Called only when a run
+/// reaches a clean state (no findings and no pending sentinel) so unfixed drift
+/// stays in scope for the next run until a human `ack`s it.
+pub fn advance_baseline(paths: &Paths, head: &str) -> Result<()> {
     std::fs::write(&paths.last_ref, format!("{head}\n"))
         .with_context(|| format!("writing last-ref {}", paths.last_ref.display()))?;
     Ok(())
+}
+
+/// Whether a sentinel is currently raised (pending human review).
+pub fn sentinel_pending(paths: &Paths) -> bool {
+    paths.sentinel.exists()
 }
 
 /// Raise the sentinel (findings need human review). Mirrors the reference
@@ -82,14 +95,17 @@ mod tests {
     }
 
     #[test]
-    fn writes_report_and_last_ref() {
+    fn writes_report_then_advances_baseline_separately() {
         let tmp = tempfile::tempdir().unwrap();
         let p = paths(&cfg(), tmp.path(), "2026-06-17");
-        write_report(&p, "# body", "deadbeef").unwrap();
+        write_report(&p, "# body").unwrap();
         assert_eq!(
             fs::read_to_string(&p.report).unwrap().trim_end(),
             "# body"
         );
+        // Report written, but baseline not advanced until the separate call.
+        assert_eq!(read_last_ref(&p), None);
+        advance_baseline(&p, "deadbeef").unwrap();
         assert_eq!(read_last_ref(&p), Some("deadbeef".to_string()));
     }
 
