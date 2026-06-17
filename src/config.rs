@@ -22,6 +22,8 @@ pub struct Config {
     pub output: OutputConfig,
     #[serde(default)]
     pub prompt: PromptConfig,
+    #[serde(default)]
+    pub decisions: DecisionsConfig,
     /// Change-triggered audit areas. An area is in-scope when at least one
     /// changed file (since the baseline) matches one of its globs.
     #[serde(default, rename = "area")]
@@ -143,6 +145,26 @@ pub struct PromptConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DecisionsConfig {
+    /// Directory holding decision records (ADRs) — the "why" behind canon
+    /// changes, pinned to a canon commit. Relative paths resolve under the repo
+    /// root; an absolute path can point at e.g. an Obsidian vault. The D3 audit
+    /// (decision freshness/obsolescence) runs whenever this dir has any `*.md`.
+    /// Set to "" to disable decisions entirely.
+    #[serde(default = "default_decisions_dir")]
+    pub dir: String,
+}
+
+impl Default for DecisionsConfig {
+    fn default() -> Self {
+        DecisionsConfig {
+            dir: default_decisions_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Area {
     pub name: String,
     /// Globs (repo-root-relative, `/`-separated) that define the area's files.
@@ -176,6 +198,9 @@ fn default_report_dir() -> String {
 }
 fn default_sentinel() -> String {
     ".specguard-pending".to_string()
+}
+fn default_decisions_dir() -> String {
+    "decisions".to_string()
 }
 
 impl Config {

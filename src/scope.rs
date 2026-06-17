@@ -25,12 +25,19 @@ pub struct Scope {
     pub in_scope: Vec<AreaHit>,
     /// Names of areas with no changed files (reported as explicitly skipped).
     pub skipped_areas: Vec<String>,
+    /// Decision record files (absolute paths) for the D3 audit; empty disables it.
+    pub decision_files: Vec<String>,
 }
 
 #[derive(Debug)]
 pub struct AreaHit {
     pub area_index: usize,
+    /// Changed files matching the area's globs (implementation changes).
     pub matched_files: Vec<String>,
+    /// Changed files that are this area's canon (spec changed → check the
+    /// implementation still follows). An area is in scope if EITHER list is
+    /// non-empty, so a pure-canon edit re-triggers the audit.
+    pub changed_canon: Vec<String>,
 }
 
 /// Decide the baseline ref: explicit override > recorded last-ref > fallback.
@@ -147,12 +154,20 @@ pub fn current_head(repo_root: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The file part of a canon pointer (`file` or `file:section`).
+fn canon_file(pointer: &str) -> &str {
+    pointer.split(':').next().unwrap_or(pointer).trim()
+}
+
 /// Pure: map changed files onto configured areas. Returns (in-scope hits,
-/// skipped area names). An area is in scope iff any changed file matches its
-/// globs. Errors only on an invalid glob pattern in the config.
+/// skipped area names). An area is in scope iff a changed file matches its globs
+/// OR one of its canon pointers' files changed (so a pure-spec edit re-triggers
+/// the audit). Errors only on an invalid glob pattern in the config.
 pub fn classify(changed: &[String], areas: &[Area]) -> Result<(Vec<AreaHit>, Vec<String>)> {
     let mut in_scope = Vec::new();
     let mut skipped = Vec::new();
+    let changed_set: std::collections::HashSet<&str> =
+        changed.iter().map(|s| s.as_str()).collect();
 
     for (idx, area) in areas.iter().enumerate() {
         let mut builder = GlobSetBuilder::new();
@@ -169,12 +184,22 @@ pub fn classify(changed: &[String], areas: &[Area]) -> Result<(Vec<AreaHit>, Vec
             .cloned()
             .collect();
 
-        if matched.is_empty() {
+        // Canon pointers whose file changed since the baseline (deduped).
+        let mut changed_canon: Vec<String> = Vec::new();
+        for c in &area.canon {
+            let f = canon_file(c);
+            if changed_set.contains(f) && !changed_canon.iter().any(|x| x == f) {
+                changed_canon.push(f.to_string());
+            }
+        }
+
+        if matched.is_empty() && changed_canon.is_empty() {
             skipped.push(area.name.clone());
         } else {
             in_scope.push(AreaHit {
                 area_index: idx,
                 matched_files: matched,
+                changed_canon,
             });
         }
     }
@@ -192,12 +217,14 @@ pub fn resolve(
     let (changed_files, baseline, fell_back) =
         changed_files(repo_root, &requested, &cfg.scope.fallback_ref)?;
     let (in_scope, skipped_areas) = classify(&changed_files, &cfg.areas)?;
+    let decision_files = crate::decision::list_files(repo_root, &cfg.decisions.dir);
     Ok(Scope {
         baseline,
         fell_back,
         changed_files,
         in_scope,
         skipped_areas,
+        decision_files,
     })
 }
 
@@ -214,6 +241,14 @@ mod tests {
         }
     }
 
+    fn area_with_canon(name: &str, globs: &[&str], canon: &[&str]) -> Area {
+        Area {
+            name: name.to_string(),
+            globs: globs.iter().map(|s| s.to_string()).collect(),
+            canon: canon.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
     #[test]
     fn classify_matches_recursive_glob() {
         let areas = vec![area("logging", &["aegis_logging/**"]), area("web", &["web/**"])];
@@ -226,7 +261,25 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].area_index, 0);
         assert_eq!(hits[0].matched_files.len(), 2);
+        assert!(hits[0].changed_canon.is_empty());
         assert_eq!(skipped, vec!["web".to_string()]);
+    }
+
+    #[test]
+    fn classify_triggers_on_canon_change_only() {
+        // No code change in the area, but its canon doc changed -> in scope, via
+        // changed_canon (the file part of a `file:section` pointer matches).
+        let areas = vec![area_with_canon(
+            "logging",
+            &["aegis_logging/**"],
+            &["docs/logging.md:HMAC", "docs/glossary.md"],
+        )];
+        let changed = vec!["docs/logging.md".to_string()];
+        let (hits, skipped) = classify(&changed, &areas).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].matched_files.is_empty(), "no impl change");
+        assert_eq!(hits[0].changed_canon, vec!["docs/logging.md".to_string()]);
+        assert!(skipped.is_empty());
     }
 
     #[test]
