@@ -11,8 +11,9 @@ root = "."
 command = "claude"
 args = [
     "--print",
-    "--permission-mode", "bypassPermissions",
-    "--disallowedTools", "Edit", "Write", "NotebookEdit",
+    "--allowedTools", "Read", "Glob", "Grep",
+    "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git status *)",
+    "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch",
     "--model", "claude-sonnet-4-6",
 ]
 

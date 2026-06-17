@@ -11,15 +11,22 @@ name = "MyProject"
 root = "."
 
 # How to invoke the read-only auditing agent. The rendered prompt is written to
-# its stdin; its stdout is captured as the report. Default (shown here) is the
-# Claude Code CLI with edit tools stripped — it still has Read/Grep/Glob/Bash so
-# it can open the canon and sample the implementation.
+# its stdin; its stdout is captured as the report.
+#
+# The block below just REPRODUCES the built-in default (config.rs
+# DEFAULT_AGENT_ARGS) for documentation — omit [agent] entirely to use it. The
+# default enforces read-only *by the harness*, not just the prompt: an allowlist
+# grants Read/Grep/Glob + read-only git, mutating/network tools are denied, and
+# there is no `--permission-mode bypassPermissions`, so in --print mode anything
+# off the allowlist is auto-denied (arbitrary Bash / writes / network cannot run
+# even under prompt injection from the audited repo).
 [agent]
 command = "claude"
 args = [
     "--print",
-    "--permission-mode", "bypassPermissions",
-    "--disallowedTools", "Edit", "Write", "NotebookEdit",
+    "--allowedTools", "Read", "Glob", "Grep",
+    "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git status *)",
+    "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch",
     # add e.g. "--model", "claude-sonnet-4-6" to pin a model
 ]
 

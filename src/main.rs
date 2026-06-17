@@ -21,11 +21,15 @@ use config::Config;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// Exit codes (stable contract for schedulers/hooks).
+/// Exit codes (stable contract for schedulers/hooks). These are specguard's own
+/// and must stay disjoint from anything the agent might return: an agent failure
+/// always maps to [`EXIT_AGENT_FAILED`] (its real code goes to stderr) rather
+/// than being propagated raw, so a caller can never confuse "agent exited 3"
+/// with "no marker".
 const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 2;
 const EXIT_NO_MARKER: u8 = 3;
-const EXIT_AGENT_FAILED: u8 = 4; // fallback when the agent's own code can't be propagated
+const EXIT_AGENT_FAILED: u8 = 4;
 
 #[derive(Parser)]
 #[command(name = "specguard", version, about = "Spec/implementation drift audit harness")]
@@ -52,8 +56,10 @@ enum Command {
     Run,
     /// Print the resolved scope only (no agent call).
     Scope,
-    /// Print the rendered prompt only (no agent call).
+    /// Print the rendered per-shard prompts only (no agent call).
     Prompt,
+    /// Clear the sentinel after a human has handled the pending findings.
+    Ack,
 }
 
 fn main() -> ExitCode {
@@ -97,6 +103,12 @@ fn load(cli: &Cli) -> Result<Loaded> {
 fn run(cli: &Cli) -> Result<u8> {
     let l = load(cli)?;
     let paths = report::paths(&l.cfg, &l.repo_root, &l.date);
+
+    // `ack` only touches the sentinel; no scope/agent work needed.
+    if let Some(Command::Ack) = cli.command {
+        return ack(&paths);
+    }
+
     let last_ref = report::read_last_ref(&paths);
     let override_ref = cli
         .baseline
@@ -104,6 +116,7 @@ fn run(cli: &Cli) -> Result<u8> {
         .or_else(|| std::env::var("SPECGUARD_BASELINE_REF").ok());
 
     let scope = scope::resolve(&l.cfg, &l.repo_root, override_ref.as_deref(), last_ref.as_deref())?;
+    let shards = prompt::shards(&l.cfg, &scope);
 
     match cli.command {
         Some(Command::Scope) => {
@@ -111,70 +124,201 @@ fn run(cli: &Cli) -> Result<u8> {
             return Ok(EXIT_OK);
         }
         Some(Command::Prompt) => {
-            print!("{}", prompt::render(&l.template, &l.cfg, &scope, &l.date));
+            print_prompts(&l, &scope, &shards);
             return Ok(EXIT_OK);
         }
+        Some(Command::Ack) => unreachable!("handled above"),
         Some(Command::Run) | None => {}
     }
 
-    let rendered = prompt::render(&l.template, &l.cfg, &scope, &l.date);
-    eprintln!(
-        "specguard: auditing {} (baseline {}, {} in-scope area(s), {} invariant(s))",
-        l.cfg.project.name,
-        scope.baseline,
-        scope.in_scope.len(),
-        l.cfg.invariants.len()
-    );
-
-    let out = agent::run(&l.cfg.agent, &l.repo_root, &rendered)?;
-    if out.code != 0 {
-        eprintln!(
-            "specguard: agent exited with code {}\n--- agent stderr ---\n{}",
-            out.code,
-            out.stderr.trim_end()
-        );
-        // Propagate the agent's own exit code (matches the reference runner's
-        // `exit $rc`) so the caller can see *why* it failed. Codes that can't be
-        // a process exit status (negative = killed by signal, or >255) fall back
-        // to EXIT_AGENT_FAILED.
-        return Ok(u8::try_from(out.code).unwrap_or(EXIT_AGENT_FAILED));
-    }
-
-    let parsed = parse::parse(&out.stdout);
     let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
 
-    if !parsed.marker_found {
-        // Incomplete report: save it for inspection but do NOT advance the
-        // baseline or raise a sentinel (avoids false positives / lost findings).
+    // Nothing in scope and no invariants: record progress without an agent call.
+    if shards.is_empty() {
+        let body = format!(
+            "# {} 仕様↔実装 整合監査 {}\n\n## スコープ\n- baseline: {}\n- in-scope 領域: なし / 不変条件: なし\n\n## findings\n監査対象なし。\n",
+            l.cfg.project.name, l.date, scope.baseline
+        );
+        report::write_report(&paths, &body)?;
+        if report::sentinel_pending(&paths) {
+            println!(
+                "specguard: 監査対象なし。ただし未処理 sentinel ({}) があるため baseline を据え置く (`specguard ack` で解除)",
+                paths.sentinel.display()
+            );
+        } else {
+            report::advance_baseline(&paths, &head)?;
+            println!("specguard: 監査対象なし (report: {})", paths.report.display());
+        }
+        return Ok(EXIT_OK);
+    }
+
+    eprintln!(
+        "specguard: auditing {} (baseline {}, {} shard(s): {} area(s) + {} invariant shard)",
+        l.cfg.project.name,
+        scope.baseline,
+        shards.len(),
+        scope.in_scope.len(),
+        if l.cfg.invariants.is_empty() { 0 } else { 1 },
+    );
+
+    let shard_prompts: Vec<agent::ShardPrompt> = shards
+        .iter()
+        .map(|&sh| agent::ShardPrompt {
+            label: prompt::shard_label(&l.cfg, &scope, sh),
+            prompt: prompt::render_shard(&l.template, &l.cfg, &scope, sh, &l.date),
+        })
+        .collect();
+
+    let outs = agent::run_shards(&l.cfg.agent, &l.repo_root, shard_prompts);
+
+    // B: any shard whose agent failed -> a single EXIT_AGENT_FAILED, with each
+    // real exit code on stderr. Never propagate raw (would collide with 2/3).
+    let failed: Vec<&agent::ShardOutput> = outs.iter().filter(|o| o.out.code != 0).collect();
+    if !failed.is_empty() {
+        for f in &failed {
+            eprintln!(
+                "specguard: shard '{}' agent exited with code {}\n--- agent stderr ---\n{}",
+                f.label,
+                f.out.code,
+                f.out.stderr.trim_end()
+            );
+        }
+        return Ok(EXIT_AGENT_FAILED);
+    }
+
+    let parsed: Vec<(String, parse::Parsed)> = outs
+        .iter()
+        .map(|o| (o.label.clone(), parse::parse(&o.out.stdout)))
+        .collect();
+
+    let merged = merge_report(&l.cfg, &scope, &l.date, &parsed);
+
+    // If any shard omitted the marker, the merged report is incomplete: save it
+    // for inspection but do NOT advance the baseline or raise a sentinel.
+    let missing: Vec<&str> = parsed
+        .iter()
+        .filter(|(_, p)| !p.marker_found)
+        .map(|(l, _)| l.as_str())
+        .collect();
+    if !missing.is_empty() {
         if let Some(dir) = paths.report.parent() {
             std::fs::create_dir_all(dir).ok();
         }
-        std::fs::write(&paths.report, &out.stdout)
+        std::fs::write(&paths.report, &merged)
             .with_context(|| format!("writing report {}", paths.report.display()))?;
         eprintln!(
-            "specguard: WARN marker '{}' missing; saved {} but cannot assess findings",
+            "specguard: WARN marker '{}' missing in shard(s): {}; saved {} but cannot assess findings",
             parse::MARKER,
+            missing.join(", "),
             paths.report.display()
         );
         return Ok(EXIT_NO_MARKER);
     }
 
-    report::write_report(&paths, &parsed.report, &head)?;
+    report::write_report(&paths, &merged)?;
 
     let report_rel = format!("{}/{}.md", l.cfg.output.report_dir, l.date);
-    if parsed.needs_user {
-        report::write_sentinel(&paths, &l.date, &report_rel, &parsed.summary)?;
+    let needs_user = parsed.iter().any(|(_, p)| p.needs_user);
+    if needs_user {
+        // Findings: raise the sentinel and HOLD the baseline. Not advancing keeps
+        // the unfixed drift in the next run's diff so it is re-detected; a human
+        // releases it with `specguard ack` once handled.
+        let summary = merge_summary(&parsed);
+        report::write_sentinel(&paths, &l.date, &report_rel, &summary)?;
         println!(
-            "specguard: 修正候補あり -> {} (report: {})",
+            "specguard: 修正候補あり -> {} (report: {}); baseline は据え置き (ack するまで再検出)",
             paths.sentinel.display(),
             paths.report.display()
         );
+    } else if report::sentinel_pending(&paths) {
+        // Clean this run, but a prior run's sentinel is still unhandled: keep the
+        // baseline put so its drift stays in scope. Leave the sentinel untouched.
+        println!(
+            "specguard: 修正候補なし。ただし未処理 sentinel ({}) が残るため baseline を据え置く (`specguard ack` で解除)",
+            paths.sentinel.display()
+        );
     } else {
-        // No findings: leave any pre-existing sentinel untouched (a prior,
-        // still-unhandled run may own it).
+        // Fully clean: advance the baseline.
+        report::advance_baseline(&paths, &head)?;
         println!("specguard: 修正候補なし (report: {})", paths.report.display());
     }
     Ok(EXIT_OK)
+}
+
+/// Clear the sentinel (C). Idempotent: succeeds whether or not one was present.
+fn ack(paths: &report::Paths) -> Result<u8> {
+    match std::fs::remove_file(&paths.sentinel) {
+        Ok(()) => println!("specguard: sentinel をクリアした ({})", paths.sentinel.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("specguard: sentinel は無い ({})", paths.sentinel.display());
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e))
+                .with_context(|| format!("removing sentinel {}", paths.sentinel.display()));
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+/// Print every shard's rendered prompt (debug view for `specguard prompt`).
+fn print_prompts(l: &Loaded, scope: &scope::Scope, shards: &[prompt::Shard]) {
+    if shards.is_empty() {
+        println!("(in-scope 領域なし・不変条件なし — 監査対象の shard がない)");
+        return;
+    }
+    for (i, &sh) in shards.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("===== shard: {} =====", prompt::shard_label(&l.cfg, scope, sh));
+        print!("{}", prompt::render_shard(&l.template, &l.cfg, scope, sh, &l.date));
+    }
+}
+
+/// Assemble the merged human-readable report: a harness-built header + overall
+/// scope, then each shard's body verbatim under a divider.
+fn merge_report(
+    cfg: &Config,
+    scope: &scope::Scope,
+    date: &str,
+    parsed: &[(String, parse::Parsed)],
+) -> String {
+    let labels: Vec<&str> = parsed.iter().map(|(l, _)| l.as_str()).collect();
+    let mut out = format!("# {} 仕様↔実装 整合監査 {}\n\n", cfg.project.name, date);
+    out.push_str("## スコープ (全体)\n");
+    out.push_str(&format!("- baseline: `{}`", scope.baseline));
+    if scope.fell_back {
+        out.push_str(" (fallback)");
+    }
+    out.push('\n');
+    out.push_str(&format!("- 変更ファイル数: {}\n", scope.changed_files.len()));
+    out.push_str(&format!("- shard: {}\n", join(&labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())));
+    out.push_str("- 各 shard は独立した read-only エージェント (fresh context) で監査し、ここに統合した。\n");
+    for (label, p) in parsed {
+        out.push_str(&format!("\n---\n\n## shard: {label}\n\n"));
+        out.push_str(p.report.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// Merge the sentinel summary across shards that flagged `needs_user`. A single
+/// flagged shard contributes its summary verbatim; multiple shards are labelled.
+fn merge_summary(parsed: &[(String, parse::Parsed)]) -> String {
+    let flagged: Vec<(&str, &str)> = parsed
+        .iter()
+        .filter(|(_, p)| p.needs_user && !p.summary.trim().is_empty())
+        .map(|(l, p)| (l.as_str(), p.summary.trim()))
+        .collect();
+    match flagged.as_slice() {
+        [] => String::new(),
+        [(_, s)] => s.to_string(),
+        many => many
+            .iter()
+            .map(|(l, s)| format!("[{l}] {s}"))
+            .collect::<Vec<_>>()
+            .join(" / "),
+    }
 }
 
 fn print_scope(cfg: &Config, scope: &scope::Scope) {

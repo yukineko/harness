@@ -52,27 +52,41 @@ pub struct AgentConfig {
 }
 
 impl Default for AgentConfig {
-    /// Defaults to the Claude Code CLI in read-only print mode: it gives the
-    /// model file tools (Read/Grep/Glob/Bash) so it can actually open the canon
-    /// and sample the implementation, while Edit/Write/NotebookEdit are removed.
+    /// Defaults to the Claude Code CLI in read-only `--print` mode with the
+    /// read-only guarantee *enforced by the harness*, not just requested in the
+    /// prompt: an allowlist grants Read/Grep/Glob plus read-only git, and
+    /// mutating tools are explicitly denied. We deliberately do NOT pass
+    /// `--permission-mode bypassPermissions`: in `--print` mode any tool outside
+    /// the allowlist is auto-denied (there is no one to approve it), so arbitrary
+    /// Bash, file writes and network calls cannot succeed even if the model tries
+    /// — closing the prompt-injection hole where audited repo content could drive
+    /// a destructive command. Override `[agent]` to relax this.
     fn default() -> Self {
         AgentConfig {
             command: "claude".to_string(),
-            args: [
-                "--print",
-                "--permission-mode",
-                "bypassPermissions",
-                "--disallowedTools",
-                "Edit",
-                "Write",
-                "NotebookEdit",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            args: DEFAULT_AGENT_ARGS.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
+
+/// The built-in read-only agent argv (single source of truth; sample configs
+/// reproduce this only for documentation).
+pub const DEFAULT_AGENT_ARGS: &[&str] = &[
+    "--print",
+    "--allowedTools",
+    "Read",
+    "Glob",
+    "Grep",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git show *)",
+    "Bash(git status *)",
+    "--disallowedTools",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "WebFetch",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

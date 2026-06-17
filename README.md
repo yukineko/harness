@@ -27,16 +27,29 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
                                   needs_user=yes なら ──▶ sentinel
 ```
 
-- **判定は LLM**: エージェントは Read/Grep/Glob/Bash で **生の正典と実装を読み**、
-  逐語引用できないものは `不明` に降格する (hallucination で `矛盾` を捏造しない)。
+- **判定は LLM**: エージェントは Read/Grep/Glob + read-only git で **生の正典と実装を
+  読み**、逐語引用できないものは `不明` に降格する (hallucination で `矛盾` を捏造しない)。
+- **read-only はハーネスで強制**: 既定エージェントは allowlist (Read/Grep/Glob +
+  `git diff/log/show/status`) で起動し、書き込み・ネットワーク・任意 shell を deny する。
+  `--print` モードでは allowlist 外のツールは自動 deny されるため、監査対象リポジトリの
+  内容による prompt injection でも破壊的コマンドは成功しない。プロンプトの「お願い」では
+  なく権限で担保する。
 - **正典の中身はコピーしない**: 設定には「どこを読むか」(canon ポインタ) だけ書く。
   中身を写すとドリフトの種になるため。
+- **shard 並列 (context 分離)**: in-scope 領域ごと + 不変条件を **別プロセス (fresh
+  context) で並列監査** し、レポートを統合する。1 セッションに無関係なファイルを溜め込んで
+  判定が劣化する (context rot) のを防ぐ。並列度は最大 4 プロセス。
 - **change-triggered + invariant**: 毎回フルリポは見ない。baseline 以降に変更が
   あった領域 + 毎回チェックする不変条件だけに絞る。baseline は
   `--baseline`/env → `[scope].baseline_ref` → `.last-ref` → `[scope].fallback_ref`
   (既定 `HEAD~20`) の順で解決し、**どれも解決できなければ最終 fallback として
   全 tracked file を監査** する (`baseline: (all tracked files)`)。若い/浅い repo の
-  初回でも hard-error しない。
+  初回でも hard-error しない。diff は two-dot (`baseline..HEAD`) の **committed 状態**
+  を対象とする (未コミットの作業ツリーは見ない)。
+- **baseline は ack 連動で前進**: クリーンに監査できた回 (`needs_user=no` かつ未処理
+  sentinel なし) だけ `.last-ref` を HEAD へ進める。**指摘が残っている間は baseline を
+  据え置く** ので、未修正の drift が次回の diff から外れて検出漏れになることがない。
+  人間が対応して `specguard ack` するまで同じ範囲を再監査し続ける。
 
 監査の 2 次元:
 - **D1 実装↔正典 drift**: 実装が正典からずれていないか。矛盾は `A 誤読 / B コード違反 /
@@ -64,10 +77,14 @@ cargo build --release
    cd /path/to/your/repo
    specguard run                      # 監査を実行
    specguard scope                    # 解決されたスコープだけ表示 (agent 呼ばない)
-   specguard prompt                   # 描画されたプロンプトだけ表示 (agent 呼ばない)
+   specguard prompt                   # 各 shard のプロンプトを表示 (agent 呼ばない)
+   specguard ack                      # 対応済みの sentinel をクリア
    specguard --baseline HEAD~5 run    # baseline を上書き
    specguard --config examples/aegis.toml run
    ```
+
+   `needs_user=yes` の指摘に人間が対応したら `specguard ack` で sentinel を消す
+   (これをしないと SessionStart hook が同じ件で促し続ける)。
 
 出力:
 
@@ -98,11 +115,13 @@ AEGIS の元実装を再現する設定例は `examples/aegis.toml`。
 |---|---|
 | 0 | 正常終了 |
 | 2 | 設定 / 使用法エラー |
-| 3 | エージェント出力に marker が無い (レポートは保存。sentinel は立てない) |
-| 4 | エージェント非ゼロ終了のうち、終了コードを伝播できない場合 (signal kill / >255) の fallback |
+| 3 | いずれかの shard の出力に marker が無い (レポートは保存。baseline 前進・sentinel はしない) |
+| 4 | いずれかの shard のエージェントが非ゼロ終了 (真の終了コードは stderr に出力) |
 
-- エージェントが非ゼロ終了したときは **その終了コードをそのまま伝播** する (元の AEGIS
-  runner の `exit $rc` と同じ)。signal kill や 255 超で u8 化できないコードのみ `4` に丸める。
+- エージェント由来の終了コードは **そのまま伝播しない**。specguard 自身が `2`(usage) /
+  `3`(no-marker) を予約しており、生伝播すると「agent が 3 で死んだ」のか「marker 欠落」
+  なのか区別できなくなるため。エージェント失敗は常に `4` に集約し、各 shard の実際の
+  コードは stderr に出す。
 
 ## 定期実行 / HOTL 連携
 
