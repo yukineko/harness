@@ -140,6 +140,40 @@ fn missing_marker_exits_3_and_no_sentinel() {
 }
 
 #[test]
+fn agent_nonzero_exit_is_propagated() {
+    // The agent's own exit code should surface as specguard's exit code (matches
+    // the reference runner's `exit $rc`), with no report or sentinel written.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/x.rs"), "//\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "x"]);
+
+    let cfg = r#"
+[project]
+name = "Demo"
+root = "."
+[agent]
+command = "bash"
+args = ["-c", "cat >/dev/null; exit 7"]
+[output]
+report_dir = "reports"
+sentinel = ".pending"
+[[area]]
+name = "src"
+globs = ["src/**"]
+"#;
+    fs::write(repo.join("specguard.toml"), cfg).unwrap();
+
+    let out = run_specguard(repo, &base, &["run"]);
+    assert_eq!(out.status.code(), Some(7), "agent exit code should propagate");
+    assert!(!repo.join(".pending").exists());
+    assert!(!repo.join("reports/2026-01-01.md").exists(), "no report on agent failure");
+}
+
+#[test]
 fn scope_subcommand_lists_in_scope_area() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path();

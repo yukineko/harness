@@ -32,7 +32,11 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
 - **正典の中身はコピーしない**: 設定には「どこを読むか」(canon ポインタ) だけ書く。
   中身を写すとドリフトの種になるため。
 - **change-triggered + invariant**: 毎回フルリポは見ない。baseline 以降に変更が
-  あった領域 + 毎回チェックする不変条件だけに絞る。
+  あった領域 + 毎回チェックする不変条件だけに絞る。baseline は
+  `--baseline`/env → `[scope].baseline_ref` → `.last-ref` → `[scope].fallback_ref`
+  (既定 `HEAD~20`) の順で解決し、**どれも解決できなければ最終 fallback として
+  全 tracked file を監査** する (`baseline: (all tracked files)`)。若い/浅い repo の
+  初回でも hard-error しない。
 
 監査の 2 次元:
 - **D1 実装↔正典 drift**: 実装が正典からずれていないか。矛盾は `A 誤読 / B コード違反 /
@@ -80,7 +84,7 @@ cargo build --release
 - `[project]` … `name`, `root` (リポジトリルート)
 - `[agent]` … `command` + `args`。既定は `claude --print`(read-only)。任意のエージェント
   CLI に差し替え可 (プロンプトを stdin で受け、レポートを stdout に返すもの)
-- `[scope]` … `baseline_ref` / `fallback_ref`
+- `[scope]` … `baseline_ref` / `fallback_ref` (両方解決不能なら全 tracked file を監査)
 - `[output]` … `report_dir` / `sentinel`
 - `[prompt]` … `template` (省略時は埋め込み既定テンプレート)
 - `[[area]]` (複数) … `name` / `globs` / `canon`。**globs にマッチする変更があれば in-scope**
@@ -95,7 +99,10 @@ AEGIS の元実装を再現する設定例は `examples/aegis.toml`。
 | 0 | 正常終了 |
 | 2 | 設定 / 使用法エラー |
 | 3 | エージェント出力に marker が無い (レポートは保存。sentinel は立てない) |
-| 4 | エージェントが非ゼロ終了 |
+| 4 | エージェント非ゼロ終了のうち、終了コードを伝播できない場合 (signal kill / >255) の fallback |
+
+- エージェントが非ゼロ終了したときは **その終了コードをそのまま伝播** する (元の AEGIS
+  runner の `exit $rc` と同じ)。signal kill や 255 超で u8 化できないコードのみ `4` に丸める。
 
 ## 定期実行 / HOTL 連携
 

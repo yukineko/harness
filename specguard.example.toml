@@ -28,6 +28,9 @@ args = [
 # fallback. Overridden by --baseline / SPECGUARD_BASELINE_REF.
 baseline_ref = ""
 # Baseline for the very first run (no .last-ref yet).
+# If neither the baseline nor this fallback resolves (e.g. a young/shallow repo
+# where HEAD~20 doesn't exist), specguard audits ALL tracked files instead of
+# erroring -- the report then shows `baseline: (all tracked files)`.
 fallback_ref = "HEAD~20"
 
 [output]
