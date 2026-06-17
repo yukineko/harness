@@ -10,6 +10,12 @@ readme = "README.md"
 name = "specguard"
 path = "src/main.rs"
 
+# specforge — the generation-side harness (sibling to specguard, see DESIGN.md).
+# A separate binary so specguard's read-only enforcement stays uncontaminated.
+[[bin]]
+name = "specforge"
+path = "src/forge/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

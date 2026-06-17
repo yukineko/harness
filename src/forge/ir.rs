@@ -1,0 +1,249 @@
+//! Spec IR — the normalized, Agent-executable spec produced by ②normalize.
+//!
+//! The agent emits only the `[[requirement]]` tables (the part that needs
+//! judgment); the deterministic harness owns the `[spec]` header (id, status,
+//! provenance) and assembles the full [`Spec`]. This keeps content judgment in
+//! the LLM and identity/provenance in the harness (DESIGN.md §3, §7).
+
+use serde::{Deserialize, Serialize};
+
+/// A full Spec IR document, serialized to `<spec_dir>/<id>.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Spec {
+    pub spec: SpecMeta,
+    #[serde(default, rename = "requirement")]
+    pub requirements: Vec<Requirement>,
+}
+
+/// The `[spec]` header — harness-owned identity and provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpecMeta {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    /// `draft` until a human ratifies it, then `ratified` (DESIGN.md §5).
+    #[serde(default)]
+    pub status: String,
+    /// canon commit (HEAD) at draft time — pins provenance.
+    #[serde(default)]
+    pub provenance_commit: String,
+    #[serde(default)]
+    pub date: String,
+    /// canon pointers this spec is derived from (file or `file#section`).
+    #[serde(default)]
+    pub canon: Vec<String>,
+    /// Present only after ratification (the human consent ceremony).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratification: Option<Ratification>,
+}
+
+/// The pinned record of human consent that promotes draft → ratified.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Ratification {
+    pub canon_commit: String,
+    pub date: String,
+    pub reason: String,
+    /// Fingerprint of the requirement content at ratification — a later edit
+    /// changes this and forces re-ratification (DESIGN.md §5).
+    pub fingerprint: String,
+}
+
+/// One atomic requirement: a verifiable unit ≒ one implementation task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Requirement {
+    pub id: String,
+    pub statement: String,
+    /// Falsifiable acceptance criteria — the verbatim cross-check points for the
+    /// downstream ⑥ audit (DESIGN.md §3, §5.3 G4).
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+    /// canon pointers grounding this requirement (G1).
+    #[serde(default)]
+    pub canon: Vec<String>,
+    /// The agent's assertion that every acceptance criterion is observable.
+    #[serde(default)]
+    pub falsifiable: bool,
+}
+
+/// What the agent emits in the report body: just the requirement tables.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentDraft {
+    #[serde(default, rename = "requirement")]
+    pub requirements: Vec<Requirement>,
+}
+
+impl AgentDraft {
+    /// Parse the agent's body (TOML `[[requirement]]` tables).
+    pub fn parse(body: &str) -> Result<AgentDraft, toml::de::Error> {
+        toml::from_str(body)
+    }
+}
+
+impl Spec {
+    /// Load a spec from disk.
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Spec> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading spec {}: {e}", path.display()))?;
+        toml::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("parsing spec {}: {e}", path.display()))
+    }
+
+    /// Serialize to TOML for persistence.
+    pub fn to_toml(&self) -> anyhow::Result<String> {
+        toml::to_string_pretty(self).map_err(|e| anyhow::anyhow!("serializing spec: {e}"))
+    }
+
+    /// Content fingerprint over the requirements (FNV-1a). Re-ratification is
+    /// forced when this changes vs the pinned value. Mirrors `ratify::hash`.
+    pub fn fingerprint(&self) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |s: &str| {
+            for &b in s.as_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for r in &self.requirements {
+            feed(&r.id);
+            feed(&r.statement);
+            for a in &r.acceptance {
+                feed(a);
+            }
+            for c in &r.canon {
+                feed(c);
+            }
+            feed(if r.falsifiable { "T" } else { "F" });
+        }
+        format!("{h:016x}")
+    }
+
+    /// Machine contract check (the rigor floor the harness can verify without an
+    /// LLM): every requirement must be grounded (canon), falsifiable (acceptance
+    /// present + flagged), and identified. The *policy* judgment (are these the
+    /// right criteria?) is the human's, recorded as the ratification reason.
+    /// Returns one message per violation; empty = contract satisfied.
+    pub fn contract_violations(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        if self.requirements.is_empty() {
+            v.push("requirement が1つも無い (rigor: pass なら最低1つ必要)".to_string());
+        }
+        for (i, r) in self.requirements.iter().enumerate() {
+            let who = if r.id.trim().is_empty() {
+                format!("requirement[{i}]")
+            } else {
+                format!("requirement '{}'", r.id)
+            };
+            if r.id.trim().is_empty() {
+                v.push(format!("{who}: id が空"));
+            }
+            if r.statement.trim().is_empty() {
+                v.push(format!("{who}: statement が空"));
+            }
+            if r.acceptance.iter().all(|a| a.trim().is_empty()) {
+                v.push(format!("{who}: acceptance が空 (G4 反証可能性が無い)"));
+            }
+            if r.canon.iter().all(|c| c.trim().is_empty()) {
+                v.push(format!("{who}: canon が空 (G1 接地が無い)"));
+            }
+            if !r.falsifiable {
+                v.push(format!("{who}: falsifiable=false (G4 未充足)"));
+            }
+        }
+        v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(id: &str) -> Requirement {
+        Requirement {
+            id: id.into(),
+            statement: "do X".into(),
+            acceptance: vec!["X observable".into()],
+            canon: vec!["docs/spec.md#x".into()],
+            falsifiable: true,
+        }
+    }
+
+    #[test]
+    fn parses_requirement_tables() {
+        let body = r#"
+[[requirement]]
+id = "R1"
+statement = "rate-limit"
+acceptance = ["429 after 5", "Retry-After header"]
+canon = ["docs/auth.md#rate-limit"]
+falsifiable = true
+"#;
+        let d = AgentDraft::parse(body).unwrap();
+        assert_eq!(d.requirements.len(), 1);
+        assert_eq!(d.requirements[0].acceptance.len(), 2);
+    }
+
+    #[test]
+    fn contract_flags_missing_grounding_and_falsifiability() {
+        let spec = Spec {
+            spec: SpecMeta {
+                id: "s".into(),
+                title: String::new(),
+                status: "draft".into(),
+                provenance_commit: String::new(),
+                date: String::new(),
+                canon: vec![],
+                ratification: None,
+            },
+            requirements: vec![Requirement {
+                id: "R1".into(),
+                statement: "x".into(),
+                acceptance: vec![],
+                canon: vec![],
+                falsifiable: false,
+            }],
+        };
+        let v = spec.contract_violations();
+        assert!(v.iter().any(|m| m.contains("acceptance が空")));
+        assert!(v.iter().any(|m| m.contains("canon が空")));
+        assert!(v.iter().any(|m| m.contains("falsifiable")));
+    }
+
+    #[test]
+    fn clean_spec_has_no_violations_and_roundtrips() {
+        let spec = Spec {
+            spec: SpecMeta {
+                id: "s".into(),
+                title: "T".into(),
+                status: "draft".into(),
+                provenance_commit: "abc".into(),
+                date: "2026-01-01".into(),
+                canon: vec!["docs/spec.md".into()],
+                ratification: None,
+            },
+            requirements: vec![req("R1"), req("R2")],
+        };
+        assert!(spec.contract_violations().is_empty());
+        let toml = spec.to_toml().unwrap();
+        let back: Spec = toml::from_str(&toml).unwrap();
+        assert_eq!(spec, back);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_content() {
+        let mut a = Spec {
+            spec: SpecMeta {
+                id: "s".into(),
+                title: String::new(),
+                status: "draft".into(),
+                provenance_commit: String::new(),
+                date: String::new(),
+                canon: vec![],
+                ratification: None,
+            },
+            requirements: vec![req("R1")],
+        };
+        let f1 = a.fingerprint();
+        a.requirements[0].acceptance.push("another".into());
+        assert_ne!(f1, a.fingerprint());
+    }
+}
