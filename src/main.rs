@@ -10,6 +10,7 @@
 
 mod agent;
 mod config;
+mod decision;
 mod init;
 mod parse;
 mod prompt;
@@ -68,6 +69,14 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Scaffold a decision record (ADR) pinned to the current canon commit.
+    Decide {
+        /// Title of the decision (becomes part of the record id).
+        title: String,
+        /// Overwrite an existing record with the same id.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -123,6 +132,11 @@ fn run(cli: &Cli) -> Result<u8> {
         return ack(&paths);
     }
 
+    // `decide` scaffolds a decision record pinned to the current canon commit.
+    if let Some(Command::Decide { title, force }) = &cli.command {
+        return decide(&l, title, *force);
+    }
+
     let last_ref = report::read_last_ref(&paths);
     let override_ref = cli
         .baseline
@@ -141,7 +155,9 @@ fn run(cli: &Cli) -> Result<u8> {
             print_prompts(&l, &scope, &shards);
             return Ok(EXIT_OK);
         }
-        Some(Command::Ack) | Some(Command::Init { .. }) => unreachable!("handled above"),
+        Some(Command::Ack) | Some(Command::Init { .. }) | Some(Command::Decide { .. }) => {
+            unreachable!("handled above")
+        }
         Some(Command::Run) | None => {}
     }
 
@@ -150,8 +166,8 @@ fn run(cli: &Cli) -> Result<u8> {
     // Nothing in scope and no invariants: record progress without an agent call.
     if shards.is_empty() {
         let body = format!(
-            "# {} 仕様↔実装 整合監査 {}\n\n## スコープ\n- baseline: {}\n- in-scope 領域: なし / 不変条件: なし\n\n## findings\n監査対象なし。\n",
-            l.cfg.project.name, l.date, scope.baseline
+            "# {} 仕様↔実装 整合監査 {}\n\n## スコープ\n- baseline: {}\n- canon commit (HEAD): {}\n- in-scope 領域: なし / 不変条件: なし / 決定ログ: なし\n\n## findings\n監査対象なし。\n",
+            l.cfg.project.name, l.date, scope.baseline, head
         );
         report::write_report(&paths, &body)?;
         if report::sentinel_pending(&paths) {
@@ -167,12 +183,13 @@ fn run(cli: &Cli) -> Result<u8> {
     }
 
     eprintln!(
-        "specguard: auditing {} (baseline {}, {} shard(s): {} area(s) + {} invariant shard)",
+        "specguard: auditing {} (baseline {}, {} shard(s): {} area(s) + {} invariant + {} decision)",
         l.cfg.project.name,
         scope.baseline,
         shards.len(),
         scope.in_scope.len(),
         if l.cfg.invariants.is_empty() { 0 } else { 1 },
+        if scope.decision_files.is_empty() { 0 } else { 1 },
     );
 
     let shard_prompts: Vec<agent::ShardPrompt> = shards
@@ -205,7 +222,7 @@ fn run(cli: &Cli) -> Result<u8> {
         .map(|o| (o.label.clone(), parse::parse(&o.out.stdout)))
         .collect();
 
-    let merged = merge_report(&l.cfg, &scope, &l.date, &parsed);
+    let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
 
     // If any shard omitted the marker, the merged report is incomplete: save it
     // for inspection but do NOT advance the baseline or raise a sentinel.
@@ -274,6 +291,25 @@ fn ack(paths: &report::Paths) -> Result<u8> {
     Ok(EXIT_OK)
 }
 
+/// Scaffold a decision record (ADR) pinned to the current canon commit.
+fn decide(l: &Loaded, title: &str, force: bool) -> Result<u8> {
+    let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
+    let id = format!("{}-{}", l.date, decision::slug(title));
+    let path = decision::scaffold(
+        &l.repo_root,
+        &l.cfg.decisions.dir,
+        &id,
+        title,
+        &l.date,
+        &head,
+        force,
+    )?;
+    println!("specguard: 決定ログを生成 -> {}", path.display());
+    println!("  canon commit に pin 済み (canon_commit: {head})");
+    println!("  次: `canon:` に支配する canon ポインタ、`drivers:` に反証可能な理由、`review_when:` を記入");
+    Ok(EXIT_OK)
+}
+
 /// Print every shard's rendered prompt (debug view for `specguard prompt`).
 fn print_prompts(l: &Loaded, scope: &scope::Scope, shards: &[prompt::Shard]) {
     if shards.is_empty() {
@@ -295,6 +331,7 @@ fn merge_report(
     cfg: &Config,
     scope: &scope::Scope,
     date: &str,
+    head: &str,
     parsed: &[(String, parse::Parsed)],
 ) -> String {
     let labels: Vec<&str> = parsed.iter().map(|(l, _)| l.as_str()).collect();
@@ -305,6 +342,9 @@ fn merge_report(
         out.push_str(" (fallback)");
     }
     out.push('\n');
+    // Provenance: the canon commit this verdict was judged against, so a past
+    // report is reproducible and B/C classification has a temporal anchor.
+    out.push_str(&format!("- canon commit (HEAD): `{head}`\n"));
     out.push_str(&format!("- 変更ファイル数: {}\n", scope.changed_files.len()));
     out.push_str(&format!("- shard: {}\n", join(&labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())));
     out.push_str("- 各 shard は独立した read-only エージェント (fresh context) で監査し、ここに統合した。\n");
@@ -346,10 +386,16 @@ fn print_scope(cfg: &Config, scope: &scope::Scope) {
         println!("  (none)");
     }
     for hit in &scope.in_scope {
+        let canon_note = if hit.changed_canon.is_empty() {
+            String::new()
+        } else {
+            format!(", canon changed: {}", hit.changed_canon.len())
+        };
         println!(
-            "  - {} ({} file(s))",
+            "  - {} ({} file(s){})",
             cfg.areas[hit.area_index].name,
-            hit.matched_files.len()
+            hit.matched_files.len(),
+            canon_note
         );
     }
     println!("skipped areas: {}", join(&scope.skipped_areas));
@@ -357,6 +403,7 @@ fn print_scope(cfg: &Config, scope: &scope::Scope) {
         "invariants (always): {}",
         join(&cfg.invariants.iter().map(|i| i.name.clone()).collect::<Vec<_>>())
     );
+    println!("decision records (D3): {}", scope.decision_files.len());
 }
 
 fn join(items: &[String]) -> String {

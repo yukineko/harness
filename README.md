@@ -45,18 +45,29 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
   (既定 `HEAD~20`) の順で解決し、**どれも解決できなければ最終 fallback として
   全 tracked file を監査** する (`baseline: (all tracked files)`)。若い/浅い repo の
   初回でも hard-error しない。diff は two-dot (`baseline..HEAD`) の **committed 状態**
-  を対象とする (未コミットの作業ツリーは見ない)。
+  を対象とする (未コミットの作業ツリーは見ない)。領域は **glob にマッチする実装変更**
+  *または* **canon ポインタのファイルが変更された** とき in-scope になる (仕様だけ
+  変わって実装を誰も再照合しない、を防ぐ)。
 - **baseline は ack 連動で前進**: クリーンに監査できた回 (`needs_user=no` かつ未処理
   sentinel なし) だけ `.last-ref` を HEAD へ進める。**指摘が残っている間は baseline を
   据え置く** ので、未修正の drift が次回の diff から外れて検出漏れになることがない。
   人間が対応して `specguard ack` するまで同じ範囲を再監査し続ける。
+- **provenance**: レポートは監査時の **canon commit (HEAD)** を pin する。過去レポートの
+  再現と、B/C 分類 (コードが新か doc が新か) の時間的な接地に使う。
 
-監査の 2 次元:
+監査の 3 次元:
 - **D1 実装↔正典 drift**: 実装が正典からずれていないか。矛盾は `A 誤読 / B コード違反 /
   C 正典が陳腐化 / 判別不能` に分類。
 - **D2 仕様品質**: 正典 doc 自体の **沈黙・矛盾・重複**。
+- **D3 決定ログ (ADR) の鮮度・陳腐化**: 仕様変更の *理由* を canon commit に pin して
+  記録 (`specguard decide`) し、決定が指す canon が今も一致するか (鮮度) と、決定の
+  driver/review_when が今も成立するか (陳腐化＝理由より長生きした規則) を照合する。
+  決定ログは *証拠* であって権威ではなく、canon が常に正 (`[decisions]` で有効化)。
 
 ## インストール
+
+導入手順の詳細は **[INSTALL.md](INSTALL.md)**（前提条件・設定・定期実行・トラブル
+シューティング）を参照。最短手順:
 
 ```sh
 ./install.sh                 # release ビルドして ~/.local/bin へ配置
@@ -93,6 +104,7 @@ specguard init        # specguard.toml と .claude/ の SessionStart hook を生
    specguard scope                    # 解決されたスコープだけ表示 (agent 呼ばない)
    specguard prompt                   # 各 shard のプロンプトを表示 (agent 呼ばない)
    specguard ack                      # 対応済みの sentinel をクリア
+   specguard decide "<title>"         # 決定ログ(ADR)を canon commit に pin して生成
    specguard --baseline HEAD~5 run    # baseline を上書き
    specguard --config examples/aegis.toml run
    ```

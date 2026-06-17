@@ -46,6 +46,14 @@ report_dir = "reports/spec-audit"
 # Sentinel written when an audit finds something needing human review.
 sentinel = ".specguard-pending"
 
+[decisions]
+# Directory of decision records (ADRs): the *why* behind canon changes, pinned
+# to a canon commit. `specguard decide "<title>"` scaffolds one here; the D3
+# audit checks each record's cited canon (freshness) and its drivers/review_when
+# (obsolescence) against the live canon. Relative paths resolve under the repo
+# root; an absolute path can point at an Obsidian vault. Set to "" to disable.
+dir = "decisions"
+
 [prompt]
 # Optional path (relative to this file) to a custom prompt template. Leave empty
 # to use the embedded default. Placeholders: {{PROJECT_NAME}} {{DATE}}

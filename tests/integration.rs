@@ -93,6 +93,8 @@ fn run_with_findings_writes_report_and_sentinel() {
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
     assert!(report.contains("Demo audit"));
     assert!(report.contains("finding body"));
+    // Provenance: the merged report pins the canon commit it judged against.
+    assert!(report.contains("canon commit (HEAD):"), "report:\n{report}");
     // Trailer must be stripped from the saved report.
     assert!(!report.contains("<<<SPEC_AUDIT>>>"));
 
@@ -461,4 +463,103 @@ fn init_preserves_existing_settings() {
     assert!(s.contains("PreToolUse"), "existing hooks preserved");
     assert!(s.contains("SessionStart"), "our hook added");
     assert!(s.contains(".specguard-pending"));
+}
+
+// --- Decision records (ADR) + canon-change trigger + D3 audit. ---
+
+#[test]
+fn decide_scaffolds_pinned_record_idempotently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    write_config(repo, "unused");
+
+    let out = run_specguard(repo, &base, &["decide", "Single signing path"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let rec = repo.join("decisions/2026-01-01-single-signing-path.md");
+    let body = fs::read_to_string(&rec).expect("record written");
+    assert!(body.contains("canon_commit: "), "pinned to a canon commit");
+    assert!(body.contains("status: proposed"));
+    assert!(body.contains("Single signing path"));
+    assert!(body.contains("drivers: []"));
+
+    // Re-running without --force must not overwrite (errors as usage = exit 2).
+    fs::write(&rec, "edited\n").unwrap();
+    let dup = run_specguard(repo, &base, &["decide", "Single signing path"]);
+    assert_eq!(dup.status.code(), Some(2), "duplicate id rejected");
+    assert_eq!(fs::read_to_string(&rec).unwrap(), "edited\n", "not overwritten");
+
+    // --force overwrites.
+    let forced = run_specguard(repo, &base, &["decide", "Single signing path", "--force"]);
+    assert!(forced.status.success());
+    assert!(fs::read_to_string(&rec).unwrap().contains("status: proposed"));
+}
+
+#[test]
+fn canon_change_triggers_area_without_code_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    // Change only the area's canon doc (docs/spec.md is `src`'s canon), no code.
+    fs::create_dir_all(repo.join("docs")).unwrap();
+    fs::write(repo.join("docs/spec.md"), "rule v2\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "spec change only"]);
+
+    write_config(repo, "unused");
+    let out = run_specguard(repo, &base, &["scope"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("- src (0 file(s), canon changed: 1)"),
+        "area in scope via canon change:\n{stdout}"
+    );
+}
+
+#[test]
+fn d3_decisions_shard_runs_alongside_areas() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/x.rs"), "//\n").unwrap();
+    // A decision record present -> D3 shard activates.
+    fs::create_dir_all(repo.join("decisions")).unwrap();
+    fs::write(repo.join("decisions/2026-01-01-x.md"), "---\nid: x\n---\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "code + decision"]);
+
+    // Content-sensitive agent: route the D3 shard vs the area/invariant shards.
+    let script = r#"input=$(cat)
+if printf '%s' "$input" | grep -q '(D3)'; then
+  printf '# D3 audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし\n'
+else
+  printf '# area audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし\n'
+fi"#;
+    let cfg = format!(
+        r#"
+[project]
+name = "Demo"
+root = "."
+[agent]
+command = "bash"
+args = ["-c", {script:?}]
+[output]
+report_dir = "reports"
+sentinel = ".pending"
+[[area]]
+name = "src"
+globs = ["src/**"]
+canon = ["docs/spec.md"]
+"#,
+    );
+    fs::write(repo.join("specguard.toml"), cfg).unwrap();
+
+    let out = run_specguard(repo, &base, &["run"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
+    assert!(report.contains("## shard: src"), "report:\n{report}");
+    assert!(report.contains("## shard: decisions"), "report:\n{report}");
+    assert!(report.contains("D3 audit"), "D3 body merged:\n{report}");
 }

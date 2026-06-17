@@ -14,33 +14,46 @@ use crate::scope::{AreaHit, Scope};
 /// The embedded default template. Override via `[prompt].template`.
 pub const DEFAULT_TEMPLATE: &str = include_str!("../templates/audit-prompt.md");
 
+/// The embedded D3 (decision freshness/obsolescence) template.
+pub const DECISIONS_TEMPLATE: &str = include_str!("../templates/decisions-prompt.md");
+
 /// Maximum number of sample changed files listed per area in the prompt.
 const MAX_SAMPLE_FILES: usize = 12;
 
-/// One audit shard: either a single in-scope area (by index into
-/// `scope.in_scope`) or the invariant set. Each shard is rendered into its own
-/// focused prompt and audited by a separate agent process (fresh context).
+/// Maximum number of decision records listed in the D3 prompt.
+const MAX_DECISIONS: usize = 30;
+
+/// One audit shard: a single in-scope area (index into `scope.in_scope`), the
+/// invariant set, or the decision-record audit (D3). Each shard is rendered into
+/// its own focused prompt and audited by a separate agent process (fresh
+/// context).
 #[derive(Debug, Clone, Copy)]
 pub enum Shard {
     Area(usize),
     Invariants,
+    Decisions,
 }
 
-/// Build the shard list for a run: one per in-scope area, plus one invariant
-/// shard when any invariants are defined (invariants run every time).
+/// Build the shard list for a run: one per in-scope area, plus an invariant
+/// shard when any invariants are defined, plus a decisions (D3) shard when any
+/// decision records exist.
 pub fn shards(cfg: &Config, scope: &Scope) -> Vec<Shard> {
     let mut v: Vec<Shard> = (0..scope.in_scope.len()).map(Shard::Area).collect();
     if !cfg.invariants.is_empty() {
         v.push(Shard::Invariants);
     }
+    if !scope.decision_files.is_empty() {
+        v.push(Shard::Decisions);
+    }
     v
 }
 
-/// Human label for a shard (area name, or "invariants").
+/// Human label for a shard (area name, "invariants", or "decisions").
 pub fn shard_label(cfg: &Config, scope: &Scope, shard: Shard) -> String {
     match shard {
         Shard::Area(i) => cfg.areas[scope.in_scope[i].area_index].name.clone(),
         Shard::Invariants => "invariants".to_string(),
+        Shard::Decisions => "decisions".to_string(),
     }
 }
 
@@ -55,6 +68,10 @@ pub fn render_shard(
     shard: Shard,
     date: &str,
 ) -> String {
+    // The decisions (D3) shard uses its own embedded template, not the D1/D2 one.
+    if let Shard::Decisions = shard {
+        return render_decisions(cfg, scope, date);
+    }
     let (areas, invariants, summary) = match shard {
         Shard::Area(i) => {
             let hit = &scope.in_scope[i];
@@ -69,6 +86,7 @@ pub fn render_shard(
             invariants_block(cfg),
             shard_scope_summary(cfg, scope, None),
         ),
+        Shard::Decisions => unreachable!("handled above"),
     };
     template
         .replace("{{PROJECT_NAME}}", &cfg.project.name)
@@ -77,6 +95,51 @@ pub fn render_shard(
         .replace("{{SCOPE_SUMMARY}}", &summary)
         .replace("{{AREAS}}", &areas)
         .replace("{{INVARIANTS}}", &invariants)
+}
+
+/// Render the D3 decisions prompt: list the decision records to audit and the
+/// in-scope canon to cross-check them against. Judgment (read each record's live
+/// content, check freshness + obsolescence) is the agent's job.
+fn render_decisions(cfg: &Config, scope: &Scope, date: &str) -> String {
+    let mut decisions = String::new();
+    for f in scope.decision_files.iter().take(MAX_DECISIONS) {
+        decisions.push_str(&format!("- `{f}`\n"));
+    }
+    if scope.decision_files.len() > MAX_DECISIONS {
+        decisions.push_str(&format!(
+            "- … ほか {} 件 (このランでは未掲載)\n",
+            scope.decision_files.len() - MAX_DECISIONS
+        ));
+    }
+
+    // In-scope canon pointers (area canon + invariant canon) for cross-reference.
+    let mut canon: Vec<String> = Vec::new();
+    for hit in &scope.in_scope {
+        for c in &cfg.areas[hit.area_index].canon {
+            if !canon.contains(c) {
+                canon.push(c.clone());
+            }
+        }
+    }
+    for inv in &cfg.invariants {
+        for c in &inv.canon {
+            if !canon.contains(c) {
+                canon.push(c.clone());
+            }
+        }
+    }
+    let inscope_canon = if canon.is_empty() {
+        "(in-scope の canon なし — 全 decision について「理由が今も成立するか」を中心に確認)\n".to_string()
+    } else {
+        canon.iter().map(|c| format!("- `{c}`\n")).collect::<String>()
+    };
+
+    DECISIONS_TEMPLATE
+        .replace("{{PROJECT_NAME}}", &cfg.project.name)
+        .replace("{{DATE}}", date)
+        .replace("{{MARKER}}", MARKER)
+        .replace("{{DECISIONS}}", &decisions)
+        .replace("{{INSCOPE_CANON}}", &inscope_canon)
 }
 
 /// Scope summary for a single shard: the overall baseline, but a target scoped
@@ -94,11 +157,19 @@ fn shard_scope_summary(cfg: &Config, scope: &Scope, hit: Option<&AreaHit>) -> St
         scope.changed_files.len()
     ));
     match hit {
-        Some(hit) => s.push_str(&format!(
-            "- この shard の監査対象: 領域「{}」({} 件の変更ファイル)\n",
-            cfg.areas[hit.area_index].name,
-            hit.matched_files.len()
-        )),
+        Some(hit) => {
+            let canon_note = if hit.changed_canon.is_empty() {
+                String::new()
+            } else {
+                format!(", canon 変更 {} 件", hit.changed_canon.len())
+            };
+            s.push_str(&format!(
+                "- この shard の監査対象: 領域「{}」(実装変更 {} 件{})\n",
+                cfg.areas[hit.area_index].name,
+                hit.matched_files.len(),
+                canon_note
+            ));
+        }
         None => s.push_str(&format!(
             "- この shard の監査対象: 不変条件 {} 件 (変更の有無に関わらず毎回)\n",
             cfg.invariants.len()
@@ -126,7 +197,10 @@ fn area_block_one(cfg: &Config, hit: &AreaHit) -> String {
             out.push_str(&format!("- `{c}`\n"));
         }
     }
-    out.push_str("変更ファイル (この領域):\n");
+    out.push_str("変更ファイル (この領域の実装):\n");
+    if hit.matched_files.is_empty() {
+        out.push_str("- (実装側の変更なし)\n");
+    }
     for f in hit.matched_files.iter().take(MAX_SAMPLE_FILES) {
         out.push_str(&format!("- `{f}`\n"));
     }
@@ -135,6 +209,14 @@ fn area_block_one(cfg: &Config, hit: &AreaHit) -> String {
             "- … ほか {} 件\n",
             hit.matched_files.len() - MAX_SAMPLE_FILES
         ));
+    }
+    if !hit.changed_canon.is_empty() {
+        out.push_str(
+            "**この領域の canon (仕様) が変更された** — 実装がこの変更に追従しているか D1 で確認すること:\n",
+        );
+        for f in &hit.changed_canon {
+            out.push_str(&format!("- `{f}`\n"));
+        }
     }
     out.push('\n');
     out
@@ -192,8 +274,10 @@ mod tests {
             in_scope: vec![AreaHit {
                 area_index: 0,
                 matched_files: vec!["logging/sig.py".into()],
+                changed_canon: vec![],
             }],
             skipped_areas: vec![],
+            decision_files: vec![],
         }
     }
 
@@ -202,9 +286,37 @@ mod tests {
         let cfg = sample_cfg();
         let scope = sample_scope();
         let s = shards(&cfg, &scope);
-        assert_eq!(s.len(), 2); // one area + one invariant shard
+        assert_eq!(s.len(), 2); // one area + one invariant shard (no decisions)
         assert_eq!(shard_label(&cfg, &scope, s[0]), "logging");
         assert_eq!(shard_label(&cfg, &scope, s[1]), "invariants");
+    }
+
+    #[test]
+    fn decisions_shard_added_when_records_exist() {
+        let cfg = sample_cfg();
+        let mut scope = sample_scope();
+        scope.decision_files = vec!["/vault/decisions/2026-06-17-x.md".into()];
+        let s = shards(&cfg, &scope);
+        assert_eq!(s.len(), 3);
+        assert_eq!(shard_label(&cfg, &scope, s[2]), "decisions");
+
+        let out = render_shard(DECISIONS_TEMPLATE, &cfg, &scope, Shard::Decisions, "2026-06-17");
+        assert!(out.contains("2026-06-17-x.md"), "lists the decision record");
+        assert!(out.contains("logging/SPEC.md"), "lists in-scope canon to cross-check");
+        assert!(out.contains(MARKER));
+        assert!(!out.contains("{{"));
+    }
+
+    #[test]
+    fn area_shard_flags_canon_change() {
+        let cfg = sample_cfg();
+        let mut scope = sample_scope();
+        scope.in_scope[0].matched_files = vec![];
+        scope.in_scope[0].changed_canon = vec!["docs/signing.md".into()];
+        let out = render_shard(DEFAULT_TEMPLATE, &cfg, &scope, Shard::Area(0), "2026-06-17");
+        assert!(out.contains("canon (仕様) が変更された"));
+        assert!(out.contains("docs/signing.md"));
+        assert!(!out.contains("{{"));
     }
 
     #[test]
