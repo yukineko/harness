@@ -141,6 +141,11 @@ pub struct PromptConfig {
     /// When empty, the embedded default template is used.
     #[serde(default)]
     pub template: String,
+    /// Treat the prompt templates as meta-canon (the audit policy) that must be
+    /// explicitly ratified. When true, `run` refuses to audit if the prompt has
+    /// changed since (or was never) ratified via `specguard accept-prompt`.
+    #[serde(default)]
+    pub require_ratification: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

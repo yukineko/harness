@@ -20,6 +20,36 @@ pub const DECISIONS_TEMPLATE: &str = include_str!("../templates/decisions-prompt
 /// Maximum number of sample changed files listed per area in the prompt.
 const MAX_SAMPLE_FILES: usize = 12;
 
+/// Placeholders the audit (D1/D2) template must contain — the machine contract
+/// part of the prompt's meta-canon, deterministically checkable at ratification.
+pub const AUDIT_PLACEHOLDERS: &[&str] = &[
+    "{{PROJECT_NAME}}",
+    "{{DATE}}",
+    "{{MARKER}}",
+    "{{SCOPE_SUMMARY}}",
+    "{{AREAS}}",
+    "{{INVARIANTS}}",
+];
+
+/// Placeholders the D3 decisions template must contain.
+pub const DECISIONS_PLACEHOLDERS: &[&str] = &[
+    "{{PROJECT_NAME}}",
+    "{{DATE}}",
+    "{{MARKER}}",
+    "{{DECISIONS}}",
+    "{{INSCOPE_CANON}}",
+];
+
+/// Required placeholders missing from `template` — a non-empty result means the
+/// template contradicts the parser/render contract (refuse to ratify).
+pub fn missing_placeholders(template: &str, required: &[&'static str]) -> Vec<&'static str> {
+    required
+        .iter()
+        .filter(|p| !template.contains(**p))
+        .copied()
+        .collect()
+}
+
 /// Maximum number of decision records listed in the D3 prompt.
 const MAX_DECISIONS: usize = 30;
 

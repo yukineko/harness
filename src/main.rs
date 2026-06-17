@@ -14,6 +14,7 @@ mod decision;
 mod init;
 mod parse;
 mod prompt;
+mod ratify;
 mod report;
 mod scope;
 
@@ -32,6 +33,9 @@ const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 2;
 const EXIT_NO_MARKER: u8 = 3;
 const EXIT_AGENT_FAILED: u8 = 4;
+/// The prompt (meta-canon) is unratified or changed since ratification, and
+/// `[prompt].require_ratification` is on — a human must `accept-prompt` first.
+const EXIT_UNRATIFIED: u8 = 5;
 
 #[derive(Parser)]
 #[command(name = "specguard", version, about = "Spec/implementation drift audit harness")]
@@ -76,6 +80,14 @@ enum Command {
         /// Overwrite an existing record with the same id.
         #[arg(long)]
         force: bool,
+    },
+    /// Ratify the prompt templates (meta-canon) after reviewing them: contract-
+    /// check, then pin the current version with a rationale. Required before a
+    /// gated `run` when `[prompt].require_ratification = true`.
+    AcceptPrompt {
+        /// Why this prompt version is accepted (recorded in the lock).
+        #[arg(short = 'm', long = "reason")]
+        reason: String,
     },
 }
 
@@ -137,6 +149,11 @@ fn run(cli: &Cli) -> Result<u8> {
         return decide(&l, title, *force);
     }
 
+    // `accept-prompt` ratifies the prompt (meta-canon): contract-check + pin.
+    if let Some(Command::AcceptPrompt { reason }) = &cli.command {
+        return accept_prompt(&l, reason);
+    }
+
     let last_ref = report::read_last_ref(&paths);
     let override_ref = cli
         .baseline
@@ -155,10 +172,41 @@ fn run(cli: &Cli) -> Result<u8> {
             print_prompts(&l, &scope, &shards);
             return Ok(EXIT_OK);
         }
-        Some(Command::Ack) | Some(Command::Init { .. }) | Some(Command::Decide { .. }) => {
-            unreachable!("handled above")
-        }
+        Some(Command::Ack)
+        | Some(Command::Init { .. })
+        | Some(Command::Decide { .. })
+        | Some(Command::AcceptPrompt { .. }) => unreachable!("handled above"),
         Some(Command::Run) | None => {}
+    }
+
+    // Ratification gate: when the prompt (meta-canon) must be ratified, refuse to
+    // audit with an unratified or changed prompt until a human `accept-prompt`s.
+    if l.cfg.prompt.require_ratification {
+        let audit_h = ratify::hash(&l.template);
+        let dec_h = ratify::hash(prompt::DECISIONS_TEMPLATE);
+        match ratify::read_lock(&l.repo_root) {
+            None => {
+                eprintln!(
+                    "specguard: prompt (メタ正典) が未批准です。内容を確認し、\n  `specguard accept-prompt -m \"理由\"` で批准してください。"
+                );
+                return Ok(EXIT_UNRATIFIED);
+            }
+            Some(lock) => {
+                let drift = ratify::drifted(&lock, &audit_h, &dec_h);
+                if !drift.is_empty() {
+                    eprintln!(
+                        "specguard: prompt (メタ正典) に未批准の変更があります: {}\n  内容を確認し、合意できるなら `specguard accept-prompt -m \"理由\"` で再批准してください。",
+                        drift.join(", ")
+                    );
+                    return Ok(EXIT_UNRATIFIED);
+                }
+                // Surface which ratified policy version is in force.
+                eprintln!(
+                    "specguard: prompt 批准済み (date {}, canon {}) 理由: {}",
+                    lock.date, lock.canon_commit, lock.reason
+                );
+            }
+        }
     }
 
     let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
@@ -307,6 +355,40 @@ fn decide(l: &Loaded, title: &str, force: bool) -> Result<u8> {
     println!("specguard: 決定ログを生成 -> {}", path.display());
     println!("  canon commit に pin 済み (canon_commit: {head})");
     println!("  次: `canon:` に支配する canon ポインタ、`drivers:` に反証可能な理由、`review_when:` を記入");
+    Ok(EXIT_OK)
+}
+
+/// Ratify the prompt templates (meta-canon): contract-check then pin the
+/// current version with a rationale. This is the consent ceremony — it confers
+/// canon authority on the prompt version, recorded against the canon commit.
+fn accept_prompt(l: &Loaded, reason: &str) -> Result<u8> {
+    if reason.trim().is_empty() {
+        anyhow::bail!("批准には理由が必要です (-m \"...\")");
+    }
+    // Contract judgment: the templates must not contradict the render/parse
+    // contract (required placeholders present). The policy/constitution part is
+    // the human's responsibility, recorded as the rationale.
+    let miss_audit = prompt::missing_placeholders(&l.template, prompt::AUDIT_PLACEHOLDERS);
+    let miss_dec =
+        prompt::missing_placeholders(prompt::DECISIONS_TEMPLATE, prompt::DECISIONS_PLACEHOLDERS);
+    if !miss_audit.is_empty() || !miss_dec.is_empty() {
+        let mut msg = String::from("prompt が契約に矛盾 (必須 placeholder 不足); 批准を拒否:");
+        if !miss_audit.is_empty() {
+            msg.push_str(&format!("\n  audit-prompt: {}", miss_audit.join(", ")));
+        }
+        if !miss_dec.is_empty() {
+            msg.push_str(&format!("\n  decisions-prompt: {}", miss_dec.join(", ")));
+        }
+        anyhow::bail!(msg);
+    }
+
+    let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
+    let audit_h = ratify::hash(&l.template);
+    let dec_h = ratify::hash(prompt::DECISIONS_TEMPLATE);
+    let path = ratify::write_lock(&l.repo_root, &audit_h, &dec_h, &head, &l.date, reason)?;
+    println!("specguard: prompt (メタ正典) を批准した -> {}", path.display());
+    println!("  canon commit に pin (canon_commit: {head})");
+    println!("  理由: {reason}");
     Ok(EXIT_OK)
 }
 
