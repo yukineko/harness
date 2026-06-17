@@ -56,25 +56,39 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
   C 正典が陳腐化 / 判別不能` に分類。
 - **D2 仕様品質**: 正典 doc 自体の **沈黙・矛盾・重複**。
 
-## ビルド
+## インストール
 
 ```sh
-cargo build --release
-# 生成物: target/release/specguard
+./install.sh                 # release ビルドして ~/.local/bin へ配置
+# 配置先を変えるなら:
+SPECGUARD_BIN_DIR=/usr/local/bin ./install.sh
 ```
+
+`install.sh` は `cargo build --release` 後にバイナリを PATH 上へ置くだけ。手動なら
+`cargo build --release` で `target/release/specguard` が生成される。
+
+導入後、監査したいリポジトリに **scaffold** する:
+
+```sh
+cd /path/to/your/repo
+specguard init        # specguard.toml と .claude/ の SessionStart hook を生成
+```
+
+`specguard init` は冪等で、既存の `specguard.toml` は `--force` 無しでは上書きせず、
+`.claude/settings.json` に他の設定があっても壊さず SessionStart hook だけを足す
+(hook は `.specguard-pending` を検知してセッション開始時に未処理ドリフトを提示する)。
 
 ## 使い方
 
-1. 設定を用意 (`specguard.example.toml` をコピーして編集):
-
-   ```sh
-   cp specguard.example.toml /path/to/your/repo/specguard.toml
-   ```
+1. `specguard init` で生成された `specguard.toml` を編集 (`[[area]]` / `[[invariant]]`
+   / `canon` を対象リポジトリに合わせる)。手動で用意するなら
+   `cp specguard.example.toml /path/to/your/repo/specguard.toml`。
 
 2. リポジトリルートで実行:
 
    ```sh
    cd /path/to/your/repo
+   specguard init                     # config + SessionStart hook を scaffold
    specguard run                      # 監査を実行
    specguard scope                    # 解決されたスコープだけ表示 (agent 呼ばない)
    specguard prompt                   # 各 shard のプロンプトを表示 (agent 呼ばない)
@@ -126,8 +140,9 @@ AEGIS の元実装を再現する設定例は `examples/aegis.toml`。
 ## 定期実行 / HOTL 連携
 
 `specguard run` を cron / Windows タスクスケジューラ等から起動し、`needs_user=yes`
-のとき立つ sentinel を SessionStart hook 等で検知して「修正に着手?」を促す、という
+のとき立つ sentinel を SessionStart hook で検知して「修正に着手?」を促す、という
 Human-on-the-loop ループに組み込めます (sentinel フォーマットは元の AEGIS 実装と互換)。
+SessionStart hook は `specguard init` が `.claude/settings.json` に設定します。
 
 ## テスト
 

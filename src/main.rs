@@ -10,6 +10,7 @@
 
 mod agent;
 mod config;
+mod init;
 mod parse;
 mod prompt;
 mod report;
@@ -60,6 +61,13 @@ enum Command {
     Prompt,
     /// Clear the sentinel after a human has handled the pending findings.
     Ack,
+    /// Scaffold specguard into a repo: starter config + Claude Code SessionStart
+    /// hook. Idempotent; existing config kept unless `--force`.
+    Init {
+        /// Overwrite an existing config file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -101,6 +109,12 @@ fn load(cli: &Cli) -> Result<Loaded> {
 }
 
 fn run(cli: &Cli) -> Result<u8> {
+    // `init` runs before config load: the config may not exist yet.
+    if let Some(Command::Init { force }) = &cli.command {
+        init::run(&cli.config, *force)?;
+        return Ok(EXIT_OK);
+    }
+
     let l = load(cli)?;
     let paths = report::paths(&l.cfg, &l.repo_root, &l.date);
 
@@ -127,7 +141,7 @@ fn run(cli: &Cli) -> Result<u8> {
             print_prompts(&l, &scope, &shards);
             return Ok(EXIT_OK);
         }
-        Some(Command::Ack) => unreachable!("handled above"),
+        Some(Command::Ack) | Some(Command::Init { .. }) => unreachable!("handled above"),
         Some(Command::Run) | None => {}
     }
 
