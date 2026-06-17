@@ -54,6 +54,13 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
   人間が対応して `specguard ack` するまで同じ範囲を再監査し続ける。
 - **provenance**: レポートは監査時の **canon commit (HEAD)** を pin する。過去レポートの
   再現と、B/C 分類 (コードが新か doc が新か) の時間的な接地に使う。
+- **prompt はメタ正典 (批准ゲート)**: prompt テンプレートは「何を drift とみなすか」を決める
+  *監査ポリシー* = メタ正典。`[prompt].require_ratification = true` のとき、`run` は prompt の
+  fingerprint を `.specguard-prompt.lock` と照合し、**未批准/変更があれば監査を拒否** する
+  (exit 5)。人間が内容を確認し `specguard accept-prompt -m "理由"` で批准すると、契約チェック
+  (必須 placeholder) を通った上で fingerprint・canon commit・理由が pin される。**同意が正典
+  たる権威を与え**、「番人を誰が見張る」の無限後退を止める。prompt は read-only + HOTL ゆえ
+  *object 正典の権威にはならない* (findings を出すだけで canon を書き換えない)。
 
 監査の 3 次元:
 - **D1 実装↔正典 drift**: 実装が正典からずれていないか。矛盾は `A 誤読 / B コード違反 /
@@ -105,6 +112,7 @@ specguard init        # specguard.toml と .claude/ の SessionStart hook を生
    specguard prompt                   # 各 shard のプロンプトを表示 (agent 呼ばない)
    specguard ack                      # 対応済みの sentinel をクリア
    specguard decide "<title>"         # 決定ログ(ADR)を canon commit に pin して生成
+   specguard accept-prompt -m "理由"  # prompt(メタ正典)を批准して pin
    specguard --baseline HEAD~5 run    # baseline を上書き
    specguard --config examples/aegis.toml run
    ```
@@ -143,6 +151,7 @@ AEGIS の元実装を再現する設定例は `examples/aegis.toml`。
 | 2 | 設定 / 使用法エラー |
 | 3 | いずれかの shard の出力に marker が無い (レポートは保存。baseline 前進・sentinel はしない) |
 | 4 | いずれかの shard のエージェントが非ゼロ終了 (真の終了コードは stderr に出力) |
+| 5 | prompt(メタ正典)が未批准/変更あり (`require_ratification` 有効時)。`accept-prompt` が必要 |
 
 - エージェント由来の終了コードは **そのまま伝播しない**。specguard 自身が `2`(usage) /
   `3`(no-marker) を予約しており、生伝播すると「agent が 3 で死んだ」のか「marker 欠落」

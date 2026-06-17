@@ -563,3 +563,104 @@ canon = ["docs/spec.md"]
     assert!(report.contains("## shard: decisions"), "report:\n{report}");
     assert!(report.contains("D3 audit"), "D3 body merged:\n{report}");
 }
+
+// --- Prompt ratification gate (meta-canon acceptance). ---
+
+/// A minimal but contract-valid custom audit template (all required placeholders).
+const VALID_TMPL: &str = "{{PROJECT_NAME}} {{DATE}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}\n{{MARKER}}\n";
+
+fn write_ratify_config(repo: &Path, template_body: &str) {
+    fs::write(repo.join("tmpl.md"), template_body).unwrap();
+    let agent = "# clean\\n\\n<<<SPEC_AUDIT>>>\\nneeds_user: no\\nsummary: なし";
+    let script = format!("cat >/dev/null; printf '{agent}\\n'");
+    let cfg = format!(
+        r#"
+[project]
+name = "Demo"
+root = "."
+[agent]
+command = "bash"
+args = ["-c", {script:?}]
+[output]
+report_dir = "reports"
+sentinel = ".pending"
+[prompt]
+template = "tmpl.md"
+require_ratification = true
+[[area]]
+name = "src"
+globs = ["src/**"]
+"#,
+    );
+    fs::write(repo.join("specguard.toml"), cfg).unwrap();
+}
+
+fn seed_src(repo: &Path) {
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/x.rs"), "//\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "x"]);
+}
+
+#[test]
+fn run_blocked_until_prompt_ratified_then_passes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src(repo);
+    write_ratify_config(repo, VALID_TMPL);
+
+    // Unratified prompt -> run is gated (exit 5), no report.
+    let blocked = run_specguard(repo, &base, &["run"]);
+    assert_eq!(blocked.status.code(), Some(5), "unratified prompt blocks run");
+    assert!(!repo.join("reports/2026-01-01.md").exists());
+
+    // Ratify with a rationale -> lock written, pinned to a canon commit.
+    let acc = run_specguard(repo, &base, &["accept-prompt", "-m", "initial policy ok"]);
+    assert!(acc.status.success(), "stderr: {}", String::from_utf8_lossy(&acc.stderr));
+    let lock = fs::read_to_string(repo.join(".specguard-prompt.lock")).unwrap();
+    assert!(lock.contains("audit_hash ="));
+    assert!(lock.contains("reason = \"initial policy ok\""));
+    assert!(lock.contains("canon_commit ="));
+
+    // Now the run proceeds.
+    let ok = run_specguard(repo, &base, &["run"]);
+    assert!(ok.status.success(), "stderr: {}", String::from_utf8_lossy(&ok.stderr));
+    assert!(repo.join("reports/2026-01-01.md").exists());
+}
+
+#[test]
+fn changed_prompt_reblocks_until_reratified() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src(repo);
+    write_ratify_config(repo, VALID_TMPL);
+    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "ok"]).status.success());
+    assert!(run_specguard(repo, &base, &["run"]).status.success());
+
+    // Edit the prompt (still contract-valid) -> fingerprint changes -> gated.
+    fs::write(repo.join("tmpl.md"), format!("{VALID_TMPL}\n<!-- policy tweak -->\n")).unwrap();
+    let blocked = run_specguard(repo, &base, &["run"]);
+    assert_eq!(blocked.status.code(), Some(5), "changed prompt re-blocks");
+
+    // Re-ratify -> passes again.
+    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "reviewed tweak"]).status.success());
+    assert!(run_specguard(repo, &base, &["run"]).status.success());
+}
+
+#[test]
+fn accept_prompt_refuses_contract_violating_template() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src(repo);
+    // Template missing {{MARKER}} -> contradicts the parser contract.
+    write_ratify_config(repo, "{{PROJECT_NAME}} {{DATE}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}\n");
+
+    let out = run_specguard(repo, &base, &["accept-prompt", "-m", "x"]);
+    assert_eq!(out.status.code(), Some(2), "contract violation refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("MARKER"), "names the missing placeholder: {stderr}");
+    assert!(!repo.join(".specguard-prompt.lock").exists(), "no lock on refusal");
+}
