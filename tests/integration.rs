@@ -397,3 +397,68 @@ fi"#;
     assert!(sentinel.contains("[alpha] alpha drift"), "sentinel:\n{sentinel}");
     assert!(sentinel.contains("[beta] beta drift"), "sentinel:\n{sentinel}");
 }
+
+// --- `specguard init`: scaffold config + Claude Code SessionStart hook. ---
+
+fn specguard_init(repo: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_specguard"))
+        .current_dir(repo)
+        .args(["--config", "specguard.toml", "init"])
+        .args(args)
+        .output()
+        .expect("init runs")
+}
+
+#[test]
+fn init_scaffolds_config_and_hook_idempotently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+
+    let out = specguard_init(repo, &[]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let cfg = fs::read_to_string(repo.join("specguard.toml")).unwrap();
+    assert!(cfg.contains("[[area]]"), "starter config scaffolded");
+
+    let settings = fs::read_to_string(repo.join(".claude/settings.json")).unwrap();
+    assert!(settings.contains("SessionStart"));
+    assert!(settings.contains(".specguard-pending"));
+    assert_eq!(settings.matches("\"matcher\"").count(), 1, "one hook group");
+
+    // Re-running init must not duplicate the hook nor clobber the config.
+    fs::write(repo.join("specguard.toml"), "name = \"edited\"\n").unwrap();
+    let out2 = specguard_init(repo, &[]);
+    assert!(out2.status.success());
+    let settings2 = fs::read_to_string(repo.join(".claude/settings.json")).unwrap();
+    assert_eq!(settings2.matches("\"matcher\"").count(), 1, "hook not duplicated");
+    assert_eq!(
+        fs::read_to_string(repo.join("specguard.toml")).unwrap(),
+        "name = \"edited\"\n",
+        "existing config not clobbered without --force"
+    );
+
+    // --force overwrites the config back to the example.
+    assert!(specguard_init(repo, &["--force"]).status.success());
+    assert!(fs::read_to_string(repo.join("specguard.toml")).unwrap().contains("[[area]]"));
+}
+
+#[test]
+fn init_preserves_existing_settings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    fs::create_dir_all(repo.join(".claude")).unwrap();
+    fs::write(
+        repo.join(".claude/settings.json"),
+        r#"{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[]}]}}"#,
+    )
+    .unwrap();
+
+    let out = specguard_init(repo, &[]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let s = fs::read_to_string(repo.join(".claude/settings.json")).unwrap();
+    assert!(s.contains("\"model\""), "unrelated keys preserved");
+    assert!(s.contains("PreToolUse"), "existing hooks preserved");
+    assert!(s.contains("SessionStart"), "our hook added");
+    assert!(s.contains(".specguard-pending"));
+}
