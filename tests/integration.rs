@@ -158,6 +158,25 @@ fn scope_subcommand_lists_in_scope_area() {
 }
 
 #[test]
+fn unresolvable_baseline_falls_back_to_all_tracked() {
+    // Young repo (1 commit) with a bogus baseline and a non-existent fallback:
+    // specguard should audit all tracked files instead of hard-erroring.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/x.rs"), "//\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "x"]);
+
+    write_config(repo, "unused");
+    let out = run_specguard(repo, "does-not-exist-ref", &["scope"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("- src"), "src area should be in scope via all-tracked fallback:\n{stdout}");
+}
+
+#[test]
 fn prompt_subcommand_renders_without_agent() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path();

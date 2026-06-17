@@ -51,24 +51,34 @@ pub fn resolve_baseline(cfg: &Config, override_ref: Option<&str>, last_ref: Opti
     cfg.scope.fallback_ref.clone()
 }
 
-/// Run `git diff --name-only <baseline>...HEAD` in `repo_root`. On failure
-/// (e.g. an invalid baseline), retry against `fallback` and report it rather
-/// than swallowing the error.
+/// Label used when the audit falls all the way back to "every tracked file"
+/// (a young/shallow repo where neither baseline nor fallback ref resolves).
+pub const ALL_TRACKED: &str = "(all tracked files)";
+
+/// Resolve the set of changed files via a 3-tier fallback so a first run on a
+/// young repo never hard-errors:
+///   1. the requested `baseline` (`baseline...HEAD`),
+///   2. the configured `fallback` ref,
+///   3. all tracked files (diff against the empty tree).
+///
+/// Returns (files, ref-actually-used, fell_back).
 pub fn changed_files(
     repo_root: &Path,
     baseline: &str,
     fallback: &str,
 ) -> Result<(Vec<String>, String, bool)> {
-    match git_diff_names(repo_root, baseline) {
-        Ok(files) => Ok((files, baseline.to_string(), false)),
-        Err(_) if fallback != baseline => {
-            let files = git_diff_names(repo_root, fallback).with_context(|| {
-                format!("git diff failed for baseline '{baseline}' and fallback '{fallback}'")
-            })?;
-            Ok((files, fallback.to_string(), true))
-        }
-        Err(e) => Err(e),
+    if let Ok(files) = git_diff_names(repo_root, baseline) {
+        return Ok((files, baseline.to_string(), false));
     }
+    if fallback != baseline {
+        if let Ok(files) = git_diff_names(repo_root, fallback) {
+            return Ok((files, fallback.to_string(), true));
+        }
+    }
+    let files = all_tracked_files(repo_root).with_context(|| {
+        format!("could not resolve baseline '{baseline}' or fallback '{fallback}', and listing all tracked files failed")
+    })?;
+    Ok((files, ALL_TRACKED.to_string(), true))
 }
 
 fn git_diff_names(repo_root: &Path, baseline: &str) -> Result<Vec<String>> {
@@ -86,11 +96,32 @@ fn git_diff_names(repo_root: &Path, baseline: &str) -> Result<Vec<String>> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
+    Ok(parse_name_list(&out.stdout))
+}
+
+/// All files tracked at HEAD. Used as the final fallback ("audit everything").
+fn all_tracked_files(repo_root: &Path) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["ls-tree", "-r", "--name-only", "HEAD"])
+        .output()
+        .context("spawning git ls-tree")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git ls-tree HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(parse_name_list(&out.stdout))
+}
+
+fn parse_name_list(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout)
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
-        .collect())
+        .collect()
 }
 
 /// Record HEAD of `repo_root`, used to advance the baseline after a run.
