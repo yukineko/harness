@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+Cargo.lock
+# specguard's own outputs when dogfooding
+/reports
+/.specguard-pending

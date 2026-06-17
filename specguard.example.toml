@@ -1,0 +1,70 @@
+# specguard.example.toml — fully documented sample config.
+# Copy to `specguard.toml` at your repo root and edit.
+#
+# Everything project-specific lives here so the binary stays generic. The audit
+# agent reads the canon files you point at; their *content* is never copied into
+# this file or the prompt (that would drift against the real canon).
+
+[project]
+name = "MyProject"
+# Repo root the audit runs against, relative to THIS file. Default ".".
+root = "."
+
+# How to invoke the read-only auditing agent. The rendered prompt is written to
+# its stdin; its stdout is captured as the report. Default (shown here) is the
+# Claude Code CLI with edit tools stripped — it still has Read/Grep/Glob/Bash so
+# it can open the canon and sample the implementation.
+[agent]
+command = "claude"
+args = [
+    "--print",
+    "--permission-mode", "bypassPermissions",
+    "--disallowedTools", "Edit", "Write", "NotebookEdit",
+    # add e.g. "--model", "claude-sonnet-4-6" to pin a model
+]
+
+[scope]
+# Explicit baseline ref. Leave empty to use the recorded .last-ref, then the
+# fallback. Overridden by --baseline / SPECGUARD_BASELINE_REF.
+baseline_ref = ""
+# Baseline for the very first run (no .last-ref yet).
+fallback_ref = "HEAD~20"
+
+[output]
+# Reports (`<date>.md`) and `.last-ref` go here, relative to repo root.
+report_dir = "reports/spec-audit"
+# Sentinel written when an audit finds something needing human review.
+sentinel = ".specguard-pending"
+
+[prompt]
+# Optional path (relative to this file) to a custom prompt template. Leave empty
+# to use the embedded default. Placeholders: {{PROJECT_NAME}} {{DATE}}
+# {{MARKER}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}.
+template = ""
+
+# --- Areas: change-triggered. An area is in scope when any file changed since
+# the baseline matches one of its globs. `canon` lists where the agent should
+# read the rules for this area (file paths or "file:section" pointers).
+
+[[area]]
+name = "backend"
+globs = ["src/server/**", "api/**"]
+canon = ["docs/architecture/api.md", "src/server/README.md"]
+
+[[area]]
+name = "frontend"
+globs = ["web/**"]
+canon = ["docs/architecture/frontend.md"]
+
+# --- Invariants: checked every run regardless of the diff. Use for the few
+# absolute rules that must never be broken anywhere.
+
+[[invariant]]
+name = "secrets path"
+description = "secrets are only read from the approved config path"
+canon = ["docs/architecture/config.md"]
+
+[[invariant]]
+name = "api namespace split"
+description = "endpoints stay within their declared namespace"
+canon = ["docs/architecture/api.md"]

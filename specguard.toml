@@ -1,0 +1,28 @@
+# Dogfood config: specguard auditing its own repo.
+[project]
+name = "specguard"
+root = "."
+
+[agent]
+command = "claude"
+args = ["--print", "--permission-mode", "bypassPermissions",
+        "--disallowedTools", "Edit", "Write", "NotebookEdit"]
+
+[output]
+report_dir = "reports/spec-audit"
+sentinel = ".specguard-pending"
+
+[[area]]
+name = "core"
+globs = ["src/**"]
+canon = ["README.md", "specguard.example.toml"]
+
+[[area]]
+name = "prompt"
+globs = ["templates/**"]
+canon = ["README.md"]
+
+[[invariant]]
+name = "marker contract"
+description = "prompt template marker token matches parse::MARKER"
+canon = ["src/parse.rs", "templates/audit-prompt.md"]
