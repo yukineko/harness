@@ -1,0 +1,235 @@
+//! Change-triggered scope resolution.
+//!
+//! The audit only looks at areas touched since a baseline ref (plus invariants,
+//! which run every time). This keeps each run cheap and bounded instead of
+//! re-auditing the whole tree. Git interaction is isolated in [`changed_files`]
+//! so the area-classification logic ([`classify`]) stays pure and unit-testable.
+
+use crate::config::{Area, Config};
+use anyhow::{Context, Result};
+use globset::{Glob, GlobSetBuilder};
+use std::path::Path;
+use std::process::Command;
+
+/// The resolved scope for one audit run.
+#[derive(Debug)]
+pub struct Scope {
+    /// The baseline ref actually used (after fallback resolution).
+    pub baseline: String,
+    /// Whether the configured/recorded baseline failed and we fell back.
+    pub fell_back: bool,
+    /// All files changed between `baseline` and HEAD.
+    pub changed_files: Vec<String>,
+    /// Indices into `config.areas` that are in scope, each with the changed
+    /// files that landed in it (for prompt context).
+    pub in_scope: Vec<AreaHit>,
+    /// Names of areas with no changed files (reported as explicitly skipped).
+    pub skipped_areas: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct AreaHit {
+    pub area_index: usize,
+    pub matched_files: Vec<String>,
+}
+
+/// Decide the baseline ref: explicit override > recorded last-ref > fallback.
+pub fn resolve_baseline(cfg: &Config, override_ref: Option<&str>, last_ref: Option<&str>) -> String {
+    if let Some(r) = override_ref {
+        if !r.trim().is_empty() {
+            return r.trim().to_string();
+        }
+    }
+    if !cfg.scope.baseline_ref.trim().is_empty() {
+        return cfg.scope.baseline_ref.trim().to_string();
+    }
+    if let Some(r) = last_ref {
+        if !r.trim().is_empty() {
+            return r.trim().to_string();
+        }
+    }
+    cfg.scope.fallback_ref.clone()
+}
+
+/// Run `git diff --name-only <baseline>...HEAD` in `repo_root`. On failure
+/// (e.g. an invalid baseline), retry against `fallback` and report it rather
+/// than swallowing the error.
+pub fn changed_files(
+    repo_root: &Path,
+    baseline: &str,
+    fallback: &str,
+) -> Result<(Vec<String>, String, bool)> {
+    match git_diff_names(repo_root, baseline) {
+        Ok(files) => Ok((files, baseline.to_string(), false)),
+        Err(_) if fallback != baseline => {
+            let files = git_diff_names(repo_root, fallback).with_context(|| {
+                format!("git diff failed for baseline '{baseline}' and fallback '{fallback}'")
+            })?;
+            Ok((files, fallback.to_string(), true))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn git_diff_names(repo_root: &Path, baseline: &str) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("diff")
+        .arg("--name-only")
+        .arg(format!("{baseline}...HEAD"))
+        .output()
+        .context("spawning git")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git diff {baseline}...HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+/// Record HEAD of `repo_root`, used to advance the baseline after a run.
+pub fn current_head(repo_root: &Path) -> Result<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .context("spawning git rev-parse")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Pure: map changed files onto configured areas. Returns (in-scope hits,
+/// skipped area names). An area is in scope iff any changed file matches its
+/// globs. Errors only on an invalid glob pattern in the config.
+pub fn classify(changed: &[String], areas: &[Area]) -> Result<(Vec<AreaHit>, Vec<String>)> {
+    let mut in_scope = Vec::new();
+    let mut skipped = Vec::new();
+
+    for (idx, area) in areas.iter().enumerate() {
+        let mut builder = GlobSetBuilder::new();
+        for g in &area.globs {
+            builder.add(
+                Glob::new(g).with_context(|| format!("invalid glob '{g}' in area '{}'", area.name))?,
+            );
+        }
+        let set = builder.build().context("building glob set")?;
+
+        let matched: Vec<String> = changed
+            .iter()
+            .filter(|f| set.is_match(f.as_str()))
+            .cloned()
+            .collect();
+
+        if matched.is_empty() {
+            skipped.push(area.name.clone());
+        } else {
+            in_scope.push(AreaHit {
+                area_index: idx,
+                matched_files: matched,
+            });
+        }
+    }
+    Ok((in_scope, skipped))
+}
+
+/// Full resolution: baseline -> diff -> classification.
+pub fn resolve(
+    cfg: &Config,
+    repo_root: &Path,
+    override_ref: Option<&str>,
+    last_ref: Option<&str>,
+) -> Result<Scope> {
+    let requested = resolve_baseline(cfg, override_ref, last_ref);
+    let (changed_files, baseline, fell_back) =
+        changed_files(repo_root, &requested, &cfg.scope.fallback_ref)?;
+    let (in_scope, skipped_areas) = classify(&changed_files, &cfg.areas)?;
+    Ok(Scope {
+        baseline,
+        fell_back,
+        changed_files,
+        in_scope,
+        skipped_areas,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Area;
+
+    fn area(name: &str, globs: &[&str]) -> Area {
+        Area {
+            name: name.to_string(),
+            globs: globs.iter().map(|s| s.to_string()).collect(),
+            canon: vec![],
+        }
+    }
+
+    #[test]
+    fn classify_matches_recursive_glob() {
+        let areas = vec![area("logging", &["aegis_logging/**"]), area("web", &["web/**"])];
+        let changed = vec![
+            "aegis_logging/signature.py".to_string(),
+            "aegis_logging/vector/cfg.toml".to_string(),
+            "README.md".to_string(),
+        ];
+        let (hits, skipped) = classify(&changed, &areas).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].area_index, 0);
+        assert_eq!(hits[0].matched_files.len(), 2);
+        assert_eq!(skipped, vec!["web".to_string()]);
+    }
+
+    #[test]
+    fn classify_empty_diff_skips_all() {
+        let areas = vec![area("a", &["a/**"])];
+        let (hits, skipped) = classify(&[], &areas).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(skipped, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn classify_multiple_globs_per_area() {
+        let areas = vec![area("api", &["admin/**", "web/api/**"])];
+        let changed = vec!["web/api/users.py".to_string()];
+        let (hits, _) = classify(&changed, &areas).unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn resolve_baseline_precedence() {
+        let mut cfg: Config = toml::from_str(
+            r#"
+            [project]
+            name = "x"
+            [[area]]
+            name = "a"
+            globs = ["a/**"]
+            "#,
+        )
+        .unwrap();
+        // override wins
+        assert_eq!(resolve_baseline(&cfg, Some("abc"), Some("zzz")), "abc");
+        // then config.baseline_ref
+        cfg.scope.baseline_ref = "cfgref".to_string();
+        assert_eq!(resolve_baseline(&cfg, None, Some("zzz")), "cfgref");
+        // then last_ref
+        cfg.scope.baseline_ref = "".to_string();
+        assert_eq!(resolve_baseline(&cfg, None, Some("zzz")), "zzz");
+        // then fallback
+        assert_eq!(resolve_baseline(&cfg, None, None), "HEAD~20");
+    }
+}
