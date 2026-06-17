@@ -25,7 +25,7 @@ use std::process::ExitCode;
 const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 2;
 const EXIT_NO_MARKER: u8 = 3;
-const EXIT_AGENT_FAILED: u8 = 4;
+const EXIT_AGENT_FAILED: u8 = 4; // fallback when the agent's own code can't be propagated
 
 #[derive(Parser)]
 #[command(name = "specguard", version, about = "Spec/implementation drift audit harness")]
@@ -133,7 +133,11 @@ fn run(cli: &Cli) -> Result<u8> {
             out.code,
             out.stderr.trim_end()
         );
-        return Ok(EXIT_AGENT_FAILED);
+        // Propagate the agent's own exit code (matches the reference runner's
+        // `exit $rc`) so the caller can see *why* it failed. Codes that can't be
+        // a process exit status (negative = killed by signal, or >255) fall back
+        // to EXIT_AGENT_FAILED.
+        return Ok(u8::try_from(out.code).unwrap_or(EXIT_AGENT_FAILED));
     }
 
     let parsed = parse::parse(&out.stdout);
