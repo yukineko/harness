@@ -1,0 +1,19 @@
+# specguard config for the parallel PoC — TWO disjoint areas, one file each, so
+# parallel worktree tasks never touch the same file (DESIGN.md §6).
+[project]
+name = "PoCParallel"
+root = "."
+
+[output]
+report_dir = "reports"
+sentinel = ".specguard-pending"
+
+[[area]]
+name = "clamp"
+globs = ["src/clamp.py"]
+canon = ["canon/clamp.md"]
+
+[[area]]
+name = "slug"
+globs = ["src/slug.py"]
+canon = ["canon/slug.md"]
