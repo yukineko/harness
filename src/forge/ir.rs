@@ -73,10 +73,53 @@ pub struct AgentDraft {
 }
 
 impl AgentDraft {
-    /// Parse the agent's body (TOML `[[requirement]]` tables).
+    /// Parse the agent's body (TOML `[[requirement]]` tables). Real models often
+    /// prepend reasoning prose despite the "TOML only" instruction, so we first
+    /// EXTRACT the requirement TOML rather than parse the whole body verbatim
+    /// (see [`extract_requirement_toml`]).
     pub fn parse(body: &str) -> Result<AgentDraft, toml::de::Error> {
-        toml::from_str(body)
+        toml::from_str(&extract_requirement_toml(body))
     }
+}
+
+/// Pull the requirement TOML out of the agent's report body, tolerating a prose
+/// preamble. Priority: (1) a fenced ```` ```toml ```` block that declares a
+/// `[[requirement]]`; (2) a slice from the first `[[requirement]]` line to the
+/// end (bare TOML after prose); (3) the whole body unchanged (back-compat with
+/// bare-TOML output, and so a genuinely malformed body still yields a TOML error).
+pub fn extract_requirement_toml(body: &str) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+
+    // (1) Fenced code blocks — prefer one containing a requirement table.
+    let mut i = 0;
+    let mut fenced: Vec<String> = Vec::new();
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            i += 1;
+            let mut block = String::new();
+            while i < lines.len() && !lines[i].trim_start().starts_with("```") {
+                block.push_str(lines[i]);
+                block.push('\n');
+                i += 1;
+            }
+            fenced.push(block);
+        }
+        i += 1;
+    }
+    if let Some(b) = fenced.iter().find(|b| b.contains("[[requirement]]")) {
+        return b.clone();
+    }
+
+    // (2) No fence: take everything from the first requirement table onward.
+    if let Some(pos) = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("[[requirement]]"))
+    {
+        return lines[pos..].join("\n");
+    }
+
+    // (3) Give up gracefully — let the caller's TOML parse report the error.
+    body.to_string()
 }
 
 impl Spec {
@@ -180,6 +223,35 @@ falsifiable = true
         let d = AgentDraft::parse(body).unwrap();
         assert_eq!(d.requirements.len(), 1);
         assert_eq!(d.requirements[0].acceptance.len(), 2);
+    }
+
+    #[test]
+    fn parses_despite_prose_preamble_and_fence() {
+        // What real models actually emit: reasoning prose, then a ```toml fence.
+        let body = "canon を読みました。全ゲートを判定します。\n\n```toml\n\
+                    [[requirement]]\n\
+                    id = \"R1\"\n\
+                    statement = \"clamp\"\n\
+                    acceptance = [\"n<0 -> 0\"]\n\
+                    canon = [\"canon/clamp.md\"]\n\
+                    falsifiable = true\n```\nおわり。";
+        let d = AgentDraft::parse(body).unwrap();
+        assert_eq!(d.requirements.len(), 1);
+        assert_eq!(d.requirements[0].id, "R1");
+    }
+
+    #[test]
+    fn parses_prose_then_bare_toml_without_fence() {
+        let body = "判定: 全て pass。\n[[requirement]]\nid = \"R1\"\n\
+                    statement = \"x\"\nacceptance = [\"a\"]\ncanon = [\"c\"]\nfalsifiable = true";
+        let d = AgentDraft::parse(body).unwrap();
+        assert_eq!(d.requirements.len(), 1);
+    }
+
+    #[test]
+    fn extract_falls_back_to_whole_body_when_no_toml() {
+        // No requirement table anywhere -> body returned as-is -> TOML error.
+        assert!(AgentDraft::parse("just prose, no spec").is_err());
     }
 
     #[test]
