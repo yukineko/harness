@@ -7,6 +7,10 @@
 #   ./run-poc.sh         # full real loop (calls `claude` — costs tokens)
 #   ./run-poc.sh --dry   # wiring smoke test: scaffold + render prompts + resolve
 #                        # scope, NO agent calls, NO tokens.
+#   ./run-poc.sh --drift # seed an intentional drift instead of the initial impl,
+#                        # to exercise the ⑥→差し戻し→⑤ recovery path (the loop's
+#                        # core claim: the audit catches drift and the loop fixes
+#                        # it). Calls `claude` for the audit + the fix.
 #
 # The deterministic harness (scope, prompts, gates, convergence control) is this
 # script + the two binaries; the judgment (normalize, implement, audit) is the
@@ -14,7 +18,13 @@
 set -euo pipefail
 
 DRY=0
-[ "${1:-}" = "--dry" ] && DRY=1
+DRIFT=0
+case "${1:-}" in
+  --dry) DRY=1 ;;
+  --drift) DRIFT=1 ;;
+  "") ;;
+  *) echo "unknown arg: $1 (use --dry or --drift)" >&2; exit 2 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -85,11 +95,32 @@ echo "== ③ specforge ratify =="
 "$SF" --config specforge.toml --date "$DATE" ratify --id "$ID" \
   -m "PoC: acceptance criteria reviewed and accepted"
 
-# --- ④⑤ implement (agent, write-enabled) -----------------------------------
-echo "== ④⑤ implement (agent) =="
-cat "$SCRIPT_DIR/impl-prompt.md" | impl_agent
-git add -A
-git commit -qm "impl: clamp_score" || { echo "❌ impl produced no changes" >&2; exit 1; }
+# --- ④⑤ implement -----------------------------------------------------------
+if [ "$DRIFT" = 1 ]; then
+  # Seed a deliberately wrong implementation: clamps to 0..99, violating canon
+  # R-HIGH (n>100 -> 100) and R-MID (100 unchanged). The audit must catch this
+  # and the recovery loop must fix it. (This tests the harness's recovery path,
+  # not the agent's first-pass accuracy.)
+  echo "== ④⑤ SEED intentional drift (clamps to 0..99 — violates R-HIGH/R-MID) =="
+  cat > src/clamp.py <<'PY'
+"""WRONG ON PURPOSE: clamps to 0..99, drifting from canon/clamp.md."""
+
+
+def clamp_score(n):
+    if n < 0:
+        return 0
+    if n > 99:
+        return 99
+    return n
+PY
+  git add -A
+  git commit -qm "impl: seeded drift (clamps to 0..99)"
+else
+  echo "== ④⑤ implement (agent, write-enabled) =="
+  cat "$SCRIPT_DIR/impl-prompt.md" | impl_agent
+  git add -A
+  git commit -qm "impl: clamp_score" || { echo "❌ impl produced no changes" >&2; exit 1; }
+fi
 echo "-- implementation --"; cat src/clamp.py 2>/dev/null || echo "(no src/clamp.py!)"
 
 # --- ⑥ audit + 差し戻し loop (real agent) ----------------------------------
