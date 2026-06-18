@@ -60,7 +60,9 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
   (exit 5)。人間が内容を確認し `specguard accept-prompt -m "理由"` で批准すると、契約チェック
   (必須 placeholder) を通った上で fingerprint・canon commit・理由が pin される。**同意が正典
   たる権威を与え**、「番人を誰が見張る」の無限後退を止める。prompt は read-only + HOTL ゆえ
-  *object 正典の権威にはならない* (findings を出すだけで canon を書き換えない)。
+  *object 正典の権威にはならない* (findings を出すだけで canon を書き換えない)。検証ゲート
+  (`[verify]`) のテンプレも同じ lock に乗るが、**有効なゲートのときだけ** pin/照合される
+  (scoped consent: ゲートを後から有効化すると再批准を強制。詳細は DESIGN-VERIFY.md §7)。
 
 監査の 3 次元（**分類・verdict 語彙・規律の正典は監査プロンプト
 `templates/audit-prompt.md` / `templates/decisions-prompt.md`**。ここでは概要のみ。重複を避け
@@ -71,6 +73,13 @@ templates/  ──────┼──▶ プロンプト描画 ──▶ agent
   記録 (`specguard decide`) し、決定が指す canon が今も一致するか (鮮度) と、決定の
   driver/review_when が今も成立するか (陳腐化＝理由より長生きした規則) を照合する。
   決定ログは *証拠* であって権威ではなく、canon が常に正 (`[decisions]` で有効化)。
+
+監査が出した findings を額面で信じず、独立 agent で **反証** (偽陽性除去) し **網羅性批評**
+(偽陰性発掘) してから人間に上げる *検証ゲート* は `[verify]` で有効化する (既定 OFF)。
+設計と不変条件は **[DESIGN-VERIFY.md](DESIGN-VERIFY.md)**。`enabled` = V1 反証 (各
+`needs_user=yes` finding を独立 skeptic が逐語引用で覆せたときだけ取り下げ)、`completeness`
+= V2 網羅性批評 (サンプリング監査が照合し損ねた canon ルールを発掘)。§8 のとおり**両方を
+併せて**有効化するのを推奨 (反証だけだと偽陰性に偏る)。
 
 ## インストール
 

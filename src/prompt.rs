@@ -17,6 +17,12 @@ pub const DEFAULT_TEMPLATE: &str = include_str!("../templates/audit-prompt.md");
 /// The embedded D3 (decision freshness/obsolescence) template.
 pub const DECISIONS_TEMPLATE: &str = include_str!("../templates/decisions-prompt.md");
 
+/// The embedded V1 (adversarial verification / refute) template.
+pub const REFUTE_TEMPLATE: &str = include_str!("../templates/refute-prompt.md");
+
+/// The embedded V2 (completeness critique) template.
+pub const COMPLETENESS_TEMPLATE: &str = include_str!("../templates/completeness-prompt.md");
+
 /// Maximum number of sample changed files listed per area in the prompt.
 const MAX_SAMPLE_FILES: usize = 12;
 
@@ -38,6 +44,26 @@ pub const DECISIONS_PLACEHOLDERS: &[&str] = &[
     "{{MARKER}}",
     "{{DECISIONS}}",
     "{{INSCOPE_CANON}}",
+];
+
+/// Placeholders the V1 refute template must contain — contract-checked at
+/// ratification when the refute gate is active (DESIGN-VERIFY.md §7).
+pub const REFUTE_PLACEHOLDERS: &[&str] = &[
+    "{{PROJECT_NAME}}",
+    "{{DATE}}",
+    "{{MARKER}}",
+    "{{CANON}}",
+    "{{FINDINGS}}",
+];
+
+/// Placeholders the V2 completeness template must contain — contract-checked at
+/// ratification when the completeness gate is active (DESIGN-VERIFY.md §7).
+pub const COMPLETENESS_PLACEHOLDERS: &[&str] = &[
+    "{{PROJECT_NAME}}",
+    "{{DATE}}",
+    "{{MARKER}}",
+    "{{CANON}}",
+    "{{SHARD}}",
 ];
 
 /// Required placeholders missing from `template` — a non-empty result means the
@@ -170,6 +196,81 @@ fn render_decisions(cfg: &Config, scope: &Scope, date: &str) -> String {
         .replace("{{MARKER}}", MARKER)
         .replace("{{DECISIONS}}", &decisions)
         .replace("{{INSCOPE_CANON}}", &inscope_canon)
+}
+
+/// Canon pointers backing a shard, as a markdown bullet list (pointers only —
+/// the content is never copied; the verifying agent reads the live canon). Used
+/// by the verification gates (refute / completeness) which need the same canon a
+/// shard was audited against. An area shard carries its area's canon; the
+/// invariant shard the union of invariant canon; the decisions shard the
+/// in-scope canon it cross-references.
+fn shard_canon_block(cfg: &Config, scope: &Scope, shard: Shard) -> String {
+    let mut canon: Vec<String> = Vec::new();
+    let mut push = |c: &String| {
+        if !canon.contains(c) {
+            canon.push(c.clone());
+        }
+    };
+    match shard {
+        Shard::Area(i) => {
+            for c in &cfg.areas[scope.in_scope[i].area_index].canon {
+                push(c);
+            }
+        }
+        Shard::Invariants => {
+            for inv in &cfg.invariants {
+                for c in &inv.canon {
+                    push(c);
+                }
+            }
+        }
+        Shard::Decisions => {
+            for hit in &scope.in_scope {
+                for c in &cfg.areas[hit.area_index].canon {
+                    push(c);
+                }
+            }
+            for inv in &cfg.invariants {
+                for c in &inv.canon {
+                    push(c);
+                }
+            }
+        }
+    }
+    if canon.is_empty() {
+        "- (canon ポインタ指定なし — プロジェクト横断の正典を参照)\n".to_string()
+    } else {
+        canon.iter().map(|c| format!("- `{c}`\n")).collect()
+    }
+}
+
+/// Render the V1 refute prompt for one shard: the shard's canon pointers plus the
+/// audit's findings body (the agent re-derives each `needs_user=yes` finding and
+/// drops only those it can refute with a verbatim quote).
+pub fn render_refute(
+    cfg: &Config,
+    scope: &Scope,
+    shard: Shard,
+    date: &str,
+    findings: &str,
+) -> String {
+    REFUTE_TEMPLATE
+        .replace("{{PROJECT_NAME}}", &cfg.project.name)
+        .replace("{{DATE}}", date)
+        .replace("{{MARKER}}", MARKER)
+        .replace("{{CANON}}", &shard_canon_block(cfg, scope, shard))
+        .replace("{{FINDINGS}}", findings.trim())
+}
+
+/// Render the V2 completeness prompt for one shard: the shard's canon pointers so
+/// the agent can list verifiable rules the sampling audit never matched.
+pub fn render_completeness(cfg: &Config, scope: &Scope, shard: Shard, date: &str) -> String {
+    COMPLETENESS_TEMPLATE
+        .replace("{{PROJECT_NAME}}", &cfg.project.name)
+        .replace("{{DATE}}", date)
+        .replace("{{MARKER}}", MARKER)
+        .replace("{{CANON}}", &shard_canon_block(cfg, scope, shard))
+        .replace("{{SHARD}}", &shard_label(cfg, scope, shard))
 }
 
 /// Scope summary for a single shard: the overall baseline, but a target scoped
@@ -364,6 +465,39 @@ mod tests {
         assert!(out.contains("不変条件を扱わない"));
         // No unsubstituted placeholders remain.
         assert!(!out.contains("{{"));
+    }
+
+    #[test]
+    fn refute_prompt_carries_canon_findings_and_no_placeholders() {
+        let cfg = sample_cfg();
+        let scope = sample_scope();
+        let out = render_refute(
+            &cfg,
+            &scope,
+            Shard::Area(0),
+            "2026-06-17",
+            "| rule | quote | verdict 矛盾 | needs_user yes |",
+        );
+        assert!(out.contains("反証監査"), "is the refute prompt");
+        assert!(out.contains("logging/SPEC.md"), "the area's canon pointer");
+        assert!(out.contains("verdict 矛盾"), "the audit findings injected");
+        assert!(out.contains(MARKER));
+        assert!(!out.contains("{{"));
+        // Contract: every required placeholder was substituted.
+        assert!(missing_placeholders(REFUTE_TEMPLATE, REFUTE_PLACEHOLDERS).is_empty());
+    }
+
+    #[test]
+    fn completeness_prompt_carries_canon_and_shard_label() {
+        let cfg = sample_cfg();
+        let scope = sample_scope();
+        let out = render_completeness(&cfg, &scope, Shard::Area(0), "2026-06-17");
+        assert!(out.contains("網羅性批評"), "is the completeness prompt");
+        assert!(out.contains("logging"), "names the shard");
+        assert!(out.contains("logging/SPEC.md"), "the area's canon pointer");
+        assert!(out.contains(MARKER));
+        assert!(!out.contains("{{"));
+        assert!(missing_placeholders(COMPLETENESS_TEMPLATE, COMPLETENESS_PLACEHOLDERS).is_empty());
     }
 
     #[test]

@@ -66,6 +66,29 @@ template = ""
 # reason to .specguard-prompt.lock). Commit that lock file.
 require_ratification = false
 
+[verify]
+# Verification gates over the audit's findings (DESIGN-VERIFY.md). Both default
+# OFF — each adds extra read-only agent calls (same allowlist as the audit).
+#
+# V1 refute: re-derive every `needs_user=yes` finding with an INDEPENDENT skeptic
+# and drop only those refuted by a verbatim canon quote. Uncertain findings are
+# KEPT — this removes false positives (wasted `ack`s) without ever silently
+# deleting real drift. Cost scales with the number of flagged findings (a clean
+# audit costs nothing extra).
+enabled = false
+# V2 completeness: a separate critic surfaces verifiable canon rules the sampling
+# audit never matched against the implementation (false negatives). Runs per
+# area/invariant shard, independently of `enabled`.
+#
+# DESIGN-VERIFY.md §8: prefer enabling BOTH together. `enabled` alone (refute with
+# no completeness) only ever REMOVES findings, compounding the audit's built-in
+# "under-claim when unsure" bias toward false negatives; completeness counters it.
+completeness = false
+# Ratification note: when [prompt].require_ratification = true, turning either gate
+# ON makes its prompt template active meta-canon, so `run` is blocked until you
+# re-run `accept-prompt` (scoped consent — you ratify the verify policy you just
+# activated). A gate left OFF is never asked to ratify. See DESIGN-VERIFY.md §7.
+
 # --- Areas: change-triggered. An area is in scope when any file changed since
 # the baseline matches one of its globs. `canon` lists where the agent should
 # read the rules for this area (file paths or "file:section" pointers).

@@ -564,6 +564,170 @@ canon = ["docs/spec.md"]
     assert!(report.contains("D3 audit"), "D3 body merged:\n{report}");
 }
 
+// --- Verification gates: V1 refute (false positives) + V2 completeness
+//     (false negatives). See DESIGN-VERIFY.md. ---
+
+/// Config with a single `src` area, a content-sensitive fake agent (routes on the
+/// prompt kind: audit / refute / completeness), and a `[verify]` table.
+fn write_verify_config(repo: &Path, script: &str, verify_toml: &str) {
+    let cfg = format!(
+        r#"
+[project]
+name = "Demo"
+root = "."
+[agent]
+command = "bash"
+args = ["-c", {script:?}]
+[output]
+report_dir = "reports"
+sentinel = ".pending"
+{verify_toml}
+[[area]]
+name = "src"
+globs = ["src/**"]
+canon = ["docs/spec.md"]
+"#,
+    );
+    fs::write(repo.join("specguard.toml"), cfg).unwrap();
+}
+
+fn seed_src_area(repo: &Path) {
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/main.rs").as_path(), "fn main() {}\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "add src"]);
+}
+
+#[test]
+fn refute_drops_false_positive_and_clears_sentinel() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src_area(repo);
+
+    // Audit flags a finding; the skeptic refutes it -> post-verify clean.
+    let script = r#"input=$(cat)
+if printf '%s' "$input" | grep -q '反証監査'; then
+  printf '## 反証結果\nDROP: 引用が verdict を支持せず\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし\n'
+else
+  printf '# audit\n\nD1 finding X\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift X\n'
+fi"#;
+    write_verify_config(repo, script, "[verify]\nenabled = true");
+
+    let out = run_specguard(repo, &base, &["run"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
+    // Transparency: both the original finding and the refutation are present.
+    assert!(report.contains("D1 finding X"), "original finding kept in report:\n{report}");
+    assert!(report.contains("反証 (verify)"), "refutation section present");
+    assert!(report.contains("引用が verdict を支持せず"));
+    // Refuted away -> no sentinel, and a fully clean run advances the baseline.
+    assert!(!repo.join(".pending").exists(), "false positive refuted -> no sentinel");
+    assert!(repo.join("reports/.last-ref").exists(), "clean post-verify advances baseline");
+}
+
+#[test]
+fn refute_keeps_upheld_finding_and_raises_sentinel() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src_area(repo);
+
+    // The skeptic upholds the finding -> it survives to the human.
+    let script = r#"input=$(cat)
+if printf '%s' "$input" | grep -q '反証監査'; then
+  printf '## 反証結果\nKEEP: 逐語引用で覆せない\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift X 確定\n'
+else
+  printf '# audit\n\nD1 finding X\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift X\n'
+fi"#;
+    write_verify_config(repo, script, "[verify]\nenabled = true");
+
+    let out = run_specguard(repo, &base, &["run"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
+    // Post-verify summary takes over from the audit's.
+    assert!(sentinel.contains("summary: drift X 確定"), "sentinel:\n{sentinel}");
+    assert!(!repo.join("reports/.last-ref").exists(), "findings hold the baseline");
+}
+
+#[test]
+fn inconclusive_refute_keeps_findings_failsafe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src_area(repo);
+
+    // The skeptic fails (nonzero exit, no marker) on the refute pass only; the
+    // audit pass succeeds. A broken verifier must NOT drop the finding.
+    let script = r#"input=$(cat)
+if printf '%s' "$input" | grep -q '反証監査'; then
+  printf 'skeptic crashed\n' >&2; exit 1
+else
+  printf '# audit\n\nD1 finding X\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift X\n'
+fi"#;
+    write_verify_config(repo, script, "[verify]\nenabled = true");
+
+    let out = run_specguard(repo, &base, &["run"]);
+    // The run still succeeds (verify failure is non-fatal) and keeps the finding.
+    assert!(out.status.success(), "verify failure must not abort the run; stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(repo.join(".pending").exists(), "fail-safe: finding kept -> sentinel raised");
+    let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
+    assert!(report.contains("反証不能"), "inconclusive annotated:\n{report}");
+}
+
+#[test]
+fn completeness_surfaces_missed_rule_on_clean_audit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src_area(repo);
+
+    // Audit is clean, but the completeness critic finds an unmatched canon rule.
+    let script = r#"input=$(cat)
+if printf '%s' "$input" | grep -q '網羅性批評'; then
+  printf '## 網羅性批評\n未照合ルール R5\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: R5 未照合\n'
+else
+  printf '# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし\n'
+fi"#;
+    write_verify_config(repo, script, "[verify]\ncompleteness = true");
+
+    let out = run_specguard(repo, &base, &["run"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
+    assert!(report.contains("## shard: completeness:src"), "critic shard merged:\n{report}");
+    assert!(report.contains("未照合ルール R5"));
+    let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
+    assert!(sentinel.contains("R5 未照合"), "missed rule raises the sentinel:\n{sentinel}");
+    assert!(!repo.join("reports/.last-ref").exists(), "held while sentinel pending");
+}
+
+#[test]
+fn verify_off_by_default_is_a_noop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src_area(repo);
+
+    // No [verify] table -> neither gate runs. The agent should be asked exactly
+    // once (the audit); a refute/completeness prompt would route to a crash.
+    let script = r#"input=$(cat)
+if printf '%s' "$input" | grep -qE '反証監査|網羅性批評'; then
+  printf 'verify ran but should not have\n' >&2; exit 1
+else
+  printf '# audit\n\nfinding\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift\n'
+fi"#;
+    write_verify_config(repo, script, "");
+
+    let out = run_specguard(repo, &base, &["run"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
+    assert!(!report.contains("反証 (verify)"), "no verify section when off");
+    assert!(repo.join(".pending").exists());
+}
+
 // --- Prompt ratification gate (meta-canon acceptance). ---
 
 /// A minimal but contract-valid custom audit template (all required placeholders).
@@ -663,4 +827,76 @@ fn accept_prompt_refuses_contract_violating_template() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("MARKER"), "names the missing placeholder: {stderr}");
     assert!(!repo.join(".specguard-prompt.lock").exists(), "no lock on refusal");
+}
+
+/// Ratify config with an extra `[verify]` table injected verbatim.
+fn write_ratify_config_with(repo: &Path, template_body: &str, verify_toml: &str) {
+    fs::write(repo.join("tmpl.md"), template_body).unwrap();
+    let agent = "# clean\\n\\n<<<SPEC_AUDIT>>>\\nneeds_user: no\\nsummary: なし";
+    let script = format!("cat >/dev/null; printf '{agent}\\n'");
+    let cfg = format!(
+        r#"
+[project]
+name = "Demo"
+root = "."
+[agent]
+command = "bash"
+args = ["-c", {script:?}]
+[output]
+report_dir = "reports"
+sentinel = ".pending"
+[prompt]
+template = "tmpl.md"
+require_ratification = true
+{verify_toml}
+[[area]]
+name = "src"
+globs = ["src/**"]
+"#,
+    );
+    fs::write(repo.join("specguard.toml"), cfg).unwrap();
+}
+
+#[test]
+fn enabling_verify_gate_forces_reratification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src(repo);
+
+    // 1. Ratify with verify OFF -> audit-only consent; the refute slot stays empty.
+    write_ratify_config_with(repo, VALID_TMPL, "");
+    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "audit only"]).status.success());
+    assert!(run_specguard(repo, &base, &["run"]).status.success());
+    let lock = fs::read_to_string(repo.join(".specguard-prompt.lock")).unwrap();
+    assert!(lock.contains("refute_hash = \"\""), "refute unpinned while gate off:\n{lock}");
+
+    // 2. Turn the refute gate ON -> the now-active policy was never ratified -> blocked.
+    write_ratify_config_with(repo, VALID_TMPL, "[verify]\nenabled = true");
+    let blocked = run_specguard(repo, &base, &["run"]);
+    assert_eq!(blocked.status.code(), Some(5), "enabling verify re-blocks until ratified");
+    let stderr = String::from_utf8_lossy(&blocked.stderr);
+    assert!(stderr.contains("refute-prompt"), "names the unratified verify policy: {stderr}");
+
+    // 3. Re-ratify (now pins the refute policy) -> run passes again.
+    let acc = run_specguard(repo, &base, &["accept-prompt", "-m", "reviewed refute policy"]);
+    assert!(acc.status.success(), "stderr: {}", String::from_utf8_lossy(&acc.stderr));
+    let lock2 = fs::read_to_string(repo.join(".specguard-prompt.lock")).unwrap();
+    assert!(!lock2.contains("refute_hash = \"\""), "refute now pinned:\n{lock2}");
+    assert!(run_specguard(repo, &base, &["run"]).status.success());
+}
+
+#[test]
+fn audit_only_project_never_asked_to_ratify_verify() {
+    // A project that never enables verify must not be re-blocked by the new
+    // policy surface (backward compatibility / no inert-policy gating).
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    seed_src(repo);
+    write_ratify_config_with(repo, VALID_TMPL, "");
+    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "ok"]).status.success());
+    // Repeated runs stay green with no verify table present.
+    assert!(run_specguard(repo, &base, &["run"]).status.success());
+    assert!(run_specguard(repo, &base, &["run"]).status.success());
 }

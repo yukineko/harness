@@ -24,6 +24,8 @@ pub struct Config {
     pub prompt: PromptConfig,
     #[serde(default)]
     pub decisions: DecisionsConfig,
+    #[serde(default)]
+    pub verify: VerifyConfig,
     /// Change-triggered audit areas. An area is in-scope when at least one
     /// changed file (since the baseline) matches one of its globs.
     #[serde(default, rename = "area")]
@@ -146,6 +148,25 @@ pub struct PromptConfig {
     /// changed since (or was never) ratified via `specguard accept-prompt`.
     #[serde(default)]
     pub require_ratification: bool,
+}
+
+/// Verification gates over the audit's findings (see DESIGN-VERIFY.md). Both
+/// default OFF: verification is an explicit opt-in that adds extra agent calls.
+/// DESIGN-VERIFY.md §8 recommends enabling BOTH together — `enabled` alone
+/// (refute without completeness) biases toward false negatives.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyConfig {
+    /// V1 adversarial verification: re-derive each `needs_user=yes` finding with
+    /// an independent skeptic and drop only those refuted by a verbatim quote
+    /// (removes false positives; uncertain findings are kept).
+    #[serde(default)]
+    pub enabled: bool,
+    /// V2 completeness critique: a separate agent surfaces verifiable canon rules
+    /// the sampling audit never matched against the implementation (false
+    /// negatives). Runs independently of `enabled`.
+    #[serde(default)]
+    pub completeness: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
