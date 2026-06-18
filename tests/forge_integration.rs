@@ -97,6 +97,58 @@ fn rigor_pass_writes_draft_no_sentinel() {
     assert!(!repo.join(".forge-pending").exists(), "no sentinel on clean rigor");
 }
 
+/// What a REAL model actually emits (the staged-C PoC surfaced this): a reasoning
+/// preamble, then the requirement TOML inside a ```toml fence, then the trailer.
+/// The earlier fake (`GOOD_DRAFT`) emitted bare clean TOML, so the harness's
+/// whole-body `toml::from_str` looked fine in tests yet failed on the real agent.
+const REALISTIC_DRAFT: &str = r#"canon/clamp.md を読みました。全決定点 (下限・上限・中間・型) が
+確定しており、各ゲートを判定します。G1 接地 OK / G2 沈黙なし / G3 矛盾なし / G4 反証可能。
+
+```toml
+[[requirement]]
+id = "R1"
+statement = "clamp_score(n) は入力を閉区間 0..=100 にクランプする"
+acceptance = ["n<0 は 0", "n>100 は 100", "0..=100 は n のまま", "戻り値は int"]
+canon = ["canon/clamp.md"]
+falsifiable = true
+```
+
+以上で全 requirement が G1–G4 を満たすため draft を出します。
+
+<<<SPEC_DRAFT>>>
+rigor: pass
+needs_user: no
+summary: clamp_score を1要求に正規化"#;
+
+#[test]
+fn rigor_pass_extracts_toml_from_prose_and_fence() {
+    // Regression for the bug the PoC found: the draft path must extract the
+    // requirement TOML out of a prose+fence body, not parse the whole body.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+    write_config(repo, REALISTIC_DRAFT);
+    fs::write(repo.join("req.md"), "スコアを範囲に収めたい\n").unwrap();
+
+    let out = forge(
+        repo,
+        &["draft", "--id", "clamp", "--req", "req.md", "--canon", "canon/clamp.md"],
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let spec = fs::read_to_string(repo.join("specs/clamp.toml")).unwrap();
+    assert!(spec.contains("status = \"draft\""), "draft written:\n{spec}");
+    assert!(spec.contains("id = \"R1\""));
+    assert!(spec.contains("clamp_score"));
+    assert!(spec.contains("falsifiable = true"));
+    // The extraction worked, not just "didn't crash": neither the prose preamble
+    // nor the fence markers leak into the persisted spec.
+    assert!(!spec.contains("読みました"), "prose preamble must not leak:\n{spec}");
+    assert!(!spec.contains("```"), "fence markers must not leak:\n{spec}");
+    assert!(!spec.contains("<<<SPEC_DRAFT>>>"), "trailer must not leak");
+    assert!(!repo.join(".forge-pending").exists(), "clean rigor -> no sentinel");
+}
+
 #[test]
 fn rigor_fail_raises_sentinel_and_writes_no_draft() {
     let tmp = tempfile::tempdir().unwrap();
