@@ -51,8 +51,10 @@ acceptance criteria** を与えます。
 
 ## A. 全 requirement が G1–G4 を満たせる場合 → draft を出す
 
-レポート本文として、**`[[requirement]]` の TOML だけ** を出力します ([spec] ヘッダは
-ハーネスが付けるので書かないこと)。各 requirement は次の形:
+レポート本文に、`[[requirement]]` の TOML を **必ず ```toml フェンスで囲って** 出力します
+([spec] ヘッダはハーネスが付けるので書かないこと)。フェンスの前に短い判定理由を書いて
+構いませんが、**requirement 本体は必ずフェンス内に** 入れること (ハーネスはフェンス内を
+抽出します)。各 requirement は次の形:
 
 ```toml
 [[requirement]]
