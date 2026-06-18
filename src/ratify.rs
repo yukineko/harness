@@ -37,6 +37,15 @@ pub fn lock_path(repo_root: &Path) -> PathBuf {
 pub struct Lock {
     pub audit_hash: String,
     pub decisions_hash: String,
+    /// V1 refute template fingerprint. `default` for backward compatibility with
+    /// locks written before the verification gates existed: an old lock simply
+    /// has no refute policy pinned, so it only re-blocks once the refute gate is
+    /// turned on (see [`drifted`]).
+    #[serde(default)]
+    pub refute_hash: String,
+    /// V2 completeness template fingerprint (same backward-compat note).
+    #[serde(default)]
+    pub completeness_hash: String,
     #[serde(default)]
     pub canon_commit: String,
     #[serde(default)]
@@ -45,17 +54,29 @@ pub struct Lock {
     pub reason: String,
 }
 
+/// The fingerprints of the four prompt templates (meta-canon) at ratification or
+/// check time. The verify hashes are empty when their gate is inactive — consent
+/// is scoped to the policy surface that is actually live.
+pub struct TemplateHashes {
+    pub audit: String,
+    pub decisions: String,
+    pub refute: String,
+    pub completeness: String,
+}
+
 /// Read the ratification lock, if present and parseable.
 pub fn read_lock(repo_root: &Path) -> Option<Lock> {
     let text = std::fs::read_to_string(lock_path(repo_root)).ok()?;
     toml::from_str(&text).ok()
 }
 
-/// Write (or overwrite) the lock — the act of ratification.
+/// Write (or overwrite) the lock — the act of ratification. The verify hashes in
+/// `h` are empty when their gate is inactive, so consent is pinned only for the
+/// live policy surface; activating a gate later leaves its slot empty and forces
+/// a fresh ratification (see [`drifted`]).
 pub fn write_lock(
     repo_root: &Path,
-    audit_hash: &str,
-    decisions_hash: &str,
+    h: &TemplateHashes,
     canon_commit: &str,
     date: &str,
     reason: &str,
@@ -64,27 +85,46 @@ pub fn write_lock(
     let reason_esc = reason.replace('\\', "\\\\").replace('"', "\\\"");
     let body = format!(
         "# specguard prompt ratification lock.\n\
-         # The prompt templates are meta-canon (the audit policy). This file pins\n\
-         # the version a human ratified, with the reason. Regenerate via\n\
-         # `specguard accept-prompt`. Commit this file.\n\
-         audit_hash = \"{audit_hash}\"\n\
-         decisions_hash = \"{decisions_hash}\"\n\
+         # The prompt templates are meta-canon (the audit + verification policy).\n\
+         # This file pins the version a human ratified, with the reason. The\n\
+         # refute/completeness hashes are pinned only when their [verify] gate is\n\
+         # on. Regenerate via `specguard accept-prompt`. Commit this file.\n\
+         audit_hash = \"{}\"\n\
+         decisions_hash = \"{}\"\n\
+         refute_hash = \"{}\"\n\
+         completeness_hash = \"{}\"\n\
          canon_commit = \"{canon_commit}\"\n\
          date = \"{date}\"\n\
-         reason = \"{reason_esc}\"\n"
+         reason = \"{reason_esc}\"\n",
+        h.audit, h.decisions, h.refute, h.completeness
     );
     std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
 
-/// Which templates changed vs the lock (empty = still ratified).
-pub fn drifted(lock: &Lock, audit_hash: &str, decisions_hash: &str) -> Vec<&'static str> {
+/// Which templates changed vs the lock (empty = still ratified). The audit and
+/// decisions policies are always checked; the verify policies are checked only
+/// when their gate is active, so a project that never enables a gate is never
+/// asked to ratify inert policy — and turning a gate on (its slot empty in the
+/// lock) registers as drift, demanding a fresh, meaningful consent.
+pub fn drifted(
+    lock: &Lock,
+    h: &TemplateHashes,
+    refute_active: bool,
+    completeness_active: bool,
+) -> Vec<&'static str> {
     let mut v = Vec::new();
-    if lock.audit_hash != audit_hash {
+    if lock.audit_hash != h.audit {
         v.push("audit-prompt");
     }
-    if lock.decisions_hash != decisions_hash {
+    if lock.decisions_hash != h.decisions {
         v.push("decisions-prompt");
+    }
+    if refute_active && lock.refute_hash != h.refute {
+        v.push("refute-prompt");
+    }
+    if completeness_active && lock.completeness_hash != h.completeness {
+        v.push("completeness-prompt");
     }
     v
 }
@@ -100,18 +140,61 @@ mod tests {
         assert_eq!(hash("abc").len(), 16);
     }
 
-    #[test]
-    fn drifted_flags_changed_templates() {
-        let lock = Lock {
-            audit_hash: "a".into(),
-            decisions_hash: "d".into(),
+    fn lock_with(audit: &str, decisions: &str, refute: &str, completeness: &str) -> Lock {
+        Lock {
+            audit_hash: audit.into(),
+            decisions_hash: decisions.into(),
+            refute_hash: refute.into(),
+            completeness_hash: completeness.into(),
             canon_commit: String::new(),
             date: String::new(),
             reason: String::new(),
-        };
-        assert!(drifted(&lock, "a", "d").is_empty());
-        assert_eq!(drifted(&lock, "x", "d"), vec!["audit-prompt"]);
-        assert_eq!(drifted(&lock, "a", "y"), vec!["decisions-prompt"]);
-        assert_eq!(drifted(&lock, "x", "y"), vec!["audit-prompt", "decisions-prompt"]);
+        }
+    }
+
+    fn hashes(audit: &str, decisions: &str, refute: &str, completeness: &str) -> TemplateHashes {
+        TemplateHashes {
+            audit: audit.into(),
+            decisions: decisions.into(),
+            refute: refute.into(),
+            completeness: completeness.into(),
+        }
+    }
+
+    #[test]
+    fn drifted_flags_changed_audit_and_decisions() {
+        let lock = lock_with("a", "d", "", "");
+        // Verify gates inactive: only audit + decisions are checked.
+        assert!(drifted(&lock, &hashes("a", "d", "z", "z"), false, false).is_empty());
+        assert_eq!(drifted(&lock, &hashes("x", "d", "", ""), false, false), vec!["audit-prompt"]);
+        assert_eq!(drifted(&lock, &hashes("a", "y", "", ""), false, false), vec!["decisions-prompt"]);
+    }
+
+    #[test]
+    fn verify_policy_checked_only_when_gate_active() {
+        let lock = lock_with("a", "d", "r", "c");
+        // Active + matching -> no drift.
+        assert!(drifted(&lock, &hashes("a", "d", "r", "c"), true, true).is_empty());
+        // Active + changed refute -> flagged; completeness inactive so ignored.
+        assert_eq!(
+            drifted(&lock, &hashes("a", "d", "X", "Y"), true, false),
+            vec!["refute-prompt"]
+        );
+        // Both active + both changed.
+        assert_eq!(
+            drifted(&lock, &hashes("a", "d", "X", "Y"), true, true),
+            vec!["refute-prompt", "completeness-prompt"]
+        );
+    }
+
+    #[test]
+    fn enabling_gate_against_unpinned_lock_is_drift() {
+        // An old/audit-only lock has no refute policy pinned (empty). Turning the
+        // refute gate on registers as drift -> forces a fresh ratification.
+        let lock = lock_with("a", "d", "", "");
+        assert_eq!(
+            drifted(&lock, &hashes("a", "d", "r", ""), true, false),
+            vec!["refute-prompt"]
+        );
     }
 }

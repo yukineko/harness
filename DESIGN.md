@@ -20,6 +20,10 @@
 specforge は **①②④⑤** を担い、**③⑥⑦** は specguard(既存)をそのまま受け入れゲートとして呼ぶ。
 両者を1つの HOTL ループに閉じるのが目的。
 
+> 監査側 (③⑥) の findings を独立 agent で反証・網羅性批評する *検証ゲート* は
+> [DESIGN-VERIFY.md](DESIGN-VERIFY.md) に別設計。specguard に閉じ込めるので、specforge ⑥ は
+> 無改造で継承する(DESIGN-VERIFY.md §10)。
+
 ### 設計原則(specguard から継承・絶対に崩さない)
 
 1. **判定は LLM、ハーネスは決定的** — specforge 本体は scope 決定・prompt 描画・プロセス

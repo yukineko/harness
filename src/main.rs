@@ -17,6 +17,7 @@ mod prompt;
 mod ratify;
 mod report;
 mod scope;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -182,8 +183,7 @@ fn run(cli: &Cli) -> Result<u8> {
     // Ratification gate: when the prompt (meta-canon) must be ratified, refuse to
     // audit with an unratified or changed prompt until a human `accept-prompt`s.
     if l.cfg.prompt.require_ratification {
-        let audit_h = ratify::hash(&l.template);
-        let dec_h = ratify::hash(prompt::DECISIONS_TEMPLATE);
+        let hashes = current_hashes(&l);
         match ratify::read_lock(&l.repo_root) {
             None => {
                 eprintln!(
@@ -192,7 +192,12 @@ fn run(cli: &Cli) -> Result<u8> {
                 return Ok(EXIT_UNRATIFIED);
             }
             Some(lock) => {
-                let drift = ratify::drifted(&lock, &audit_h, &dec_h);
+                let drift = ratify::drifted(
+                    &lock,
+                    &hashes,
+                    l.cfg.verify.enabled,
+                    l.cfg.verify.completeness,
+                );
                 if !drift.is_empty() {
                     eprintln!(
                         "specguard: prompt (メタ正典) に未批准の変更があります: {}\n  内容を確認し、合意できるなら `specguard accept-prompt -m \"理由\"` で再批准してください。",
@@ -270,16 +275,16 @@ fn run(cli: &Cli) -> Result<u8> {
         .map(|o| (o.label.clone(), parse::parse(&o.out.stdout)))
         .collect();
 
-    let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
-
-    // If any shard omitted the marker, the merged report is incomplete: save it
-    // for inspection but do NOT advance the baseline or raise a sentinel.
+    // If any shard omitted the marker, the audit is incomplete: save the merged
+    // report for inspection but do NOT advance the baseline, raise a sentinel, or
+    // run verification (which needs complete audit output to refine).
     let missing: Vec<&str> = parsed
         .iter()
         .filter(|(_, p)| !p.marker_found)
         .map(|(l, _)| l.as_str())
         .collect();
     if !missing.is_empty() {
+        let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
         if let Some(dir) = paths.report.parent() {
             std::fs::create_dir_all(dir).ok();
         }
@@ -294,6 +299,16 @@ fn run(cli: &Cli) -> Result<u8> {
         return Ok(EXIT_NO_MARKER);
     }
 
+    // Verification gates (opt-in): refute false positives (V1) and surface missed
+    // rules (V2). A pure transform over the parsed shards so the merge/sentinel
+    // logic below is unchanged. See DESIGN-VERIFY.md.
+    let parsed = if l.cfg.verify.enabled || l.cfg.verify.completeness {
+        verify::apply(&l.cfg, &l.repo_root, &scope, &shards, &l.date, parsed)
+    } else {
+        parsed
+    };
+
+    let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
     report::write_report(&paths, &merged)?;
 
     let report_rel = format!("{}/{}.md", l.cfg.output.report_dir, l.date);
@@ -367,29 +382,75 @@ fn accept_prompt(l: &Loaded, reason: &str) -> Result<u8> {
     }
     // Contract judgment: the templates must not contradict the render/parse
     // contract (required placeholders present). The policy/constitution part is
-    // the human's responsibility, recorded as the rationale.
-    let miss_audit = prompt::missing_placeholders(&l.template, prompt::AUDIT_PLACEHOLDERS);
-    let miss_dec =
-        prompt::missing_placeholders(prompt::DECISIONS_TEMPLATE, prompt::DECISIONS_PLACEHOLDERS);
-    if !miss_audit.is_empty() || !miss_dec.is_empty() {
+    // the human's responsibility, recorded as the rationale. Verify templates are
+    // contract-checked only when their gate is active (consent is scoped to the
+    // live policy surface; see ratify::drifted).
+    let mut violations: Vec<(&str, Vec<&'static str>)> = vec![
+        ("audit-prompt", prompt::missing_placeholders(&l.template, prompt::AUDIT_PLACEHOLDERS)),
+        (
+            "decisions-prompt",
+            prompt::missing_placeholders(prompt::DECISIONS_TEMPLATE, prompt::DECISIONS_PLACEHOLDERS),
+        ),
+    ];
+    if l.cfg.verify.enabled {
+        violations.push((
+            "refute-prompt",
+            prompt::missing_placeholders(prompt::REFUTE_TEMPLATE, prompt::REFUTE_PLACEHOLDERS),
+        ));
+    }
+    if l.cfg.verify.completeness {
+        violations.push((
+            "completeness-prompt",
+            prompt::missing_placeholders(
+                prompt::COMPLETENESS_TEMPLATE,
+                prompt::COMPLETENESS_PLACEHOLDERS,
+            ),
+        ));
+    }
+    if violations.iter().any(|(_, m)| !m.is_empty()) {
         let mut msg = String::from("prompt が契約に矛盾 (必須 placeholder 不足); 批准を拒否:");
-        if !miss_audit.is_empty() {
-            msg.push_str(&format!("\n  audit-prompt: {}", miss_audit.join(", ")));
-        }
-        if !miss_dec.is_empty() {
-            msg.push_str(&format!("\n  decisions-prompt: {}", miss_dec.join(", ")));
+        for (name, miss) in &violations {
+            if !miss.is_empty() {
+                msg.push_str(&format!("\n  {name}: {}", miss.join(", ")));
+            }
         }
         anyhow::bail!(msg);
     }
 
     let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
-    let audit_h = ratify::hash(&l.template);
-    let dec_h = ratify::hash(prompt::DECISIONS_TEMPLATE);
-    let path = ratify::write_lock(&l.repo_root, &audit_h, &dec_h, &head, &l.date, reason)?;
+    // Pin only the live policy: a gate that is off leaves its slot empty, so
+    // turning it on later registers as drift and demands a fresh ratification.
+    let mut hashes = current_hashes(l);
+    if !l.cfg.verify.enabled {
+        hashes.refute = String::new();
+    }
+    if !l.cfg.verify.completeness {
+        hashes.completeness = String::new();
+    }
+    let path = ratify::write_lock(&l.repo_root, &hashes, &head, &l.date, reason)?;
     println!("specguard: prompt (メタ正典) を批准した -> {}", path.display());
     println!("  canon commit に pin (canon_commit: {head})");
+    let mut pinned = vec!["audit", "decisions"];
+    if l.cfg.verify.enabled {
+        pinned.push("refute");
+    }
+    if l.cfg.verify.completeness {
+        pinned.push("completeness");
+    }
+    println!("  pin したポリシー: {}", pinned.join(", "));
     println!("  理由: {reason}");
     Ok(EXIT_OK)
+}
+
+/// Fingerprints of all four prompt templates (meta-canon) as they stand now.
+/// Used by the ratification gate; `ratify::drifted` decides which to enforce.
+fn current_hashes(l: &Loaded) -> ratify::TemplateHashes {
+    ratify::TemplateHashes {
+        audit: ratify::hash(&l.template),
+        decisions: ratify::hash(prompt::DECISIONS_TEMPLATE),
+        refute: ratify::hash(prompt::REFUTE_TEMPLATE),
+        completeness: ratify::hash(prompt::COMPLETENESS_TEMPLATE),
+    }
 }
 
 /// Print every shard's rendered prompt (debug view for `specguard prompt`).

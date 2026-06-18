@@ -14,8 +14,9 @@ sentinel = ".specguard-pending"
 name = "core"
 globs = ["src/**"]
 # INSTALL.md included so its behavioral claims (flags, install, decisions/D3)
-# are audited against src — it is a live doc that can drift.
-canon = ["README.md", "specguard.example.toml", "INSTALL.md"]
+# are audited against src — it is a live doc that can drift. DESIGN-VERIFY.md is
+# the canon for the verification gates (src/verify.rs).
+canon = ["README.md", "specguard.example.toml", "INSTALL.md", "DESIGN-VERIFY.md"]
 
 [[area]]
 name = "prompt"
@@ -24,5 +25,11 @@ canon = ["README.md"]
 
 [[invariant]]
 name = "marker contract"
-description = "both prompt templates' marker trailer matches parse::MARKER"
-canon = ["src/parse.rs", "templates/audit-prompt.md", "templates/decisions-prompt.md"]
+description = "all prompt templates' marker trailer matches parse::MARKER (audit, decisions, and the verify gates reuse the same <<<SPEC_AUDIT>>> trailer)"
+canon = [
+    "src/parse.rs",
+    "templates/audit-prompt.md",
+    "templates/decisions-prompt.md",
+    "templates/refute-prompt.md",
+    "templates/completeness-prompt.md",
+]
