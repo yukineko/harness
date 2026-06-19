@@ -1,0 +1,14 @@
+{
+  "name": "yukineko",
+  "owner": { "name": "yukineko" },
+  "metadata": {
+    "description": "yukineko's Claude Code tools. Hosts playbook, a subscription-native project-knowledge retriever."
+  },
+  "plugins": [
+    {
+      "name": "playbook",
+      "source": ".",
+      "description": "Knowledge retrieval: a UserPromptSubmit hook that scores curated notes against your prompt and injects the relevant ones under a char budget, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+    }
+  ]
+}
