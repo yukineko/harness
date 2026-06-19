@@ -1,0 +1,11 @@
+{
+  "name": "yukineko",
+  "owner": { "name": "yukineko" },
+  "plugins": [
+    {
+      "name": "ctxrot",
+      "source": ".",
+      "description": "Context-rot guard: 4 hooks (guard/rescue/restore/toolguard) + /distill skill + ctxrot-distiller subagent, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+    }
+  ]
+}
