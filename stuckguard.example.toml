@@ -1,0 +1,14 @@
+# stuckguard.example.toml — copy to ./stuckguard.toml (or ~/.stuckguard/config.toml).
+#
+# A PostToolUse hook records each tool call into a per-session window and nudges
+# the agent when it detects a stuck pattern (repeated identical actions, or edit
+# revert-thrash). It only ever injects advice — never blocks a tool call.
+
+enabled = true
+window = 12                 # recent tool events kept per session and inspected
+repeat_threshold = 3        # same normalized (tool, input) N times -> nudge
+oscillation_threshold = 2   # edit revert-thrash reversals on one file -> nudge
+cooldown_events = 6         # don't re-nudge the same pattern within N events
+escalate_after = 2          # after N nudges for a pattern, escalate to "ask the user"
+ignore_tools = ["TodoWrite"]
+# state_dir = "~/.stuckguard/state"
