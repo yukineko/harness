@@ -63,7 +63,23 @@ pub fn write(input: &HookInput, cfg: &Config, trigger: &str) -> Option<PathBuf> 
     let body = render_note(&cwd, input, trigger, &iso, pct, &extracted, &turns);
 
     let store = Store::new(cfg);
-    store.write_note(&cwd, &slug, &body).ok()
+    let path = store.write_note(&cwd, &slug, &body).ok();
+    if let Some(p) = &path {
+        crate::metrics::emit(
+            cfg,
+            &input.session_id,
+            "rescue",
+            serde_json::json!({
+                "trigger": trigger,
+                "note": p.to_string_lossy(),
+                "note_bytes": body.len(),
+                "pct": pct,
+                "decisions": extracted.decisions.len(),
+                "todos": extracted.todos.len(),
+            }),
+        );
+    }
+    path
 }
 
 struct Extracted {

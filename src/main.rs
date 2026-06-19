@@ -7,6 +7,7 @@
 mod config;
 mod hooks;
 mod install;
+mod metrics;
 mod model;
 mod store;
 mod transcript;
@@ -60,6 +61,19 @@ enum Command {
         #[command(subcommand)]
         action: NoteAction,
     },
+    /// Inspect the metrics log (per-session rollup of bands/notes/gates).
+    Metrics {
+        #[command(subcommand)]
+        action: Option<MetricsAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MetricsAction {
+    /// Per-session rollup (default).
+    Summary,
+    /// Print the metrics log path.
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -273,6 +287,37 @@ fn main() {
                 }
             }
         }
+        Command::Metrics { action } => {
+            let cfg = Config::load();
+            match action.unwrap_or(MetricsAction::Summary) {
+                MetricsAction::Path => println!("{}", metrics::path(&cfg).display()),
+                MetricsAction::Summary => {
+                    let stats = metrics::summarize(&cfg);
+                    if stats.is_empty() {
+                        println!("(no metrics yet: {})", metrics::path(&cfg).display());
+                    } else {
+                        println!(
+                            "{:<16} {:>7} {:>5} {:>4} {:>9} {:>9} {:>6} {:>4} {:>4}",
+                            "session", "prompts", "cross", "band", "peak_tok", "last_tok",
+                            "rescue", "gate", "dump"
+                        );
+                        for s in &stats {
+                            let sid: String = if s.session.chars().count() > 16 {
+                                let t: String = s.session.chars().take(15).collect();
+                                format!("{t}…")
+                            } else {
+                                s.session.clone()
+                            };
+                            println!(
+                                "{:<16} {:>7} {:>5} {:>4} {:>9} {:>9} {:>6} {:>4} {:>4}",
+                                sid, s.prompts, s.crossings, s.max_band, s.peak_tokens,
+                                s.last_tokens, s.rescues, s.gates, s.tooldumps
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -298,6 +343,11 @@ huge_tool_output_bytes = 50000
 # this many bytes is denied, steering the model to a sub-agent or a bounded slice.
 # These are almost always logs/dumps/minified blobs. Set 0 to disable the gate.
 gate_file_bytes = 1000000
+
+# append one JSONL metrics line per hook event to <state_dir>/metrics.jsonl
+# (budget trajectory, band crossings, note sizes, gate denies). Inspect with
+# `ctxrot metrics`. Local only; set false (or env GUARD_METRICS=0) to disable.
+metrics = true
 
 # ascending fractions of the window that trigger escalating advice
 bands = [0.50, 0.75, 0.90]

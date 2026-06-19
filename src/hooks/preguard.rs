@@ -47,6 +47,18 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         return None;
     }
 
+    crate::metrics::emit(
+        cfg,
+        &input.session_id,
+        "gate",
+        serde_json::json!({
+            "tool": "Read",
+            "file": path.to_string_lossy(),
+            "file_bytes": meta.len(),
+            "decision": "deny",
+        }),
+    );
+
     let mb = meta.len() as f64 / 1_048_576.0;
     let tok = meta.len() / 4;
     Some(format!(

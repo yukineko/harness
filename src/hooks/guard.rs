@@ -172,6 +172,25 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<String> {
     if band != last {
         let _ = std::fs::write(&state_file, band.to_string());
     }
+
+    // Metrics: emit one trajectory sample per measured prompt (incl. band 0), so
+    // the token curve and every crossing are observable. Independent of whether
+    // we inject advice below.
+    let crossed = band > last;
+    crate::metrics::emit(
+        cfg,
+        &input.session_id,
+        "budget",
+        serde_json::json!({
+            "est_tokens": est_tokens,
+            "frac": (frac * 1000.0).round() / 1000.0,
+            "band": band,
+            "band_prev": last,
+            "crossed": crossed,
+            "src": _src,
+        }),
+    );
+
     if band == 0 || band <= last {
         return None;
     }
