@@ -1,6 +1,9 @@
 {
   "name": "yukineko",
   "owner": { "name": "yukineko" },
+  "metadata": {
+    "description": "yukineko's Claude Code tools. Currently hosts ctxrot, a subscription-native context-rot guard."
+  },
   "plugins": [
     {
       "name": "ctxrot",
