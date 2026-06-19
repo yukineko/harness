@@ -42,13 +42,18 @@ Claude **subscription**, no API key and no separate `cargo install` needed.
 /plugin install ctxrot@yukineko
 ```
 
-Hooks call `${CLAUDE_PLUGIN_ROOT}/bin/ctxrot <sub>`, so the bundled binary is used
-automatically. Run `ctxrot init` once for the config + store dirs (optional;
-defaults work without it).
+Hooks call `${CLAUDE_PLUGIN_ROOT}/bin/ctxrot <sub>`. `bin/ctxrot` is a small POSIX
+launcher that picks the right per-platform binary (`bin/ctxrot-<os>-<arch>`) for
+the host, so the same repo works on Linux and macOS. Run `ctxrot init` once for
+the config + store dirs (optional; defaults work without it).
 
-> The committed `bin/ctxrot` is built for the host platform (currently
-> linux/x86_64). Rebuild with `scripts/build-plugin-bin.sh` and commit, or build
-> per-target for multi-OS distribution.
+It runs entirely on your Claude subscription — the hooks and subagent execute in
+the normal session model, no `ANTHROPIC_API_KEY` and no separate `cargo install`.
+
+> **Per-user step:** each user must `/plugin marketplace add <git-url>` once
+> (Claude Code does not auto-register marketplaces from a checked-in repo).
+> Committing `.claude/settings.json` with `enabledPlugins` can pin *enabling*, but
+> not the marketplace registration.
 
 ### Alternative: manual install (no plugin)
 
@@ -63,6 +68,52 @@ cp -r skills/distill ~/.claude/skills/   # the /distill skill
 `ctxrot install` is idempotent and **replaces** any prior ctxrot entries and the
 legacy `context-rot-guard.py` hook, while preserving your other hooks and
 settings. Remove with `ctxrot uninstall`.
+
+## Platform support / building the binaries
+
+The plugin ships prebuilt per-platform binaries, selected at runtime by the
+`bin/ctxrot` launcher:
+
+| Host | File | Status |
+|---|---|---|
+| Linux x86_64 | `bin/ctxrot-linux-x86_64` | bundled |
+| macOS Apple Silicon | `bin/ctxrot-darwin-arm64` | build on a Mac (see below) |
+| macOS Intel | `bin/ctxrot-darwin-x86_64` | build on a Mac (see below) |
+
+If a host has no matching binary, the launcher exits 0 silently (a hook never
+breaks your turn) and prints a one-line build hint to stderr.
+
+**Build for your platform** — run on that machine and commit the result:
+
+```sh
+# host platform (Linux here, Apple Silicon on a Mac, etc.)
+scripts/build-plugin-bin.sh
+
+# cross-target on a Mac to also produce the Intel build:
+rustup target add x86_64-apple-darwin
+scripts/build-plugin-bin.sh x86_64-apple-darwin
+
+git add bin/ && git update-index --chmod=+x bin/ctxrot bin/ctxrot-*
+git commit -m "Add <platform> binary"
+```
+
+The script normalizes the Rust host triple to `ctxrot-<os>-<arch>`. Because this
+repo lives on a `core.filemode=false` mount, exec bits are forced into the git
+index with `git update-index --chmod=+x` (otherwise the launcher/binaries would
+check out non-executable and hooks would fail).
+
+## Plugin layout
+
+```
+.claude-plugin/plugin.json        # plugin manifest
+.claude-plugin/marketplace.json   # single-plugin marketplace (name: yukineko)
+hooks/hooks.json                  # the 4 hooks → ${CLAUDE_PLUGIN_ROOT}/bin/ctxrot
+agents/ctxrot-distiller.md        # distiller subagent (keeps heavy reads off main ctx)
+skills/distill/SKILL.md           # /distill skill (delegates to the subagent)
+bin/ctxrot                        # POSIX launcher → ctxrot-<os>-<arch>
+bin/ctxrot-<os>-<arch>            # prebuilt binaries
+src/ … Cargo.toml                 # the Rust crate (reused unchanged)
+```
 
 ## Configuration
 
