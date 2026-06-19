@@ -83,6 +83,10 @@ enum NoteAction {
         slug: String,
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Session id to tag the filename with, so the originating session can
+        /// reach its own note amid parallel sessions (pass $CLAUDE_CODE_SESSION_ID).
+        #[arg(long)]
+        session: Option<String>,
     },
 }
 
@@ -207,7 +211,7 @@ fn main() {
                     }
                     println!("{}", dir.display());
                 }
-                NoteAction::Write { slug, cwd } => {
+                NoteAction::Write { slug, cwd, session } => {
                     let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
                     let body = read_stdin();
                     let safe: String = slug
@@ -215,7 +219,10 @@ fn main() {
                         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
                         .collect();
                     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-                    match store.write_note(&cwd, &format!("{safe}-{stamp}"), &body) {
+                    // Tag with the session so restore can route this session back
+                    // to its own note even with parallel sessions in one project.
+                    let tag = store::session_tag(session.as_deref().unwrap_or(""));
+                    match store.write_note(&cwd, &format!("{safe}-{tag}-{stamp}"), &body) {
                         Ok(p) => println!("{}", p.display()),
                         Err(e) => {
                             eprintln!("write failed: {e}");

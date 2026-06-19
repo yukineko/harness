@@ -9,6 +9,10 @@ tools: Read, Bash, Grep, Glob
 呼び出し元から少なくとも次が渡される(無ければ推測せず、Bash で補う):
 - `transcript_path`: 現在セッションの JSONL transcript パス
 - `cwd` / project ディレクトリ
+- `session_id`: **元（呼び出し元）セッションの id**。保存時に `--session` で渡し、ノート名へ
+  session hash として埋め込む。これにより元セッションが `restore` で自分のノートへ確実に戻れる。
+  **自分(subagent)の `$CLAUDE_CODE_SESSION_ID` ではなく、呼び出し元から渡されたこの id を使う**
+  (子セッションは id が異なりうるため)。
 - 任意の focus(蒸留の焦点)
 
 ## 手順
@@ -45,8 +49,10 @@ tools: Read, Bash, Grep, Glob
    ```
 
 3. **保存する**。上の本文を stdin で渡してストアに書き込む:
-   `printf '%s' "<本文>" | ctxrot note write --slug distill --cwd <cwd>`
-   （`ctxrot` が PATH に無い場合は、呼び出し元から渡された plugin の `bin/ctxrot` 絶対パスを使う。）
+   `printf '%s' "<本文>" | ctxrot note write --slug distill --cwd <cwd> --session "<渡された session_id>"`
+   （`--session` がノート名に session hash を埋め、restore の到達性を担保する。`session_id` が
+   渡されていない場合のみ省略可。`ctxrot` が PATH に無い場合は、呼び出し元から渡された plugin の
+   `bin/ctxrot` 絶対パスを使う。）
 
 4. **返す**。最終出力は **最小限**にする(これがそのまま呼び出し元の context に入る):
    - 保存したノートの絶対パス

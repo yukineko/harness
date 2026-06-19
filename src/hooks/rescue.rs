@@ -14,7 +14,7 @@ use regex::Regex;
 
 use crate::config::Config;
 use crate::model::HookInput;
-use crate::store::{project_key, Store};
+use crate::store::{project_key, session_tag, Store};
 use crate::transcript::{self, Turn};
 
 const MAX_TURNS: usize = 60;
@@ -38,7 +38,13 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<PathBuf> {
 
     let now = chrono::Local::now();
     let iso = now.format("%Y-%m-%dT%H:%M:%S%:z").to_string();
-    let slug = format!("rescue-{}", now.format("%Y%m%d-%H%M%S"));
+    // Session tag in the filename so this session can find its own rescue note
+    // even when parallel sessions write into the same project dir.
+    let slug = format!(
+        "rescue-{}-{}",
+        session_tag(&input.session_id),
+        now.format("%Y%m%d-%H%M%S")
+    );
     let body = render_note(&cwd, input, &iso, pct, &extracted, &turns);
 
     let store = Store::new(cfg);

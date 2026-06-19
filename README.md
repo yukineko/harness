@@ -16,8 +16,8 @@ error it exits 0 and stays silent.
 | Subcommand | Hook | What it does |
 |---|---|---|
 | `ctxrot guard` | `UserPromptSubmit` | Detects large refs (big local files / URLs / "全文" keywords) and **context-budget bands** (50/75/90% of the window). Injects *minimal, conditional* advice — only when something is relevant, and budget advice only once per band crossing (so the advice itself doesn't cause rot). |
-| `ctxrot rescue` | `PreCompact` | Right before `/compact`, streams the recent transcript and writes a durable **rescue note** (decisions, open todos, touched files, links, raw recent turns) so nothing is lost to lossy compaction. Deterministic, no LLM. |
-| `ctxrot restore` | `SessionStart` | At session start, injects a **compact carryover** (decisions + open todos + a link) from the latest note — never the whole note. |
+| `ctxrot rescue` | `PreCompact` | Right before `/compact`, streams the recent transcript and writes a durable **rescue note** (decisions, open todos, touched files, links, raw recent turns) so nothing is lost to lossy compaction. Deterministic, no LLM. The note filename carries a **session tag** (`rescue-<session>-<ts>.md`). |
+| `ctxrot restore` | `SessionStart` | At session start, injects a **compact carryover** (decisions + open todos + a link). With **parallel sessions** sharing one project dir, it prefers *this* session's own note (matched by session tag) and only falls back to the project-wide latest — never the whole note. |
 | `ctxrot toolguard` | `PostToolUse` | When a `Read`/`Bash`/`Grep`/… returns a huge payload, nudges you to route the *next* heavy read through a sub-agent and keep only conclusions. |
 
 Plus the **`/distill` skill** for on-demand, high-quality LLM distillation (the
@@ -149,9 +149,10 @@ ctxrot note dir       # the project's note directory
    │  guard:    "推定 ~76% — /distill で退避を"   (UserPromptSubmit, once per band)
    │  toolguard:"Read が ~59KB 投入 — 次回は sub-agent 経由"
    ▼
-/compact ──► rescue (PreCompact): writes rescue-<ts>.md   ← nothing lost
+/compact ──► rescue (PreCompact): writes rescue-<session>-<ts>.md   ← nothing lost
    ▼
 new session ──► restore (SessionStart): injects decisions + todos + link
+                (parallel-safe: routes back to THIS session's own note by tag)
 ```
 
 ## Development
