@@ -22,6 +22,14 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/ctxrot preguard", "timeout": 10 }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Read|Bash|Grep|Glob|WebFetch|BashOutput|NotebookRead",

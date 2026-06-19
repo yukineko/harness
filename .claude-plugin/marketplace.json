@@ -8,7 +8,7 @@
     {
       "name": "ctxrot",
       "source": ".",
-      "description": "Context-rot guard: 4 hooks (guard/rescue/restore/toolguard) + /distill skill + ctxrot-distiller subagent, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+      "description": "Context-rot guard: 5 hooks (guard/rescue/restore/preguard/toolguard) + /distill skill + ctxrot-distiller subagent, with a bundled Rust binary. Runs on your Claude subscription; no API key."
     }
   ]
 }
