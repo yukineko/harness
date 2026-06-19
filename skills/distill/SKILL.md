@@ -43,6 +43,8 @@ main context を軽く保つ運用に切り替える。
 `_(なし / none)_` と書く — restore はこの2つだけを引き継ぐ）、
 `printf '%s' "<本文>" | ctxrot note write --slug distill --require-sections --cwd "$PWD" --session "$CLAUDE_CODE_SESSION_ID"`
 で保存してパスを報告する（`--require-sections` が必須2見出しを検査し、欠けると exit 1・未書き込みで
-落ちる→見出しを足して再実行。`--session` がノート名に session hash を埋め restore 到達性を担保）。
+落ちる→見出しを足して再実行。残3節 (Files / Key facts / Where we are) は **準必須**で、欠けても
+書き込みは継続するが stderr に warning が出る→該当情報があれば埋める。`--session` がノート名に
+session hash を埋め restore 到達性を担保）。
 
 要約は事実ベースで。会話に実在する内容だけを書き、推測で埋めないこと。

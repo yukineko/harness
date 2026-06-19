@@ -25,7 +25,9 @@ tools: Read, Bash, Grep, Glob
 2. **蒸留する**。後続作業に本当に必要な情報だけを、以下の構造で markdown 化する。
    **`## 決定事項 / Decisions` と `## 残課題 / Open todos` の2見出しは必須**
    (`restore` はこの2つだけを引き継ぐ。空でも見出しは消さず本文に `_(なし / none)_` と書く)。
-   残り3節 (Files / Key facts / Where we are) は空なら省略可。
+   残り3節 (Files / Key facts / Where we are) は **準必須**。restore は使わないため省いても
+   書き込みは成功するが、`--require-sections` が欠落節を名指しで warning する（carryover の質が
+   落ちる "silent erosion" を防ぐナッジ）。該当する情報があるなら埋める。
 
    ```
    ---
