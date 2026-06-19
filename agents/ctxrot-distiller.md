@@ -22,7 +22,10 @@ tools: Read, Bash, Grep, Glob
    - 既存の退避ノートがあれば参照: `ctxrot note latest --cwd <cwd>`、一覧は `ctxrot note list`。
    - 大きいファイルやログは決して全文を読み込まない。該当行・結論だけ。
 
-2. **蒸留する**。後続作業に本当に必要な情報だけを、以下の構造で markdown 化する(空節は省略可):
+2. **蒸留する**。後続作業に本当に必要な情報だけを、以下の構造で markdown 化する。
+   **`## 決定事項 / Decisions` と `## 残課題 / Open todos` の2見出しは必須**
+   (`restore` はこの2つだけを引き継ぐ。空でも見出しは消さず本文に `_(なし / none)_` と書く)。
+   残り3節 (Files / Key facts / Where we are) は空なら省略可。
 
    ```
    ---
@@ -32,10 +35,10 @@ tools: Read, Bash, Grep, Glob
 
    # ctxrot distill (by ctxrot-distiller)
 
-   ## 決定事項 / Decisions
+   ## 決定事項 / Decisions        ← 必須(空なら _(なし / none)_)
    - 確定した方針・設計判断（理由を一言）
 
-   ## 残課題 / Open todos
+   ## 残課題 / Open todos         ← 必須(空なら _(なし / none)_)
    - 次にやること（着手順）
 
    ## 触ったファイル / Files
@@ -49,8 +52,10 @@ tools: Read, Bash, Grep, Glob
    ```
 
 3. **保存する**。上の本文を stdin で渡してストアに書き込む:
-   `printf '%s' "<本文>" | ctxrot note write --slug distill --cwd <cwd> --session "<渡された session_id>"`
-   （`--session` がノート名に session hash を埋め、restore の到達性を担保する。`session_id` が
+   `printf '%s' "<本文>" | ctxrot note write --slug distill --require-sections --cwd <cwd> --session "<渡された session_id>"`
+   （`--require-sections` が必須2見出しの存在を検査し、欠けると **exit 1・未書き込み**で落ちる。
+   その場合は欠落見出し（`_(なし / none)_` でよい）を足して**もう一度**実行する。
+   `--session` がノート名に session hash を埋め、restore の到達性を担保する。`session_id` が
    渡されていない場合のみ省略可。`ctxrot` が PATH に無い場合は、呼び出し元から渡された plugin の
    `bin/ctxrot` 絶対パスを使う。）
 
