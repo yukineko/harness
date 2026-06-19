@@ -25,11 +25,12 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     let cwd = input.cwd_or_current();
     let store = Store::new(cfg);
     // Prefer this session's own note (resume/compact keep the same session_id),
-    // so parallel sessions don't grab each other's carryover. Fall back to the
-    // project-wide latest for a fresh session with no prior note of its own.
+    // so parallel sessions don't grab each other's carryover. Else fall back to a
+    // SAFE cross-session note: the latest when the stream is unambiguous, but
+    // never a sibling session's tagged note when parallel usage is detected.
     let latest = store
         .latest_note_for_session(&cwd, &input.session_id)
-        .or_else(|| store.latest_note(&cwd))?;
+        .or_else(|| store.latest_fallback_note(&cwd))?;
 
     let meta = std::fs::metadata(&latest).ok()?;
     if meta.len() > READ_CAP {
