@@ -1,0 +1,24 @@
+[package]
+name = "stuckguard"
+version = "0.1.0"
+edition = "2021"
+description = "Stuck-loop detector + escalation for Claude Code. A PostToolUse hook that spots repeated identical actions and edit thrash, then nudges the agent to change approach or ask the user for help."
+license = "MIT"
+
+[[bin]]
+name = "stuckguard"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["clock"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"
