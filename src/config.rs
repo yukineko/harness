@@ -18,6 +18,9 @@ pub struct Config {
     /// or above this many bytes is denied, steering the model to a sub-agent.
     /// 0 disables the gate entirely.
     pub gate_file_bytes: u64,
+    /// Append one JSONL metrics line per hook event to `<state_dir>/metrics.jsonl`
+    /// (budget trajectory, band crossings, note sizes, gate denies). Local only.
+    pub metrics: bool,
     /// ascending fractions of the window that trigger escalating advice
     pub bands: Vec<f64>,
 }
@@ -31,6 +34,7 @@ struct FileConfig {
     large_file_bytes: Option<u64>,
     huge_tool_output_bytes: Option<u64>,
     gate_file_bytes: Option<u64>,
+    metrics: Option<bool>,
     bands: Option<Vec<f64>>,
 }
 
@@ -64,6 +68,7 @@ impl Default for Config {
             large_file_bytes: 50_000,
             huge_tool_output_bytes: 50_000,
             gate_file_bytes: 1_000_000,
+            metrics: true,
             bands: vec![0.50, 0.75, 0.90],
         }
     }
@@ -99,6 +104,9 @@ impl Config {
                 if let Some(v) = fc.gate_file_bytes {
                     cfg.gate_file_bytes = v;
                 }
+                if let Some(v) = fc.metrics {
+                    cfg.metrics = v;
+                }
                 if let Some(v) = fc.bands {
                     if !v.is_empty() {
                         cfg.bands = v;
@@ -116,6 +124,9 @@ impl Config {
         }
         if let Some(v) = env_u64("GUARD_GATE_FILE_BYTES") {
             cfg.gate_file_bytes = v;
+        }
+        if let Some(v) = env_bool("GUARD_METRICS") {
+            cfg.metrics = v;
         }
 
         // bands must be ascending and within (0,1]; sanitize defensively
@@ -152,4 +163,11 @@ impl Config {
 
 fn env_u64(key: &str) -> Option<u64> {
     std::env::var(key).ok()?.trim().parse::<u64>().ok()
+}
+
+/// Parse a boolean-ish env var: `0`/`false`/`no`/`off`/empty → false, else true.
+fn env_bool(key: &str) -> Option<bool> {
+    let v = std::env::var(key).ok()?;
+    let v = v.trim().to_ascii_lowercase();
+    Some(!matches!(v.as_str(), "" | "0" | "false" | "no" | "off"))
 }

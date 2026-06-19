@@ -27,6 +27,13 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         return None;
     }
 
+    crate::metrics::emit(
+        cfg,
+        &input.session_id,
+        "tooldump",
+        serde_json::json!({ "tool": input.tool_name, "bytes": size }),
+    );
+
     let kb = size as f64 / 1024.0;
     let tok = size / 4;
     Some(format!(

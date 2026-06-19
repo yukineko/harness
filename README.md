@@ -155,6 +155,22 @@ ctxrot note latest    # path of the most recent note
 ctxrot note dir       # the project's note directory
 ```
 
+## Metrics
+
+Every hook appends one JSONL line to `<state_dir>/metrics.jsonl` — the token
+**trajectory** (`budget` per prompt), every **band crossing**, rescue **note
+sizes**, **gate** denies (bytes kept out of context), and tool **dumps** that
+got through. Local only; disable with `metrics = false` or `GUARD_METRICS=0`.
+
+```sh
+ctxrot metrics            # per-session rollup (prompts / crossings / peak tokens / rescue / gate / dump)
+ctxrot metrics path       # the metrics.jsonl path (pipe to jq for ad-hoc analysis)
+```
+
+This is the substrate for measuring whether the guard actually holds N down
+(e.g. compare peak-token and crossing counts across sessions, or A/B with
+`GUARD_DISABLE=1`).
+
 ## How memory survives a session
 
 ```

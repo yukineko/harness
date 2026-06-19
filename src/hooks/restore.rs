@@ -63,12 +63,43 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
 
     // If both sections were empty/missing, only the pointer is useful.
     if decisions.is_none() && todos.is_none() {
-        return Some(format!(
+        let msg = format!(
             "[ctxrot restore] 前回の退避ノートあり: {}\n→ 続きから作業する場合は読み込んで。",
             latest.display()
-        ));
+        );
+        emit_restore(cfg, input, &latest, msg.len(), false, false);
+        return Some(msg);
     }
+    emit_restore(
+        cfg,
+        input,
+        &latest,
+        out.len(),
+        decisions.is_some(),
+        todos.is_some(),
+    );
     Some(out)
+}
+
+fn emit_restore(
+    cfg: &Config,
+    input: &HookInput,
+    note: &Path,
+    bytes: usize,
+    had_decisions: bool,
+    had_todos: bool,
+) {
+    crate::metrics::emit(
+        cfg,
+        &input.session_id,
+        "restore",
+        serde_json::json!({
+            "note": note.to_string_lossy(),
+            "bytes": bytes,
+            "had_decisions": had_decisions,
+            "had_todos": had_todos,
+        }),
+    );
 }
 
 /// The section headings `restore` depends on for carryover. This is the single
