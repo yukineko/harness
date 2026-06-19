@@ -23,6 +23,11 @@ pub const REFUTE_TEMPLATE: &str = include_str!("../templates/refute-prompt.md");
 /// The embedded V2 (completeness critique) template.
 pub const COMPLETENESS_TEMPLATE: &str = include_str!("../templates/completeness-prompt.md");
 
+/// The pre-task spec-briefing template (read-only; prevents drift before coding).
+/// Advisory — it produces no findings/sentinel, so it is NOT part of the
+/// ratification (meta-canon) surface.
+pub const BRIEF_TEMPLATE: &str = include_str!("../templates/brief-prompt.md");
+
 /// Maximum number of sample changed files listed per area in the prompt.
 const MAX_SAMPLE_FILES: usize = 12;
 
@@ -350,6 +355,42 @@ fn area_block_one(cfg: &Config, hit: &AreaHit) -> String {
         }
     }
     out.push('\n');
+    out
+}
+
+/// Render the pre-task spec briefing. Unlike an audit shard there is no git
+/// scope: a brief lists EVERY configured area (with its canon pointers) plus all
+/// invariants, and the agent routes from the task text to the relevant ones.
+pub fn render_brief(template: &str, cfg: &Config, task: &str, date: &str) -> String {
+    template
+        .replace("{{PROJECT_NAME}}", &cfg.project.name)
+        .replace("{{DATE}}", date)
+        .replace("{{TASK}}", task.trim())
+        .replace("{{AREAS}}", &brief_areas_block(cfg))
+        .replace("{{INVARIANTS}}", &invariants_block(cfg))
+}
+
+/// Every configured area as a markdown block: name, impl globs, and canon
+/// pointers (pointers only — never the content). No scope/changed files (a brief
+/// runs before any change exists).
+fn brief_areas_block(cfg: &Config) -> String {
+    if cfg.areas.is_empty() {
+        return "(領域の定義なし)\n".to_string();
+    }
+    let mut out = String::new();
+    for area in &cfg.areas {
+        out.push_str(&format!("### 領域: {}\n", area.name));
+        if !area.globs.is_empty() {
+            let g: Vec<String> = area.globs.iter().map(|s| format!("`{s}`")).collect();
+            out.push_str(&format!("- 実装範囲 (glob): {}\n", g.join(", ")));
+        }
+        if area.canon.is_empty() {
+            out.push_str("- 正典: (指定なし — プロジェクト横断の正典を参照)\n");
+        } else {
+            let c: Vec<String> = area.canon.iter().map(|s| format!("`{s}`")).collect();
+            out.push_str(&format!("- 正典: {}\n", c.join(", ")));
+        }
+    }
     out
 }
 

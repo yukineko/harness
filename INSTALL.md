@@ -83,7 +83,7 @@ Artifacts:
 | Path | Contents |
 |---|---|
 | `specguard.toml` | starter config (a copy of `specguard.example.toml`) |
-| `.claude/settings.json` | SessionStart hook (detects `.specguard-pending` and surfaces it at session start) |
+| `.claude/settings.json` | SessionStart hook (runs `specguard pending`, which surfaces an active fix-offer when a sentinel is raised) |
 
 `init` is **idempotent**:
 

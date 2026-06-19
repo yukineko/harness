@@ -14,11 +14,13 @@ use std::path::Path;
 const EXAMPLE_CONFIG: &str = include_str!("../specguard.example.toml");
 
 /// Substring identifying our hook, used to detect a prior install.
-const HOOK_MARKER: &str = ".specguard-pending";
+const HOOK_MARKER: &str = "specguard pending";
 
-/// The SessionStart command: print the pending sentinel (if any) so it lands in
-/// the session context. Exits 0 whether or not the file exists.
-const HOOK_COMMAND: &str = "if [ -f .specguard-pending ]; then echo '⚠ specguard: 未処理の仕様ドリフト指摘があります (対応後に `specguard ack` で解除):'; cat .specguard-pending; fi";
+/// The SessionStart command: delegate to `specguard pending`, which resolves the
+/// sentinel from `[output].sentinel` (so a custom path works) and prints an
+/// active fix-offer block when something is pending. `|| true` keeps the session
+/// starting even if the binary isn't on PATH in the hook's shell.
+const HOOK_COMMAND: &str = "specguard pending 2>/dev/null || true";
 
 /// Run `specguard init` for the config at `config_path` (its parent dir is the
 /// repo root the hook is installed into).

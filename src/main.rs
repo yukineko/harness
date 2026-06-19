@@ -82,6 +82,11 @@ enum Command {
         #[arg(long)]
         from: Option<PathBuf>,
     },
+    /// Print the active fix-offer block if a sentinel is pending (for the
+    /// SessionStart hook). Resolves the sentinel path from `[output].sentinel`,
+    /// so a custom path still works. Never fails the session: any error (missing
+    /// config etc.) prints nothing and exits 0.
+    Pending,
     /// Clear the sentinel after a human has handled the pending findings.
     Ack,
     /// Scaffold specguard into a repo: starter config + Claude Code SessionStart
@@ -90,6 +95,17 @@ enum Command {
         /// Overwrite an existing config file.
         #[arg(long)]
         force: bool,
+    },
+    /// Pre-task spec briefing (read-only): before you start a task, summarize the
+    /// canon rules and invariants it touches — to prevent drift before it happens
+    /// (the front-line counterpart to `run`'s post-hoc audit).
+    Brief {
+        /// The task you're about to start (free text).
+        task: String,
+        /// Print the rendered briefing prompt only (no agent); used by the plugin
+        /// to dispatch it to a read-only subagent.
+        #[arg(long)]
+        prompt: bool,
     },
     /// Scaffold a decision record (ADR) pinned to the current canon commit.
     Decide {
@@ -154,6 +170,11 @@ fn run(cli: &Cli) -> Result<u8> {
         return Ok(EXIT_OK);
     }
 
+    // `pending` is the SessionStart hook entry point: best-effort, never errors.
+    if let Some(Command::Pending) = &cli.command {
+        return Ok(pending(cli));
+    }
+
     let l = load(cli)?;
     let paths = report::paths(&l.cfg, &l.repo_root, &l.date);
 
@@ -170,6 +191,11 @@ fn run(cli: &Cli) -> Result<u8> {
     // `accept-prompt` ratifies the prompt (meta-canon): contract-check + pin.
     if let Some(Command::AcceptPrompt { reason }) = &cli.command {
         return accept_prompt(&l, reason);
+    }
+
+    // `brief` is a read-only pre-task briefing; no scope/git resolution needed.
+    if let Some(Command::Brief { task, prompt }) = &cli.command {
+        return brief(&l, task, *prompt);
     }
 
     let last_ref = report::read_last_ref(&paths);
@@ -209,6 +235,8 @@ fn run(cli: &Cli) -> Result<u8> {
             return finish(&l, &scope, &shards, &paths, outs);
         }
         Some(Command::Ack)
+        | Some(Command::Pending)
+        | Some(Command::Brief { .. })
         | Some(Command::Init { .. })
         | Some(Command::Decide { .. })
         | Some(Command::AcceptPrompt { .. }) => unreachable!("handled above"),
@@ -512,6 +540,76 @@ fn read_ingest(
         })
         .collect();
     Ok(outs)
+}
+
+/// Pre-task spec briefing (read-only). Renders the briefing prompt over every
+/// configured area + the invariants and either prints it (`--prompt`, for the
+/// plugin to dispatch to a subagent) or runs the configured agent once and prints
+/// its brief. Produces no report/sentinel — it is advisory, drift-prevention.
+fn brief(l: &Loaded, task: &str, prompt_only: bool) -> Result<u8> {
+    if task.trim().is_empty() {
+        anyhow::bail!("brief には着手するタスクの説明が必要です (例: specguard brief \"...\")");
+    }
+    let rendered = prompt::render_brief(prompt::BRIEF_TEMPLATE, &l.cfg, task, &l.date);
+    if prompt_only {
+        print!("{rendered}");
+        return Ok(EXIT_OK);
+    }
+    let shard = agent::ShardPrompt {
+        label: "brief".to_string(),
+        prompt: rendered,
+    };
+    let outs = agent::run_shards(&l.cfg.agent, &l.repo_root, vec![shard]);
+    let o = &outs[0];
+    if o.out.code != 0 {
+        eprintln!(
+            "specguard: brief agent exited with code {}\n--- agent stderr ---\n{}",
+            o.out.code,
+            o.out.stderr.trim_end()
+        );
+        return Ok(EXIT_AGENT_FAILED);
+    }
+    print!("{}", o.out.stdout);
+    Ok(EXIT_OK)
+}
+
+/// SessionStart hook entry point: if a sentinel is pending, print an active
+/// fix-offer block so the host agent surfaces it (read the report, then ask the
+/// human whether to fix). Resolves the sentinel path from config, so a custom
+/// `[output].sentinel` still works (the old hook hardcoded `.specguard-pending`).
+/// Best-effort: any failure (no config, unreadable sentinel) prints nothing and
+/// exits 0, so it can never block a session from starting.
+fn pending(cli: &Cli) -> u8 {
+    let Ok(l) = load(cli) else {
+        return EXIT_OK;
+    };
+    let paths = report::paths(&l.cfg, &l.repo_root, &l.date);
+    if !report::sentinel_pending(&paths) {
+        return EXIT_OK;
+    }
+    let body = std::fs::read_to_string(&paths.sentinel).unwrap_or_default();
+    let field = |key: &str| -> String {
+        body.lines()
+            .find_map(|line| line.strip_prefix(key).map(|v| v.trim().to_string()))
+            .unwrap_or_default()
+    };
+    let report = field("report:");
+    let summary = field("summary:");
+
+    println!("⚠ specguard: 未処理の仕様ドリフト指摘があります (Human-on-the-loop)。");
+    if !report.is_empty() {
+        println!("report: {report}");
+    }
+    if !summary.is_empty() {
+        println!("summary: {summary}");
+    }
+    println!();
+    println!("対応方針: まず report (上記パス) を Read して指摘内容を把握し、`AskUserQuestion` で");
+    println!("次の3択を人間に提示せよ (人間が選ぶまで勝手に修正・ack しないこと):");
+    println!("  1. 別タスクで修正に着手 — 各 finding を B(コード修正)/C(doc 更新) に分類し、修正後 `specguard ack`");
+    println!("  2. 後で — sentinel を残す (次セッションで再提示)");
+    println!("  3. 不要 — `specguard ack` で sentinel を解除");
+    EXIT_OK
 }
 
 /// Clear the sentinel (C). Idempotent: succeeds whether or not one was present.

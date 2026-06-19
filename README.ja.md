@@ -106,6 +106,7 @@ hook が同じ件で促し続ける)。
 | コマンド | 対応バイナリ | 説明 |
 |---|---|---|
 | `/specguard:run [--baseline <ref>]` | `prompt --json` + subagent + `ingest` | subscription-native 監査 |
+| `/specguard:brief <task>` | `brief --prompt` + subagent | 着手前の read-only 仕様ブリーフィング (ドリフトを未然に防ぐ) |
 | `/specguard:scope` | `scope` | 解決済みスコープを表示 (agent 呼ばない) |
 | `/specguard:ack` | `ack` | 対応済み sentinel をクリア |
 | `/specguard:accept-prompt <理由>` | `accept-prompt` | prompt(メタ正典)を批准して pin |
@@ -120,6 +121,9 @@ specguard prompt                   # 各 shard のプロンプトを表示 (agen
 specguard prompt --json            # shard を機械可読 JSON で出力 (プラグインが使う)
 specguard ingest [--from <file>]   # 収集済み shard 出力(JSON/stdin)を食わせて
                                    #   parse→report→sentinel (agent を spawn しない)
+specguard brief "<task>"           # 着手前の read-only 仕様ブリーフィング (agent 実行)
+specguard brief "<task>" --prompt  # ブリーフィングプロンプトのみ描画 (プラグインが使う)
+specguard pending                  # sentinel があれば fix-offer を出力 (SessionStart hook)
 specguard ack                      # 対応済みの sentinel をクリア
 specguard decide "<title>"         # 決定ログ(ADR)を生成
 specguard accept-prompt -m "理由"  # prompt(メタ正典)を批准
