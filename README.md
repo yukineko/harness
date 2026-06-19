@@ -29,35 +29,40 @@ hooks are the cheap deterministic safety net; `/distill` is the smart one).
 - **`/distill` skill = LLM-quality summarization on demand**, run inside the
   session (can delegate heavy reads to sub-agents via `Task`).
 
-## Build
+## Install (recommended: as a Claude Code plugin)
+
+This repo is **both the Rust crate and a Claude Code plugin/marketplace**. The
+plugin bundles the four hooks, the `/distill` skill, the `ctxrot-distiller`
+subagent, and a prebuilt binary (`bin/ctxrot`) — so installs run entirely on your
+Claude **subscription**, no API key and no separate `cargo install` needed.
+
+```text
+# in Claude Code:
+/plugin marketplace add <git-url-of-this-repo>
+/plugin install ctxrot@yukineko
+```
+
+Hooks call `${CLAUDE_PLUGIN_ROOT}/bin/ctxrot <sub>`, so the bundled binary is used
+automatically. Run `ctxrot init` once for the config + store dirs (optional;
+defaults work without it).
+
+> The committed `bin/ctxrot` is built for the host platform (currently
+> linux/x86_64). Rebuild with `scripts/build-plugin-bin.sh` and commit, or build
+> per-target for multi-OS distribution.
+
+### Alternative: manual install (no plugin)
 
 ```sh
 cargo build --release
-# binary at target/release/ctxrot
+ctxrot init                 # config + store dirs
+ctxrot install --dry-run    # preview ~/.claude/settings.json changes
+ctxrot install              # apply (backs up settings.json first)
+cp -r skills/distill ~/.claude/skills/   # the /distill skill
 ```
 
-## Install
-
-```sh
-# 1. create default config + store dirs
-ctxrot init
-
-# 2. preview the settings.json changes
-ctxrot install --dry-run
-
-# 3. apply (backs up ~/.claude/settings.json first)
-ctxrot install
-```
-
-`install` is idempotent and **replaces** any prior ctxrot entries and the legacy
-`context-rot-guard.py` hook, while preserving your other hooks and settings.
-Remove with `ctxrot uninstall`.
-
-For the `/distill` skill:
-
-```sh
-cp skills/distill.md ~/.claude/commands/distill.md
-```
+`ctxrot install` is idempotent and **replaces** any prior ctxrot entries and the
+legacy `context-rot-guard.py` hook, while preserving your other hooks and
+settings. Remove with `ctxrot uninstall`.
 
 ## Configuration
 

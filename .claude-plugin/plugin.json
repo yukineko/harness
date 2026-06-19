@@ -1,0 +1,7 @@
+{
+  "name": "ctxrot",
+  "version": "0.1.0",
+  "description": "Context-rot guard for Claude Code: detect, rescue, restore, and distill conversation context to fight attention decay in long sessions. Subscription-native (hooks + subagent + skill, no API key).",
+  "author": { "name": "yukineko" },
+  "keywords": ["context", "hooks", "memory", "subagent", "rust"]
+}
