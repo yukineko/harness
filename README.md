@@ -52,6 +52,12 @@ launcher that picks the right per-platform binary (`bin/ctxrot-<os>-<arch>`) for
 the host, so the same repo works on Linux and macOS. Run `ctxrot init` once for
 the config + store dirs (optional; defaults work without it).
 
+The Linux binary is committed directly; the **macOS binaries**
+(`bin/ctxrot-darwin-arm64` / `-x86_64`) are built by the `macOS binaries` GitHub
+Actions workflow on a macOS runner and committed back on each push to `main`
+that touches `src/` (they can't be cross-built from Linux — Apple frameworks need
+the macOS SDK). To build them by hand, run `scripts/build-plugin-bin.sh` on a Mac.
+
 It runs entirely on your Claude subscription — the hooks and subagent execute in
 the normal session model, no `ANTHROPIC_API_KEY` and no separate `cargo install`.
 
