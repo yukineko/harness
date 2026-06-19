@@ -177,7 +177,7 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<String> {
     }
 
     let pct = (frac * 100.0) as i64;
-    let body = match band {
+    let mut body = match band {
         1 => format!(
             "context使用が推定~{pct}%。区切りの良い所で、確定した結論・決定事項だけ残し、\
              試行錯誤の経過は要約に畳む準備を。以降の重い読み込みは sub-agent 経由に。"
@@ -191,6 +191,21 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<String> {
              (2) /compact もしくは会話の蒸留 (3) 以降の重い読み込み・検索は必ず sub-agent 経由。"
         ),
     };
+
+    // Preemptive rescue (P1-1a): from band 2 (≈75%) up, write a fresh durable
+    // rescue note NOW — don't wait for PreCompact, which a manual `/clear` never
+    // fires. The band gate already escalates at most once per crossing, so this
+    // writes a bounded number of notes per session. A failed write just means no
+    // confirmation line; the advice itself is unaffected.
+    if band >= 2 {
+        if let Some(path) = crate::hooks::rescue::write(input, cfg, &format!("band-{pct}%")) {
+            body.push_str(&format!(
+                "\n先行退避ノートを書き出しました（このまま /compact・/clear しても安全）: {}",
+                path.display()
+            ));
+        }
+    }
+
     Some(format!("[context-rot guard] {body}"))
 }
 
@@ -227,5 +242,48 @@ mod tests {
         assert_eq!(cfg.band_for(0.50), 1);
         assert_eq!(cfg.band_for(0.80), 2);
         assert_eq!(cfg.band_for(0.95), 3);
+    }
+
+    #[test]
+    fn band_crossing_writes_preemptive_rescue() {
+        let base = std::env::temp_dir().join(format!("ctxrot-guard-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cwd = base.join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let cfg = Config {
+            state_dir: base.join("state"),
+            store_dir: base.join("store"),
+            ..Config::default()
+        };
+        let input = HookInput {
+            session_id: "sess-guard".into(),
+            // Fixture usage ≈ 184200 / 200000 ≈ 92% → band 3 (≥2).
+            transcript_path: "tests/fixtures/transcript.jsonl".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        };
+
+        // First crossing: advice mentions the preemptive note, and one is on disk.
+        let out = check_context_budget(&input, &cfg).expect("band advice on first crossing");
+        assert!(
+            out.contains("先行退避ノート"),
+            "should confirm preemptive rescue: {out}"
+        );
+
+        let store = crate::store::Store::new(&cfg);
+        let notes = store.list_notes(&cwd);
+        assert!(
+            notes.iter().any(|p| p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n.starts_with("rescue-"))),
+            "expected a rescue-*.md note, got {notes:?}"
+        );
+
+        // Escalate-only: the same band does not re-fire (so it won't re-rescue every turn).
+        assert!(check_context_budget(&input, &cfg).is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -14,6 +14,10 @@ pub struct Config {
     pub context_window: u64,
     pub large_file_bytes: u64,
     pub huge_tool_output_bytes: u64,
+    /// PreToolUse hard gate: a `Read` of an unbounded (no `limit`) local file at
+    /// or above this many bytes is denied, steering the model to a sub-agent.
+    /// 0 disables the gate entirely.
+    pub gate_file_bytes: u64,
     /// ascending fractions of the window that trigger escalating advice
     pub bands: Vec<f64>,
 }
@@ -26,6 +30,7 @@ struct FileConfig {
     context_window: Option<u64>,
     large_file_bytes: Option<u64>,
     huge_tool_output_bytes: Option<u64>,
+    gate_file_bytes: Option<u64>,
     bands: Option<Vec<f64>>,
 }
 
@@ -58,6 +63,7 @@ impl Default for Config {
             context_window: 200_000,
             large_file_bytes: 50_000,
             huge_tool_output_bytes: 50_000,
+            gate_file_bytes: 1_000_000,
             bands: vec![0.50, 0.75, 0.90],
         }
     }
@@ -90,6 +96,9 @@ impl Config {
                 if let Some(v) = fc.huge_tool_output_bytes {
                     cfg.huge_tool_output_bytes = v;
                 }
+                if let Some(v) = fc.gate_file_bytes {
+                    cfg.gate_file_bytes = v;
+                }
                 if let Some(v) = fc.bands {
                     if !v.is_empty() {
                         cfg.bands = v;
@@ -104,6 +113,9 @@ impl Config {
         }
         if let Some(v) = env_u64("GUARD_LARGE_FILE_BYTES") {
             cfg.large_file_bytes = v;
+        }
+        if let Some(v) = env_u64("GUARD_GATE_FILE_BYTES") {
+            cfg.gate_file_bytes = v;
         }
 
         // bands must be ascending and within (0,1]; sanitize defensively

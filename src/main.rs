@@ -39,6 +39,8 @@ enum Command {
     Rescue,
     /// SessionStart hook: inject a compact carryover from the latest note.
     Restore,
+    /// PreToolUse hook: gate a Read of a pathologically large local file.
+    Preguard,
     /// PostToolUse hook: warn on huge tool output.
     Toolguard,
     /// Merge ctxrot hooks into ~/.claude/settings.json.
@@ -143,6 +145,27 @@ fn main() {
                 }
             }
         }),
+        Command::Preguard => run_hook(|| {
+            if Config::disabled() {
+                return;
+            }
+            let raw = read_stdin();
+            if let Some(input) = HookInput::parse(&raw) {
+                let cfg = Config::load();
+                if let Some(reason) = hooks::preguard::run(&input, &cfg) {
+                    // PreToolUse: deny the call; the reason is the only steering
+                    // channel (PreToolUse can't inject additionalContext).
+                    let out = serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    });
+                    println!("{out}");
+                }
+            }
+        }),
         Command::Toolguard => run_hook(|| {
             if Config::disabled() {
                 return;
@@ -240,7 +263,11 @@ const SAMPLE_CONFIG: &str = r#"# ctxrot configuration
 store_dir = "~/.ctxrot/store"
 state_dir = "~/.ctxrot/state"
 
-# token window used for the budget % estimate
+# Budget denominator for the % estimate. Set this to the EFFECTIVE CAP you want
+# to stay under (the target), NOT your model's real context window. ctxrot is a
+# "keep it under 200K" guard: leaving this at 200000 makes the 50/75/90% bands
+# fire at ~100K/150K/180K. If you raise it to your real 1M window, the bands
+# won't fire until ~950K and the whole point of the tool is lost.
 context_window = 200000
 
 # a local file at/above this many bytes counts as a "large reference"
@@ -248,6 +275,11 @@ large_file_bytes = 50000
 
 # a tool output at/above this many bytes triggers the PostToolUse warning
 huge_tool_output_bytes = 50000
+
+# PreToolUse hard gate: an UNBOUNDED `Read` (no `limit`) of a local file at/above
+# this many bytes is denied, steering the model to a sub-agent or a bounded slice.
+# These are almost always logs/dumps/minified blobs. Set 0 to disable the gate.
+gate_file_bytes = 1000000
 
 # ascending fractions of the window that trigger escalating advice
 bands = [0.50, 0.75, 0.90]
@@ -269,5 +301,10 @@ fn init() -> anyhow::Result<()> {
     }
     println!("store_dir: {}", cfg.store_dir.display());
     println!("state_dir: {}", cfg.state_dir.display());
+    println!(
+        "context_window: {} (= effective cap / target; NOT your model's real window — \
+         keep it at the limit you want to stay under, e.g. 200000)",
+        cfg.context_window
+    );
     Ok(())
 }

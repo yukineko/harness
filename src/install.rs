@@ -14,6 +14,7 @@ const EVENTS: &[(&str, &str, Option<&str>)] = &[
     ("UserPromptSubmit", "guard", None),
     ("PreCompact", "rescue", None),
     ("SessionStart", "restore", Some("startup|resume|clear")),
+    ("PreToolUse", "preguard", Some("Read")),
     (
         "PostToolUse",
         "toolguard",
@@ -131,7 +132,8 @@ pub fn install(dry_run: bool) -> Result<()> {
     }
     write_settings(&settings)?;
     println!("\nInstalled hooks → {bin}");
-    println!("  UserPromptSubmit=guard  PreCompact=rescue  SessionStart=restore  PostToolUse=toolguard");
+    println!("  UserPromptSubmit=guard  PreCompact=rescue  SessionStart=restore");
+    println!("  PreToolUse=preguard  PostToolUse=toolguard");
     Ok(())
 }
 

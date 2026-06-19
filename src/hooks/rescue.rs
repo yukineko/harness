@@ -20,9 +20,24 @@ use crate::transcript::{self, Turn};
 const MAX_TURNS: usize = 60;
 const MAX_TURN_CHARS: usize = 1200;
 
-/// Run the rescue. Returns the written note path (for logging), or None if there
-/// was nothing to save.
+/// Run the rescue (PreCompact). Returns the written note path (for logging), or
+/// None if there was nothing to save.
 pub fn run(input: &HookInput, cfg: &Config) -> Option<PathBuf> {
+    let trigger = if input.trigger.is_empty() {
+        "precompact"
+    } else {
+        &input.trigger
+    };
+    write(input, cfg, trigger)
+}
+
+/// Write a rescue note NOW under the given `trigger` label, returning its path.
+///
+/// Shared by the PreCompact hook (`run`, trigger=`precompact`/auto) and by
+/// guard's *preemptive* band-crossing rescue (trigger=`band-NN%`). The latter
+/// keeps the durable note fresh so a manual `/compact` or `/clear` is safe even
+/// though `/clear` never fires PreCompact.
+pub fn write(input: &HookInput, cfg: &Config, trigger: &str) -> Option<PathBuf> {
     if input.transcript_path.is_empty() {
         return None;
     }
@@ -45,7 +60,7 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<PathBuf> {
         session_tag(&input.session_id),
         now.format("%Y%m%d-%H%M%S")
     );
-    let body = render_note(&cwd, input, &iso, pct, &extracted, &turns);
+    let body = render_note(&cwd, input, trigger, &iso, pct, &extracted, &turns);
 
     let store = Store::new(cfg);
     store.write_note(&cwd, &slug, &body).ok()
@@ -136,6 +151,7 @@ fn dedup_keep_order(v: &mut Vec<String>) {
 fn render_note(
     cwd: &Path,
     input: &HookInput,
+    trigger: &str,
     iso: &str,
     pct: Option<i64>,
     ex: &Extracted,
@@ -145,11 +161,6 @@ fn render_note(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("project");
-    let trigger = if input.trigger.is_empty() {
-        "precompact"
-    } else {
-        &input.trigger
-    };
     let pct_s = pct.map(|p| format!("~{p}%")).unwrap_or_else(|| "?".into());
 
     let mut s = String::new();
@@ -165,7 +176,7 @@ fn render_note(
 
     s.push_str(&format!("# ctxrot rescue {iso} (project: {proj})\n\n"));
     s.push_str(&format!(
-        "PreCompact 退避（trigger: {trigger}, context: {pct_s}）。圧縮で失われる前の素材保全。\n\n"
+        "退避ノート（trigger: {trigger}, context: {pct_s}）。compact/clear で失われる前の素材保全。\n\n"
     ));
 
     push_bullets(&mut s, "決定事項 / Decisions", &ex.decisions);
