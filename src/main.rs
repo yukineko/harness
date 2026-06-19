@@ -74,6 +74,14 @@ enum MetricsAction {
     Summary,
     /// Print the metrics log path.
     Path,
+    /// A/B compare two session groups by id prefix (e.g. guard-on vs GUARD_DISABLE).
+    /// Each prefix folds all matching sessions; prints both groups and Δ(A−B).
+    Compare {
+        /// Session-id prefix for group A (the standard protocol: guard ON).
+        a: String,
+        /// Session-id prefix for group B (the standard protocol: GUARD_DISABLE).
+        b: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -324,6 +332,54 @@ fn main() {
                                 "{:<16} {:>7} {:>5} {:>4} {:>9} {:>9} {:>6} {:>4} {:>4}",
                                 sid, s.prompts, s.crossings, s.max_band, s.peak_tokens,
                                 s.last_tokens, s.rescues, s.gates, s.tooldumps
+                            );
+                        }
+                    }
+                }
+                MetricsAction::Compare { a, b } => {
+                    let stats = metrics::summarize(&cfg);
+                    let ga = metrics::group_by_prefix(&stats, &a);
+                    let gb = metrics::group_by_prefix(&stats, &b);
+                    match (ga, gb) {
+                        (None, _) => {
+                            eprintln!("no session matches prefix '{a}' (group A)");
+                            std::process::exit(1);
+                        }
+                        (_, None) => {
+                            eprintln!("no session matches prefix '{b}' (group B)");
+                            std::process::exit(1);
+                        }
+                        (Some((ga, na)), Some((gb, nb))) => {
+                            let row = |label: &str, s: &metrics::SessionStat| {
+                                println!(
+                                    "{:<14} {:>7} {:>5} {:>4} {:>9} {:>6} {:>4} {:>4}",
+                                    label, s.prompts, s.crossings, s.max_band, s.peak_tokens,
+                                    s.rescues, s.gates, s.tooldumps
+                                );
+                            };
+                            println!(
+                                "{:<14} {:>7} {:>5} {:>4} {:>9} {:>6} {:>4} {:>4}",
+                                "group", "prompts", "cross", "band", "peak_tok", "rescue",
+                                "gate", "dump"
+                            );
+                            row(&format!("A:{a} ({na})"), &ga);
+                            row(&format!("B:{b} ({nb})"), &gb);
+                            // Δ(A−B): signed gaps on the figures the guard targets.
+                            let d = |x: u64, y: u64| x as i64 - y as i64;
+                            println!(
+                                "{:<14} {:>7} {:>5} {:>4} {:>9} {:>6} {:>4} {:>4}",
+                                "Δ A−B",
+                                d(ga.prompts, gb.prompts),
+                                d(ga.crossings, gb.crossings),
+                                d(ga.max_band, gb.max_band),
+                                d(ga.peak_tokens, gb.peak_tokens),
+                                d(ga.rescues, gb.rescues),
+                                d(ga.gates, gb.gates),
+                                d(ga.tooldumps, gb.tooldumps),
+                            );
+                            println!(
+                                "\n(標準プロトコルでは A=guard有効 / B=GUARD_DISABLE。\
+                                 peak_tok と band の Δ が負ほどガードが context を抑えた証拠。)"
                             );
                         }
                     }
