@@ -2,8 +2,7 @@
 //! actually keep N down?".
 //!
 //! Every hook emits one line to `<state_dir>/metrics.jsonl`:
-//!   * `budget`   (guard, per prompt) — est_tokens / frac / band / crossed: the
-//!                token TRAJECTORY and every band crossing.
+//!   * `budget`   (guard, per prompt) — est_tokens / frac / band / crossed: the token trajectory and every band crossing.
 //!   * `rescue`   (rescue + preemptive) — note path + bytes + trigger.
 //!   * `restore`  (SessionStart)        — carryover bytes + which sections hit.
 //!   * `gate`     (preguard deny)       — the file we kept OUT of context.
@@ -148,6 +147,49 @@ pub fn summarize(cfg: &Config) -> Vec<SessionStat> {
     order.into_iter().filter_map(|k| by.remove(&k)).collect()
 }
 
+/// Roll several sessions into one synthetic group for A/B comparison: counts
+/// (prompts/crossings/rescues/gates/dumps and their byte totals) sum, while
+/// `max_band`/`peak_tokens` take the max across the group (the worst point any
+/// one session reached — the figure the guard is meant to hold down).
+/// `last_tokens` is meaningless for a group, so it stays 0. The synthetic
+/// `session` is set to `label`.
+fn fold_group(label: &str, members: &[&SessionStat]) -> SessionStat {
+    let mut g = SessionStat {
+        session: label.to_string(),
+        ..Default::default()
+    };
+    for m in members {
+        g.prompts += m.prompts;
+        g.crossings += m.crossings;
+        g.max_band = g.max_band.max(m.max_band);
+        g.peak_tokens = g.peak_tokens.max(m.peak_tokens);
+        g.rescues += m.rescues;
+        g.rescue_bytes += m.rescue_bytes;
+        g.restores += m.restores;
+        g.gates += m.gates;
+        g.gate_bytes_saved += m.gate_bytes_saved;
+        g.tooldumps += m.tooldumps;
+        g.tooldump_bytes += m.tooldump_bytes;
+    }
+    g
+}
+
+/// Aggregate every session whose id starts with `prefix` into one group stat
+/// (so a paste of the truncated id from `ctxrot metrics` resolves, and a task
+/// spanning several sessions folds together). Returns `(group, match_count)`,
+/// or `None` when nothing matches.
+pub fn group_by_prefix(stats: &[SessionStat], prefix: &str) -> Option<(SessionStat, usize)> {
+    let members: Vec<&SessionStat> = stats
+        .iter()
+        .filter(|s| s.session.starts_with(prefix))
+        .collect();
+    if members.is_empty() {
+        return None;
+    }
+    let n = members.len();
+    Some((fold_group(prefix, &members), n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +227,32 @@ mod tests {
         assert_eq!(s1.gate_bytes_saved, 1_900_000);
         assert_eq!(stats[1].session, "S2");
 
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    #[test]
+    fn group_by_prefix_folds_matching_sessions() {
+        let cfg = temp_cfg("group");
+        // Two "A" runs (guard ON) under prefix "a-", one "B" run (guard OFF).
+        emit(&cfg, "a-run1", "budget", json!({"est_tokens": 120_000, "band": 2, "crossed": true}));
+        emit(&cfg, "a-run2", "budget", json!({"est_tokens": 90_000, "band": 1, "crossed": true}));
+        emit(&cfg, "a-run2", "rescue", json!({"note_bytes": 1000}));
+        emit(&cfg, "b-run1", "budget", json!({"est_tokens": 180_000, "band": 3, "crossed": true}));
+
+        let stats = summarize(&cfg);
+        let (a, na) = group_by_prefix(&stats, "a-").unwrap();
+        assert_eq!(na, 2);
+        assert_eq!(a.prompts, 2);
+        assert_eq!(a.crossings, 2); // summed across both A runs
+        assert_eq!(a.max_band, 2); // max across the group
+        assert_eq!(a.peak_tokens, 120_000); // worst point any A run reached
+        assert_eq!(a.rescues, 1);
+
+        let (b, nb) = group_by_prefix(&stats, "b-").unwrap();
+        assert_eq!(nb, 1);
+        assert_eq!(b.peak_tokens, 180_000);
+
+        assert!(group_by_prefix(&stats, "zzz").is_none());
         let _ = std::fs::remove_dir_all(&cfg.state_dir);
     }
 

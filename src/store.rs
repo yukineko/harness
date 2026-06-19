@@ -125,6 +125,7 @@ impl Store {
     ///     prior sequential session) → return the latest note of any kind.
     ///   * ≥2 distinct session tags → parallel usage detected → restrict to
     ///     untagged (legacy / explicitly-shared) notes; never another session's.
+    ///
     /// (Own-session notes are already handled by `latest_note_for_session`, so by
     /// the time we get here the tags present belong to *other* sessions.)
     pub fn latest_fallback_note(&self, cwd: &Path) -> Option<PathBuf> {

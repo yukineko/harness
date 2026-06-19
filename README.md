@@ -171,11 +171,16 @@ got through. Local only; disable with `metrics = false` or `GUARD_METRICS=0`.
 ```sh
 ctxrot metrics            # per-session rollup (prompts / crossings / peak tokens / rescue / gate / dump)
 ctxrot metrics path       # the metrics.jsonl path (pipe to jq for ad-hoc analysis)
+ctxrot metrics compare A B # A/B two session-id prefixes; prints both groups + Δ(A−B)
 ```
 
-This is the substrate for measuring whether the guard actually holds N down
-(e.g. compare peak-token and crossing counts across sessions, or A/B with
-`GUARD_DISABLE=1`).
+This is the substrate for measuring whether the guard actually holds N down.
+The A/B protocol: run a representative heavy task once normally (group A) and
+once under `GUARD_DISABLE=1` (group B), then `ctxrot metrics compare <A-id> <B-id>`.
+Each argument is a session-id prefix (paste the truncated id from the rollup);
+all matching sessions fold into one group, so a task spanning several sessions
+still compares cleanly. A negative `peak_tok`/`band` Δ means the guard lowered
+the context high-water mark.
 
 ## How memory survives a session
 
