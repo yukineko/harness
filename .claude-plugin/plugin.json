@@ -5,6 +5,8 @@
   "author": {
     "name": "yukineko"
   },
+  "homepage": "https://github.com/yukineko/specguard",
+  "repository": "https://github.com/yukineko/specguard",
   "license": "MIT",
-  "keywords": ["spec", "drift", "audit", "canon", "read-only"]
+  "keywords": ["spec", "drift", "audit", "canon", "read-only", "macos", "linux"]
 }

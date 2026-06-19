@@ -1,0 +1,18 @@
+{
+  "name": "specguard",
+  "description": "specguard — 仕様↔実装 整合監査ハーネスを Claude Code から subscription-native に使うためのプラグイン配布元 (macOS / Linux / WSL2)。",
+  "owner": {
+    "name": "yukineko",
+    "url": "https://github.com/yukineko"
+  },
+  "plugins": [
+    {
+      "name": "specguard",
+      "source": ".",
+      "description": "仕様↔実装 整合監査ハーネスを Claude Code から subscription-native に実行する (macOS / Linux / WSL2)。read-only subagent で監査し、決定的ハーネスは specguard バイナリに委譲。",
+      "version": "0.1.0",
+      "homepage": "https://github.com/yukineko/specguard",
+      "keywords": ["spec", "drift", "audit", "canon", "read-only", "macos", "linux"]
+    }
+  ]
+}

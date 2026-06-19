@@ -91,6 +91,16 @@ claude --plugin-dir /path/to/specguard        # load it for this session
 # after edits: /reload-plugins; inspect with /plugin
 ```
 
+Or install via the marketplace (persists across sessions):
+
+```text
+/plugin marketplace add yukineko/specguard    # register the marketplace (GitHub)
+/plugin install specguard@specguard           # install the plugin
+```
+
+Either way the `specguard` binary must be on PATH (`./install.sh`). **macOS / Linux /
+WSL2** are supported (the binary is Rust, the hook/commands are bash).
+
 ```
 /specguard:run
   └─ specguard prompt --json    (harness: resolve scope + render shards)
