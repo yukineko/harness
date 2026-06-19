@@ -38,8 +38,11 @@ main context を軽く保つ運用に切り替える。
 
 ## フォールバック（subagent を使わない場合）
 
-軽い会話で自分で蒸留できるなら、決定事項/残課題/触ったファイル/重要事実/現在地を markdown 化し、
-`printf '%s' "<本文>" | ctxrot note write --slug distill --cwd "$PWD" --session "$CLAUDE_CODE_SESSION_ID"`
-で保存してパスを報告する（`--session` がノート名に session hash を埋め、restore の到達性を担保する）。
+軽い会話で自分で蒸留できるなら、決定事項/残課題/触ったファイル/重要事実/現在地を markdown 化し
+（**`## 決定事項 / Decisions` と `## 残課題 / Open todos` は必須**。空でも見出しを残し本文に
+`_(なし / none)_` と書く — restore はこの2つだけを引き継ぐ）、
+`printf '%s' "<本文>" | ctxrot note write --slug distill --require-sections --cwd "$PWD" --session "$CLAUDE_CODE_SESSION_ID"`
+で保存してパスを報告する（`--require-sections` が必須2見出しを検査し、欠けると exit 1・未書き込みで
+落ちる→見出しを足して再実行。`--session` がノート名に session hash を埋め restore 到達性を担保）。
 
 要約は事実ベースで。会話に実在する内容だけを書き、推測で埋めないこと。

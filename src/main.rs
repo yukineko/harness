@@ -89,6 +89,11 @@ enum NoteAction {
         /// reach its own note amid parallel sessions (pass $CLAUDE_CODE_SESSION_ID).
         #[arg(long)]
         session: Option<String>,
+        /// Enforce the distill contract: reject (exit 1, write nothing) unless the
+        /// note carries the headings `restore` depends on (決定事項/Decisions and
+        /// 残課題/Open todos). Use for /distill so carryover is never silently empty.
+        #[arg(long)]
+        require_sections: bool,
     },
 }
 
@@ -234,9 +239,22 @@ fn main() {
                     }
                     println!("{}", dir.display());
                 }
-                NoteAction::Write { slug, cwd, session } => {
+                NoteAction::Write { slug, cwd, session, require_sections } => {
                     let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
                     let body = read_stdin();
+                    if require_sections {
+                        let missing = hooks::restore::missing_sections(&body);
+                        if !missing.is_empty() {
+                            eprintln!(
+                                "distill contract violation — missing required section(s): {}",
+                                missing.join(", ")
+                            );
+                            eprintln!(
+                                "→ add the heading(s) (use \"_(なし / none)_\" if truly empty) and retry; nothing was written."
+                            );
+                            std::process::exit(1);
+                        }
+                    }
                     let safe: String = slug
                         .chars()
                         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })

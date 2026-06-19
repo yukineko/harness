@@ -23,6 +23,10 @@ error it exits 0 and stays silent.
 
 Plus the **`/distill` skill** for on-demand, high-quality LLM distillation (the
 hooks are the cheap deterministic safety net; `/distill` is the smart one).
+Distilled notes are held to a **contract**: `ctxrot note write --require-sections`
+rejects (exit 1, writes nothing) any note missing the headings `restore` reads
+(`決定事項/Decisions`, `残課題/Open todos`), so a schema drift fails loudly at
+write time instead of silently yielding an empty carryover.
 
 ### Design split
 

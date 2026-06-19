@@ -71,6 +71,38 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     Some(out)
 }
 
+/// The section headings `restore` depends on for carryover. This is the single
+/// source of truth for the distill *contract*: a distilled note that omits one
+/// of these silently produces an empty carryover, so `note write
+/// --require-sections` rejects it. Each entry is `(human label, heading aliases)`.
+pub const REQUIRED_SECTIONS: &[(&str, &[&str])] = &[
+    ("決定事項 / Decisions", &["決定事項", "Decisions"]),
+    ("残課題 / Open todos", &["残課題", "Open todos", "todos"]),
+];
+
+/// True if `text` has a `## …` heading matching any of `titles` (presence only —
+/// an empty "_(なし)_" section still counts, since `restore` handles that).
+/// Matches exactly what `extract_section` keys on, so the contract guarantees
+/// `restore` can find the section.
+pub fn has_section(text: &str, titles: &[&str]) -> bool {
+    text.lines().any(|l| {
+        l.trim()
+            .strip_prefix("## ")
+            .map(|rest| titles.iter().any(|t| rest.contains(t)))
+            .unwrap_or(false)
+    })
+}
+
+/// Human labels of any `REQUIRED_SECTIONS` whose heading is missing from `text`.
+/// Empty vec means the note satisfies the contract.
+pub fn missing_sections(text: &str) -> Vec<&'static str> {
+    REQUIRED_SECTIONS
+        .iter()
+        .filter(|(_, aliases)| !has_section(text, aliases))
+        .map(|(label, _)| *label)
+        .collect()
+}
+
 /// Pull the body under a `## <title>` heading (any of the aliases), bounded.
 /// Skips the "_(なし / none)_" placeholder.
 fn extract_section(text: &str, titles: &[&str]) -> Option<String> {
@@ -116,5 +148,28 @@ mod tests {
         let note = "## 決定事項 / Decisions\n\n- A を採用\n- B は不採用\n\n## 残課題 / Open todos\n\n_(なし / none)_\n";
         assert!(extract_section(note, &["決定事項", "Decisions"]).unwrap().contains("A を採用"));
         assert!(extract_section(note, &["残課題", "todos"]).is_none());
+    }
+
+    #[test]
+    fn contract_accepts_required_headings_even_when_empty() {
+        // Both headings present (todos is the "none" placeholder) → conformant.
+        let note = "## 決定事項 / Decisions\n\n- A\n\n## 残課題 / Open todos\n\n_(なし / none)_\n";
+        assert!(missing_sections(note).is_empty());
+    }
+
+    #[test]
+    fn contract_flags_omitted_section() {
+        // The distiller dropped the empty Open-todos heading entirely → violation,
+        // exactly the silent-failure restore can't recover from.
+        let note = "## 決定事項 / Decisions\n\n- A\n\n## 触ったファイル / Files\n\n- x.rs\n";
+        let missing = missing_sections(note);
+        assert_eq!(missing, vec!["残課題 / Open todos"]);
+    }
+
+    #[test]
+    fn contract_flags_both_when_renamed() {
+        // Decisions hidden under a non-canonical heading → restore would miss it.
+        let note = "## まとめ\n\n- A を採用\n- 次は B\n";
+        assert_eq!(missing_sections(note).len(), 2);
     }
 }
