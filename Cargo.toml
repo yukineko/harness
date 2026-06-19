@@ -1,6 +1,6 @@
 [package]
 name = "ctxrot"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A context-rot guard for Claude Code: detect, rescue, restore, and distill conversation context to fight attention decay in long sessions."
 license = "MIT"

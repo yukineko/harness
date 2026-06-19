@@ -24,7 +24,12 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
 
     let cwd = input.cwd_or_current();
     let store = Store::new(cfg);
-    let latest = store.latest_note(&cwd)?;
+    // Prefer this session's own note (resume/compact keep the same session_id),
+    // so parallel sessions don't grab each other's carryover. Fall back to the
+    // project-wide latest for a fresh session with no prior note of its own.
+    let latest = store
+        .latest_note_for_session(&cwd, &input.session_id)
+        .or_else(|| store.latest_note(&cwd))?;
 
     let meta = std::fs::metadata(&latest).ok()?;
     if meta.len() > READ_CAP {

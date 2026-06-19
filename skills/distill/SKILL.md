@@ -15,13 +15,18 @@ main context を軽く保つ運用に切り替える。
 
 ## 手順
 
-1. **退避先と transcript を把握**:
+1. **退避先・transcript・session id を把握**:
    - 退避先ディレクトリ: !`ctxrot note dir --cwd "$PWD"`
+   - **この（元）セッションの id**: !`printf '%s' "$CLAUDE_CODE_SESSION_ID"`
+     並列セッション運用で「元セッションが自分のノートに確実に戻る」ための鍵。
+     ノート名に hash として埋め込まれ、`restore` がこの id で前方一致検索する。
    - 現在の transcript パスは、このセッションのもの（環境のフックが受け取っている JSONL）。
      不明なら subagent に「直近の会話から」と指示してよい。
 
 2. **`ctxrot-distiller` subagent に委譲**する（Task）。プロンプトに次を渡す:
    - `cwd` = カレントプロジェクト
+   - `session_id` = 手順1で得た**元セッションの id**（subagent 自身の env ではなくこれを使わせる。
+     subagent は子セッションで id が異なりうるため）
    - 可能なら `transcript_path`
    - focus（指定があれば）: "$ARGUMENTS"
    subagent が蒸留→ストアへ保存し、**ノートのパス＋超要約だけ**を返す。
@@ -34,6 +39,7 @@ main context を軽く保つ運用に切り替える。
 ## フォールバック（subagent を使わない場合）
 
 軽い会話で自分で蒸留できるなら、決定事項/残課題/触ったファイル/重要事実/現在地を markdown 化し、
-`printf '%s' "<本文>" | ctxrot note write --slug distill --cwd "$PWD"` で保存してパスを報告する。
+`printf '%s' "<本文>" | ctxrot note write --slug distill --cwd "$PWD" --session "$CLAUDE_CODE_SESSION_ID"`
+で保存してパスを報告する（`--session` がノート名に session hash を埋め、restore の到達性を担保する）。
 
 要約は事実ベースで。会話に実在する内容だけを書き、推測で埋めないこと。
