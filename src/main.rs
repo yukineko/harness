@@ -268,6 +268,18 @@ fn main() {
                             );
                             std::process::exit(1);
                         }
+                        // Soft contract: the rest of the distill shape lifts carryover
+                        // quality but isn't load-bearing for `restore`, so warn only.
+                        let soft = hooks::restore::missing_recommended_sections(&body);
+                        if !soft.is_empty() {
+                            eprintln!(
+                                "distill contract note — missing recommended section(s): {}",
+                                soft.join(", ")
+                            );
+                            eprintln!(
+                                "→ これらは restore には不要ですが carryover の質が上がります（任意・書き込みは継続）。"
+                            );
+                        }
                     }
                     let safe: String = slug
                         .chars()

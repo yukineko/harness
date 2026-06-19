@@ -135,6 +135,27 @@ pub fn missing_sections(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Sections that materially improve carryover quality but aren't load-bearing
+/// for `restore` (which only consumes Decisions/todos). These mirror the rest of
+/// the distill template's shape. `note write --require-sections` only *warns* on
+/// these — it never rejects — so the full structure is encouraged without making
+/// a thin-but-valid note impossible. Each entry is `(human label, heading aliases)`.
+pub const RECOMMENDED_SECTIONS: &[(&str, &[&str])] = &[
+    ("触ったファイル / Files", &["触ったファイル", "Files"]),
+    ("重要な事実 / Key facts", &["重要な事実", "重要事実", "Key facts"]),
+    ("現在地 / Where we are", &["現在地", "Where we are"]),
+];
+
+/// Human labels of any `RECOMMENDED_SECTIONS` whose heading is missing from
+/// `text`. Empty vec means the note carries the full distill shape.
+pub fn missing_recommended_sections(text: &str) -> Vec<&'static str> {
+    RECOMMENDED_SECTIONS
+        .iter()
+        .filter(|(_, aliases)| !has_section(text, aliases))
+        .map(|(label, _)| *label)
+        .collect()
+}
+
 /// Pull the body under a `## <title>` heading (any of the aliases), bounded.
 /// Skips the "_(なし / none)_" placeholder.
 fn extract_section(text: &str, titles: &[&str]) -> Option<String> {
@@ -203,5 +224,22 @@ mod tests {
         // Decisions hidden under a non-canonical heading → restore would miss it.
         let note = "## まとめ\n\n- A を採用\n- 次は B\n";
         assert_eq!(missing_sections(note).len(), 2);
+    }
+
+    #[test]
+    fn recommended_flags_only_soft_sections() {
+        // Required headings present, all recommended ones absent → the soft check
+        // names the three template extras and the hard check stays clean.
+        let note = "## 決定事項 / Decisions\n\n- A\n\n## 残課題 / Open todos\n\n_(なし / none)_\n";
+        assert!(missing_sections(note).is_empty());
+        assert_eq!(missing_recommended_sections(note).len(), 3);
+    }
+
+    #[test]
+    fn recommended_satisfied_by_full_shape() {
+        let note = "## 決定事項 / Decisions\n\n- A\n\n## 残課題 / Open todos\n\n- B\n\n\
+                    ## 触ったファイル / Files\n\n- x.rs\n\n## 重要な事実 / Key facts\n\n- k\n\n\
+                    ## 現在地 / Where we are\n\n- here\n";
+        assert!(missing_recommended_sections(note).is_empty());
     }
 }
