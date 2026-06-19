@@ -5,3 +5,5 @@
 # specguard's own outputs when dogfooding
 /reports
 /.specguard-pending
+# /specguard:run の一時 ingest ファイル
+/.specguard-ingest.json

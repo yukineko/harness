@@ -64,7 +64,24 @@ enum Command {
     /// Print the resolved scope only (no agent call).
     Scope,
     /// Print the rendered per-shard prompts only (no agent call).
-    Prompt,
+    Prompt {
+        /// Emit a machine-readable JSON envelope ({project, baseline, head, date,
+        /// marker, shards:[{label, prompt}]}) for subscription-native orchestration
+        /// (Claude Code plugin) instead of the human debug view.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ingest pre-collected per-shard agent outputs (JSON on stdin, or `--from`)
+    /// and run the parse→report→sentinel pipeline WITHOUT spawning agents. This is
+    /// the subscription-native counterpart to `run`: the Claude Code plugin gets
+    /// shard prompts via `prompt --json`, dispatches each to a read-only in-session
+    /// subagent (billed to the host subscription, no nested `claude --print`), then
+    /// feeds the outputs back here. Same exit codes as `run`.
+    Ingest {
+        /// Read the outputs JSON from a file instead of stdin.
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
     /// Clear the sentinel after a human has handled the pending findings.
     Ack,
     /// Scaffold specguard into a repo: starter config + Claude Code SessionStart
@@ -169,9 +186,27 @@ fn run(cli: &Cli) -> Result<u8> {
             print_scope(&l.cfg, &scope);
             return Ok(EXIT_OK);
         }
-        Some(Command::Prompt) => {
-            print_prompts(&l, &scope, &shards);
+        Some(Command::Prompt { json }) => {
+            // The ratification gate guards the gateway to dispatch: refuse to emit
+            // machine-readable prompts (which the plugin hands to subagents) until
+            // the prompt (meta-canon) is ratified, just as `run` refuses before it
+            // spawns. The human debug view is not gated (it audits nothing).
+            if json {
+                if let Some(code) = ratification_block(&l)? {
+                    return Ok(code);
+                }
+                emit_prompt_json(&l, &scope, &shards)?;
+            } else {
+                print_prompts(&l, &scope, &shards);
+            }
             return Ok(EXIT_OK);
+        }
+        Some(Command::Ingest { ref from }) => {
+            if let Some(code) = ratification_block(&l)? {
+                return Ok(code);
+            }
+            let outs = read_ingest(from.as_deref(), &l, &scope, &shards)?;
+            return finish(&l, &scope, &shards, &paths, outs);
         }
         Some(Command::Ack)
         | Some(Command::Init { .. })
@@ -180,40 +215,87 @@ fn run(cli: &Cli) -> Result<u8> {
         Some(Command::Run) | None => {}
     }
 
-    // Ratification gate: when the prompt (meta-canon) must be ratified, refuse to
-    // audit with an unratified or changed prompt until a human `accept-prompt`s.
-    if l.cfg.prompt.require_ratification {
-        let hashes = current_hashes(&l);
-        match ratify::read_lock(&l.repo_root) {
-            None => {
-                eprintln!(
-                    "specguard: prompt (メタ正典) が未批准です。内容を確認し、\n  `specguard accept-prompt -m \"理由\"` で批准してください。"
-                );
-                return Ok(EXIT_UNRATIFIED);
-            }
-            Some(lock) => {
-                let drift = ratify::drifted(
-                    &lock,
-                    &hashes,
-                    l.cfg.verify.enabled,
-                    l.cfg.verify.completeness,
-                );
-                if !drift.is_empty() {
-                    eprintln!(
-                        "specguard: prompt (メタ正典) に未批准の変更があります: {}\n  内容を確認し、合意できるなら `specguard accept-prompt -m \"理由\"` で再批准してください。",
-                        drift.join(", ")
-                    );
-                    return Ok(EXIT_UNRATIFIED);
-                }
-                // Surface which ratified policy version is in force.
-                eprintln!(
-                    "specguard: prompt 批准済み (date {}, canon {}) 理由: {}",
-                    lock.date, lock.canon_commit, lock.reason
-                );
-            }
-        }
+    // Run (default): ratify, render every shard, dispatch to the agent, finish.
+    if let Some(code) = ratification_block(&l)? {
+        return Ok(code);
     }
 
+    if !shards.is_empty() {
+        eprintln!(
+            "specguard: auditing {} (baseline {}, {} shard(s): {} area(s) + {} invariant + {} decision)",
+            l.cfg.project.name,
+            scope.baseline,
+            shards.len(),
+            scope.in_scope.len(),
+            if l.cfg.invariants.is_empty() { 0 } else { 1 },
+            if scope.decision_files.is_empty() { 0 } else { 1 },
+        );
+    }
+
+    let shard_prompts: Vec<agent::ShardPrompt> = shards
+        .iter()
+        .map(|&sh| agent::ShardPrompt {
+            label: prompt::shard_label(&l.cfg, &scope, sh),
+            prompt: prompt::render_shard(&l.template, &l.cfg, &scope, sh, &l.date),
+        })
+        .collect();
+
+    let outs = if shards.is_empty() {
+        Vec::new()
+    } else {
+        agent::run_shards(&l.cfg.agent, &l.repo_root, shard_prompts)
+    };
+
+    finish(&l, &scope, &shards, &paths, outs)
+}
+
+/// The ratification gate as a reusable guard. Returns `Ok(Some(EXIT_UNRATIFIED))`
+/// when `[prompt].require_ratification` is on and the prompt (meta-canon) is
+/// unratified or has drifted since ratification — the caller should return that
+/// code rather than audit. `Ok(None)` means auditing may proceed.
+fn ratification_block(l: &Loaded) -> Result<Option<u8>> {
+    if !l.cfg.prompt.require_ratification {
+        return Ok(None);
+    }
+    let hashes = current_hashes(l);
+    match ratify::read_lock(&l.repo_root) {
+        None => {
+            eprintln!(
+                "specguard: prompt (メタ正典) が未批准です。内容を確認し、\n  `specguard accept-prompt -m \"理由\"` で批准してください。"
+            );
+            Ok(Some(EXIT_UNRATIFIED))
+        }
+        Some(lock) => {
+            let drift = ratify::drifted(&lock, &hashes, l.cfg.verify.enabled, l.cfg.verify.completeness);
+            if !drift.is_empty() {
+                eprintln!(
+                    "specguard: prompt (メタ正典) に未批准の変更があります: {}\n  内容を確認し、合意できるなら `specguard accept-prompt -m \"理由\"` で再批准してください。",
+                    drift.join(", ")
+                );
+                return Ok(Some(EXIT_UNRATIFIED));
+            }
+            // Surface which ratified policy version is in force.
+            eprintln!(
+                "specguard: prompt 批准済み (date {}, canon {}) 理由: {}",
+                lock.date, lock.canon_commit, lock.reason
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Shared tail of `run` and `ingest`: given the per-shard agent outputs (already
+/// collected — by spawning for `run`, from JSON for `ingest`), parse them, run the
+/// optional verification gates, merge the report, and update sentinel/baseline.
+/// When there are no shards, `outs` is ignored and the empty-scope progress path
+/// runs instead. Returns the same exit codes `run` always has.
+fn finish(
+    l: &Loaded,
+    scope: &scope::Scope,
+    shards: &[prompt::Shard],
+    paths: &report::Paths,
+    outs: Vec<agent::ShardOutput>,
+) -> Result<u8> {
     let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
 
     // Nothing in scope and no invariants: record progress without an agent call.
@@ -234,26 +316,6 @@ fn run(cli: &Cli) -> Result<u8> {
         }
         return Ok(EXIT_OK);
     }
-
-    eprintln!(
-        "specguard: auditing {} (baseline {}, {} shard(s): {} area(s) + {} invariant + {} decision)",
-        l.cfg.project.name,
-        scope.baseline,
-        shards.len(),
-        scope.in_scope.len(),
-        if l.cfg.invariants.is_empty() { 0 } else { 1 },
-        if scope.decision_files.is_empty() { 0 } else { 1 },
-    );
-
-    let shard_prompts: Vec<agent::ShardPrompt> = shards
-        .iter()
-        .map(|&sh| agent::ShardPrompt {
-            label: prompt::shard_label(&l.cfg, &scope, sh),
-            prompt: prompt::render_shard(&l.template, &l.cfg, &scope, sh, &l.date),
-        })
-        .collect();
-
-    let outs = agent::run_shards(&l.cfg.agent, &l.repo_root, shard_prompts);
 
     // B: any shard whose agent failed -> a single EXIT_AGENT_FAILED, with each
     // real exit code on stderr. Never propagate raw (would collide with 2/3).
@@ -337,6 +399,119 @@ fn run(cli: &Cli) -> Result<u8> {
         println!("specguard: 修正候補なし (report: {})", paths.report.display());
     }
     Ok(EXIT_OK)
+}
+
+/// Machine-readable envelope for `prompt --json`: enough for the plugin to
+/// dispatch each shard to a read-only subagent and label the results.
+#[derive(serde::Serialize)]
+struct PromptJson<'a> {
+    project: &'a str,
+    baseline: &'a str,
+    head: String,
+    date: &'a str,
+    /// The marker each shard's report must end with (so the orchestrator can
+    /// remind the subagent, and reject output that lacks it).
+    marker: &'a str,
+    shards: Vec<ShardJson>,
+}
+
+#[derive(serde::Serialize)]
+struct ShardJson {
+    label: String,
+    prompt: String,
+}
+
+/// Input envelope for `ingest`: the per-shard outputs the plugin collected from
+/// its subagents. `stdout` is the subagent's report (must carry the marker);
+/// `code` is its exit status (default 0 = success); `stderr` is optional context.
+#[derive(serde::Deserialize)]
+struct IngestJson {
+    shards: Vec<IngestShard>,
+}
+
+#[derive(serde::Deserialize)]
+struct IngestShard {
+    label: String,
+    #[serde(default)]
+    stdout: String,
+    #[serde(default)]
+    stderr: String,
+    #[serde(default)]
+    code: i32,
+}
+
+/// Emit the JSON envelope of rendered shard prompts (for `prompt --json`).
+fn emit_prompt_json(l: &Loaded, scope: &scope::Scope, shards: &[prompt::Shard]) -> Result<()> {
+    let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
+    let shards_json: Vec<ShardJson> = shards
+        .iter()
+        .map(|&sh| ShardJson {
+            label: prompt::shard_label(&l.cfg, scope, sh),
+            prompt: prompt::render_shard(&l.template, &l.cfg, scope, sh, &l.date),
+        })
+        .collect();
+    let env = PromptJson {
+        project: &l.cfg.project.name,
+        baseline: &scope.baseline,
+        head,
+        date: &l.date,
+        marker: parse::MARKER,
+        shards: shards_json,
+    };
+    println!("{}", serde_json::to_string_pretty(&env).context("serializing prompt JSON")?);
+    Ok(())
+}
+
+/// Read the `ingest` input (stdin or `--from`) and align its outputs to the
+/// freshly resolved shards by label. A shard with no matching output becomes an
+/// agent failure (`code = -1`) so `finish` flags it like any other failed shard —
+/// the plugin must return every shard it was handed.
+fn read_ingest(
+    from: Option<&Path>,
+    l: &Loaded,
+    scope: &scope::Scope,
+    shards: &[prompt::Shard],
+) -> Result<Vec<agent::ShardOutput>> {
+    let raw = match from {
+        Some(p) => std::fs::read_to_string(p)
+            .with_context(|| format!("reading ingest file {}", p.display()))?,
+        None => {
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .context("reading ingest JSON from stdin")?;
+            s
+        }
+    };
+    let parsed: IngestJson = serde_json::from_str(&raw).context("parsing ingest JSON")?;
+    let mut by_label: std::collections::HashMap<String, IngestShard> =
+        parsed.shards.into_iter().map(|s| (s.label.clone(), s)).collect();
+    let outs = shards
+        .iter()
+        .map(|&sh| {
+            let label = prompt::shard_label(&l.cfg, scope, sh);
+            match by_label.remove(&label) {
+                Some(s) => agent::ShardOutput {
+                    label,
+                    out: agent::AgentOutput {
+                        stdout: s.stdout,
+                        stderr: s.stderr,
+                        code: s.code,
+                    },
+                },
+                None => agent::ShardOutput {
+                    out: agent::AgentOutput {
+                        stdout: String::new(),
+                        stderr: format!("no output provided for shard '{label}' in ingest input"),
+                        code: -1,
+                    },
+                    label,
+                },
+            }
+        })
+        .collect();
+    Ok(outs)
 }
 
 /// Clear the sentinel (C). Idempotent: succeeds whether or not one was present.

@@ -1,190 +1,232 @@
 # specguard
 
-**仕様↔実装 整合監査ハーネス (project-agnostic)**
+> 🌐 **English** ・ [日本語](README.ja.md)
 
-実装が「正典 (canonical spec)」からずれていないか、また正典 doc 自体に
-沈黙・矛盾・重複がないかを、LLM エージェントに **read-only** で監査させる
-CLI です。判定の中核は LLM が逐語引用つきで行い、specguard はその周りの
-**決定的なハーネス** — スコープ決定 (git diff) → プロンプト描画 → エージェント
-起動 → marker 解析 → レポート / sentinel 出力 — を担います。
+**Spec ↔ implementation drift audit harness (project-agnostic)**
 
-もともと AEGIS プロジェクト内で bash + Claude プロンプトとして実装されていた
-仕組みを、**プロジェクト固有部分をすべて設定ファイル (TOML) に外出し** して
-任意プロジェクトで使えるよう Rust で書き直したものです。
-
-## 設計
+A CLI that has an LLM agent audit, **read-only**, whether an implementation has
+drifted from its *canonical spec*, and whether the canon docs themselves contain
+silence, contradiction, or duplication. The judgment lives in the LLM (which
+quotes the canon verbatim); specguard is the **deterministic harness** around it
+— scope resolution → prompt rendering → agent launch → marker parsing →
+report / sentinel. Everything project-specific is externalized to a TOML config.
 
 ```
 specguard.toml ──┐
-   git diff ──────┼──▶ scope (変更領域 ∪ 不変条件)
+   git diff ──────┼──▶ scope (changed areas ∪ invariants)
                   │         │
-                  │         ▼
-templates/  ──────┼──▶ プロンプト描画 ──▶ agent (claude --print, read-only)
-                  │                              │ stdout
-                  │                              ▼
-                  └──────────────── marker 解析 ──▶ report.md + .last-ref
-                                          │
-                                  needs_user=yes なら ──▶ sentinel
+templates/ ───────┼──▶ render prompt ──▶ agent (read-only) ──▶ parse markers ──▶ report + sentinel
 ```
 
-- **判定は LLM**: エージェントは Read/Grep/Glob + read-only git で **生の正典と実装を
-  読み**、逐語引用できないものは `不明` に降格する (hallucination で `矛盾` を捏造しない)。
-- **read-only はハーネスで強制**: 既定エージェントは allowlist (Read/Grep/Glob +
-  `git diff/log/show/status`) で起動し、書き込み・ネットワーク・任意 shell を deny する。
-  `--print` モードでは allowlist 外のツールは自動 deny されるため、監査対象リポジトリの
-  内容による prompt injection でも破壊的コマンドは成功しない。プロンプトの「お願い」では
-  なく権限で担保する。
-- **正典の中身はコピーしない**: 設定には「どこを読むか」(canon ポインタ) だけ書く。
-  中身を写すとドリフトの種になるため。
-- **shard 並列 (context 分離)**: in-scope 領域ごと + 不変条件を **別プロセス (fresh
-  context) で並列監査** し、レポートを統合する。1 セッションに無関係なファイルを溜め込んで
-  判定が劣化する (context rot) のを防ぐ。並列度は最大 4 プロセス。
-- **change-triggered + invariant**: 毎回フルリポは見ない。baseline 以降に変更が
-  あった領域 + 毎回チェックする不変条件だけに絞る。baseline は
-  `--baseline`/env → `[scope].baseline_ref` → `.last-ref` → `[scope].fallback_ref`
-  (既定 `HEAD~20`) の順で解決し、**どれも解決できなければ最終 fallback として
-  全 tracked file を監査** する (`baseline: (all tracked files)`)。若い/浅い repo の
-  初回でも hard-error しない。diff は two-dot (`baseline..HEAD`) の **committed 状態**
-  を対象とする (未コミットの作業ツリーは見ない)。領域は **glob にマッチする実装変更**
-  *または* **canon ポインタのファイルが変更された** とき in-scope になる (仕様だけ
-  変わって実装を誰も再照合しない、を防ぐ)。
-- **baseline は ack 連動で前進**: クリーンに監査できた回 (`needs_user=no` かつ未処理
-  sentinel なし) だけ `.last-ref` を HEAD へ進める。**指摘が残っている間は baseline を
-  据え置く** ので、未修正の drift が次回の diff から外れて検出漏れになることがない。
-  人間が対応して `specguard ack` するまで同じ範囲を再監査し続ける。
-- **provenance**: レポートは監査時の **canon commit (HEAD)** を pin する。過去レポートの
-  再現と、B/C 分類 (コードが新か doc が新か) の時間的な接地に使う。
-- **prompt はメタ正典 (批准ゲート)**: prompt テンプレートは「何を drift とみなすか」を決める
-  *監査ポリシー* = メタ正典。`[prompt].require_ratification = true` のとき、`run` は prompt の
-  fingerprint を `.specguard-prompt.lock` と照合し、**未批准/変更があれば監査を拒否** する
-  (exit 5)。人間が内容を確認し `specguard accept-prompt -m "理由"` で批准すると、契約チェック
-  (必須 placeholder) を通った上で fingerprint・canon commit・理由が pin される。**同意が正典
-  たる権威を与え**、「番人を誰が見張る」の無限後退を止める。prompt は read-only + HOTL ゆえ
-  *object 正典の権威にはならない* (findings を出すだけで canon を書き換えない)。検証ゲート
-  (`[verify]`) のテンプレも同じ lock に乗るが、**有効なゲートのときだけ** pin/照合される
-  (scoped consent: ゲートを後から有効化すると再批准を強制。詳細は DESIGN-VERIFY.md §7)。
+There are two ways to run it, both sharing **the same `specguard` binary**:
 
-監査の 3 次元（**分類・verdict 語彙・規律の正典は監査プロンプト
-`templates/audit-prompt.md` / `templates/decisions-prompt.md`**。ここでは概要のみ。重複を避け
-詳細はそちらを指す）:
-- **D1 実装↔正典 drift**: 実装が正典からずれていないか（矛盾は誤読/コード違反/正典陳腐化等に分類）。
-- **D2 仕様品質**: 正典 doc 自体の **沈黙・矛盾・重複**。
-- **D3 決定ログ (ADR) の鮮度・陳腐化**: 仕様変更の *理由* を canon commit に pin して
-  記録 (`specguard decide`) し、決定が指す canon が今も一致するか (鮮度) と、決定の
-  driver/review_when が今も成立するか (陳腐化＝理由より長生きした規則) を照合する。
-  決定ログは *証拠* であって権威ではなく、canon が常に正 (`[decisions]` で有効化)。
+| | standalone binary | Claude Code plugin |
+|---|---|---|
+| Audit engine | spawns `claude --print` per shard | in-session read-only subagent (no nested claude) |
+| Billing | depends on the claude CLI login | **the host session's subscription** |
+| read-only enforcement | `claude --print` **Bash-arg allowlist** (strong) | subagent **tool-name** restriction (weaker) |
+| Entry point | `specguard run` (cron, etc.) | `/specguard:run` (interactive / HOTL) |
 
-監査が出した findings を額面で信じず、独立 agent で **反証** (偽陽性除去) し **網羅性批評**
-(偽陰性発掘) してから人間に上げる *検証ゲート* は `[verify]` で有効化する (既定 OFF)。
-設計と不変条件は **[DESIGN-VERIFY.md](DESIGN-VERIFY.md)**。`enabled` = V1 反証 (各
-`needs_user=yes` finding を独立 skeptic が逐語引用で覆せたときだけ取り下げ)、`completeness`
-= V2 網羅性批評 (サンプリング監査が照合し損ねた canon ルールを発掘)。§8 のとおり**両方を
-併せて**有効化するのを推奨 (反証だけだと偽陰性に偏る)。
+→ For the design and invariants see **[DESIGN.md](DESIGN.md)** /
+**[DESIGN-VERIFY.md](DESIGN-VERIFY.md)** (Japanese); the canon for the audit
+policy (classification, verdict vocabulary, discipline) is
+`templates/audit-prompt.md`.
 
-## インストール
+---
 
-導入手順の詳細は **[INSTALL.md](INSTALL.md)**（前提条件・設定・定期実行・トラブル
-シューティング）を参照。最短手順:
+## Getting started
+
+### Prerequisites
+
+- A Rust toolchain (`cargo`). Get it from https://rustup.rs.
+- The audit target must be a **git repository**.
+- Either way the target repo needs a `specguard.toml` (scaffolded below).
+
+### 1. Install the binary (prerequisite for both modes)
 
 ```sh
-./install.sh                 # release ビルドして ~/.local/bin へ配置
-# 配置先を変えるなら:
-SPECGUARD_BIN_DIR=/usr/local/bin ./install.sh
+./install.sh                                  # release build → ~/.local/bin
+SPECGUARD_BIN_DIR=/usr/local/bin ./install.sh # to change the install dir
 ```
 
-`install.sh` は `cargo build --release` 後にバイナリを PATH 上へ置くだけ。手動なら
-`cargo build --release` で `target/release/specguard` が生成される。
+Manually, `cargo build --release` produces `target/release/specguard`. Make sure
+`~/.local/bin` is on your PATH. Details and troubleshooting are in
+**[INSTALL.md](INSTALL.md)**.
 
-導入後、監査したいリポジトリに **scaffold** する:
+### 2. Scaffold into the target repo
 
 ```sh
 cd /path/to/your/repo
-specguard init        # specguard.toml と .claude/ の SessionStart hook を生成
+specguard init        # generates specguard.toml + a SessionStart hook (idempotent)
 ```
 
-`specguard init` は冪等で、既存の `specguard.toml` は `--force` 無しでは上書きせず、
-`.claude/settings.json` に他の設定があっても壊さず SessionStart hook だけを足す
-(hook は `.specguard-pending` を検知してセッション開始時に未処理ドリフトを提示する)。
+`init` will not overwrite an existing `specguard.toml` without `--force`, and it
+appends only the SessionStart hook (which surfaces unhandled drift) without
+disturbing other settings in `.claude/settings.json`. **In plugin mode the hook
+is bundled**, so you only need the config (`cp specguard.example.toml specguard.toml`
+also works).
 
-## 使い方
-
-1. `specguard init` で生成された `specguard.toml` を編集 (`[[area]]` / `[[invariant]]`
-   / `canon` を対象リポジトリに合わせる)。手動で用意するなら
-   `cp specguard.example.toml /path/to/your/repo/specguard.toml`。
-
-2. リポジトリルートで実行:
-
-   ```sh
-   cd /path/to/your/repo
-   specguard init                     # config + SessionStart hook を scaffold
-   specguard run                      # 監査を実行
-   specguard scope                    # 解決されたスコープだけ表示 (agent 呼ばない)
-   specguard prompt                   # 各 shard のプロンプトを表示 (agent 呼ばない)
-   specguard ack                      # 対応済みの sentinel をクリア
-   specguard decide "<title>"         # 決定ログ(ADR)を canon commit に pin して生成
-   specguard accept-prompt -m "理由"  # prompt(メタ正典)を批准して pin
-   specguard --baseline HEAD~5 run    # baseline を上書き
-   specguard --config examples/aegis.toml run
-   ```
-
-   `needs_user=yes` の指摘に人間が対応したら `specguard ack` で sentinel を消す
-   (これをしないと SessionStart hook が同じ件で促し続ける)。
-
-出力:
-
-| パス | 内容 |
-|---|---|
-| `<report_dir>/<date>.md` | レポート本体 |
-| `<report_dir>/.last-ref` | 最後に監査した HEAD (次回の change-triggered baseline) |
-| `<sentinel>` | `needs_user=yes` のときだけ (date / report / summary) |
-
-## 設定 (TOML)
-
-`specguard.example.toml` に全項目のコメント付きサンプルがあります。要点:
-
-- `[project]` … `name`, `root` (リポジトリルート)
-- `[agent]` … `command` + `args`。既定は `claude --print`(read-only)。任意のエージェント
-  CLI に差し替え可 (プロンプトを stdin で受け、レポートを stdout に返すもの)
-- `[scope]` … `baseline_ref` / `fallback_ref` (両方解決不能なら全 tracked file を監査)
-- `[output]` … `report_dir` / `sentinel`
-- `[prompt]` … `template` (省略時は埋め込み既定テンプレート)
-- `[[area]]` (複数) … `name` / `globs` / `canon`。**globs にマッチする変更があれば in-scope**
-- `[[invariant]]` (複数) … `name` / `description` / `canon`。**毎回チェック**
-
-AEGIS の元実装を再現する設定例は `examples/aegis.toml`。
-
-## 終了コード
-
-| code | 意味 |
-|---|---|
-| 0 | 正常終了 |
-| 2 | 設定 / 使用法エラー |
-| 3 | いずれかの shard の出力に marker が無い (レポートは保存。baseline 前進・sentinel はしない) |
-| 4 | いずれかの shard のエージェントが非ゼロ終了 (真の終了コードは stderr に出力) |
-| 5 | prompt(メタ正典)が未批准/変更あり (`require_ratification` 有効時)。`accept-prompt` が必要 |
-
-一次情報は `src/main.rs` の `EXIT_*` 定数 (この表が唯一の doc 表。他 doc は再掲せずここを指す)。
-
-- エージェント由来の終了コードは **そのまま伝播しない**。specguard 自身が `2`(usage) /
-  `3`(no-marker) を予約しており、生伝播すると「agent が 3 で死んだ」のか「marker 欠落」
-  なのか区別できなくなるため。エージェント失敗は常に `4` に集約し、各 shard の実際の
-  コードは stderr に出す。
-
-## 定期実行 / HOTL 連携
-
-`specguard run` を cron / Windows タスクスケジューラ等から起動し、`needs_user=yes`
-のとき立つ sentinel を SessionStart hook で検知して「修正に着手?」を促す、という
-Human-on-the-loop ループに組み込めます (sentinel フォーマットは元の AEGIS 実装と互換)。
-SessionStart hook は `specguard init` が `.claude/settings.json` に設定します。
-
-## テスト
+### 3a. Use it standalone
 
 ```sh
-cargo test          # unit (parse / scope / prompt / report) + integration (fake agent)
+cd /path/to/your/repo
+# edit specguard.toml's [[area]] / [[invariant]] / canon for your repo
+specguard run                                 # run the audit
 ```
 
-統合テストは `bash -c` の擬似エージェントを使うので実 LLM は不要です。
+Run `specguard run` from cron / a task scheduler, and let the SessionStart hook
+pick up the sentinel raised when `needs_user=yes`, prompting a human — a
+Human-on-the-loop loop.
 
-## ライセンス
+### 3b. Use it as a Claude Code plugin (subscription-native)
+
+This repository *is* the plugin. Instead of spawning `claude --print`, it
+delegates each shard to an in-session read-only subagent (`specguard-auditor`),
+auditing on the host session's subscription. The deterministic harness is still
+delegated to the same `specguard` binary (no duplicated judgment logic).
+
+```sh
+cd /path/to/your/repo
+claude --plugin-dir /path/to/specguard        # load it for this session
+# after edits: /reload-plugins; inspect with /plugin
+```
+
+```
+/specguard:run
+  └─ specguard prompt --json    (harness: resolve scope + render shards)
+  └─ Task(specguard-auditor) × shard   (judgment: read-only subagent / subscription)
+  └─ specguard ingest --from …  (harness: parse → verify → report → sentinel/baseline)
+```
+
+---
+
+## Usage
+
+Once a human handles a `needs_user=yes` finding, clear the sentinel (otherwise
+the SessionStart hook keeps nagging about the same issue).
+
+### Slash commands (plugin)
+
+| Command | Backing binary | Description |
+|---|---|---|
+| `/specguard:run [--baseline <ref>]` | `prompt --json` + subagent + `ingest` | subscription-native audit |
+| `/specguard:scope` | `scope` | show the resolved scope (no agent) |
+| `/specguard:ack` | `ack` | clear a handled sentinel |
+| `/specguard:accept-prompt <reason>` | `accept-prompt` | ratify & pin the prompt (meta-canon) |
+| `/specguard:decide <title>` | `decide` | scaffold a decision record (ADR) pinned to the canon commit |
+
+### Subcommands (binary)
+
+```sh
+specguard run                      # run the audit (spawns claude --print per shard)
+specguard scope                    # print the resolved scope only (no agent)
+specguard prompt                   # print each shard's prompt (no agent)
+specguard prompt --json            # emit shards as machine-readable JSON (used by the plugin)
+specguard ingest [--from <file>]   # feed pre-collected shard outputs (JSON/stdin) into
+                                   #   parse→report→sentinel (does NOT spawn an agent)
+specguard ack                      # clear a handled sentinel
+specguard decide "<title>"         # scaffold a decision record (ADR)
+specguard accept-prompt -m "reason"  # ratify the prompt (meta-canon)
+specguard --baseline HEAD~5 run    # override the baseline
+specguard --config examples/aegis.toml run
+```
+
+### Output
+
+| Path | Contents |
+|---|---|
+| `<report_dir>/<date>.md` | the report |
+| `<report_dir>/.last-ref` | the last audited HEAD (next run's change-triggered baseline) |
+| `<sentinel>` | only when `needs_user=yes` (date / report / summary) |
+
+The baseline **advances in lockstep with ack**: `.last-ref` moves to HEAD only on
+a clean run, and is held while findings remain (so unfixed drift can't fall out
+of the next run's diff and go undetected).
+
+---
+
+## Configuration (TOML)
+
+`specguard.example.toml` has a fully commented sample of every field. Key points:
+
+- `[project]` … `name`, `root` (repository root)
+- `[agent]` … `command` + `args`. Defaults to `claude --print` (with a read-only
+  allowlist). Swappable for any agent CLI (reads a prompt on stdin, writes the
+  report to stdout)
+- `[scope]` … `baseline_ref` / `fallback_ref` (if neither resolves, all tracked
+  files are audited)
+- `[output]` … `report_dir` / `sentinel`
+- `[prompt]` … `template` (embedded default if omitted) / `require_ratification`
+  (the ratification gate)
+- `[[area]]` (repeatable) … `name` / `globs` / `canon`. **In-scope when a change
+  matches `globs`**
+- `[[invariant]]` (repeatable) … `name` / `description` / `canon`. **Checked
+  every run**
+- `[verify]` … verification gates (default OFF). `enabled` = refutation (drop
+  false positives) / `completeness` = completeness critique (surface false
+  negatives). **Enabling both is recommended.** See [DESIGN-VERIFY.md](DESIGN-VERIFY.md)
+- `[decisions]` … enable the decision-record (ADR) freshness/staleness check (D3)
+
+`examples/aegis.toml` is a config reproducing the original AEGIS implementation.
+
+### The three audit dimensions (overview)
+
+The canon is the audit prompt (`templates/audit-prompt.md` /
+`decisions-prompt.md`). In brief:
+
+- **D1 implementation↔canon drift**: has the implementation drifted from the
+  canon (contradictions classified as misread / code-violation / stale-canon).
+- **D2 spec quality**: silence / contradiction / duplication in the canon docs
+  themselves.
+- **D3 decision-log freshness/staleness**: pin the *reason* for a spec change to
+  a canon commit and check whether the decision still holds (enable via
+  `[decisions]`).
+
+---
+
+## Exit codes
+
+| code | meaning |
+|---|---|
+| 0 | success |
+| 2 | config / usage error |
+| 3 | a shard's output lacked the marker (report saved; baseline not advanced, no sentinel) |
+| 4 | a shard's agent exited non-zero (the real code goes to stderr) |
+| 5 | the prompt (meta-canon) is unratified/changed (when `require_ratification` is on); needs `accept-prompt` |
+
+The source of truth is the `EXIT_*` constants in `src/main.rs` (this is the only
+doc copy of the table). Agent exit codes are never propagated raw — they always
+collapse to `4`, with each shard's real code on stderr.
+
+---
+
+## About the read-only guarantee
+
+- **standalone**: the default agent launches with an allowlist (Read/Grep/Glob +
+  `git diff/log/show/status`) and denies writes, network, and arbitrary shell. In
+  `--print` mode any tool outside the allowlist is auto-denied, so even a prompt
+  injection from the audited repo's content cannot run a destructive command. It
+  is guaranteed by **permissions**, not by a polite request in the prompt.
+- **plugin**: the subagent guarantee is at the **tool-name** level (Edit/Write/
+  NotebookEdit/WebFetch/WebSearch revoked + a read-only-git prompt discipline). A
+  Claude Code subagent definition cannot express a Bash *argument* allowlist
+  (`Bash(git diff *)`), so it is weaker against prompt injection than standalone.
+  For targets where enforcement strength matters most, prefer standalone
+  `specguard run`.
+- When the verification gates (`[verify]`) are on, the refutation/completeness
+  steps inside `ingest` still spawn an agent via the binary (so a nested claude
+  runs even through the plugin). Full native-ization is future work.
+
+---
+
+## Tests
+
+```sh
+cargo test          # unit (parse/scope/prompt/report) + integration (fake agent)
+```
+
+The integration tests use a `bash -c` fake agent, so no real LLM is required.
+
+## License
 
 MIT

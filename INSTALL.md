@@ -1,251 +1,263 @@
-# specguard 導入ガイド
+# specguard install guide
 
-仕様↔実装 整合監査ハーネス specguard を、ビルドから対象リポジトリへの組み込み・
-定期実行まで一通り導入する手順。概要・設計は [README.md](README.md) を参照。
+> 🌐 **English** ・ [日本語](INSTALL.ja.md)
+
+Everything needed to bring up the spec↔implementation drift audit harness
+specguard — from building, to wiring it into a target repo, to scheduled runs.
+For the overview and design see [README.md](README.md).
 
 ---
 
-## 1. 前提条件
+## 1. Prerequisites
 
-| 必要なもの | 用途 | 備考 |
+| Requirement | Used for | Notes |
 |---|---|---|
-| **Rust toolchain (`cargo`)** | specguard 本体のビルド | https://rustup.rs から導入 |
-| **`git`** | 変更スコープの解決 (`git diff` / `ls-tree`) | 監査対象が git リポジトリであること |
-| **`claude` CLI**（Claude Code） | 監査エージェント（既定） | `specguard run` のときだけ必要。認証済みであること |
+| **Rust toolchain (`cargo`)** | building specguard | install from https://rustup.rs |
+| **`git`** | resolving the change scope (`git diff` / `ls-tree`) | the audit target must be a git repo |
+| **`claude` CLI** (Claude Code) | the audit agent (default) | only needed for `specguard run`; must be authenticated |
 
-`init` / `scope` / `prompt` / `ack` は `claude` CLI 無しでも動く（エージェントを起動しない）。
-実際に監査する `run` のときだけ `claude` が必要。別のエージェントに差し替えることも可能
-（後述の `[agent]`）。
+`init` / `scope` / `prompt` / `ack` work without the `claude` CLI (they launch no
+agent). Only `run` — the actual audit — needs `claude`. You can also swap in a
+different agent (see `[agent]` below).
 
 ---
 
-## 2. 本体のインストール
+## 2. Install the binary
 
-### install.sh を使う（推奨・WSL2 / Linux / macOS）
+### Using install.sh (recommended; WSL2 / Linux / macOS)
 
 ```sh
 ./install.sh
 ```
 
-- `cargo build --release` でビルドし、`~/.local/bin/specguard` に配置する。
-- 配置先を変えるなら環境変数で:
+- Builds with `cargo build --release` and places it at `~/.local/bin/specguard`.
+- To change the destination, use the env var:
 
   ```sh
   SPECGUARD_BIN_DIR=/usr/local/bin ./install.sh
   ```
 
-- `~/.local/bin` が PATH に無ければスクリプトが追加方法を案内する。例:
+- If `~/.local/bin` isn't on your PATH, the script tells you how to add it, e.g.:
 
   ```sh
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
   ```
 
-確認:
+Verify:
 
 ```sh
 specguard --version
 specguard --help
 ```
 
-### 手動ビルド
+### Manual build
 
 ```sh
 cargo build --release
-# 生成物: target/release/specguard
-cp target/release/specguard ~/.local/bin/    # 任意の PATH 上へ
+# artifact: target/release/specguard
+cp target/release/specguard ~/.local/bin/    # to any dir on PATH
 ```
 
-### Windows（ネイティブ）
+### Windows (native)
 
-`install.sh` は bash 用。ネイティブ Windows では cargo で直接ビルドして配置する:
+`install.sh` is for bash. On native Windows, build and place it with cargo:
 
 ```powershell
 cargo build --release
-# target\release\specguard.exe を PATH の通った場所へコピー
+# copy target\release\specguard.exe to a directory on PATH
 ```
 
 ---
 
-## 3. 監査対象リポジトリへ組み込む
+## 3. Wire it into the target repo
 
-監査したいリポジトリのルートで `init` を実行する:
+Run `init` at the root of the repo you want to audit:
 
 ```sh
 cd /path/to/your/repo
 specguard init
 ```
 
-生成物:
+Artifacts:
 
-| パス | 内容 |
+| Path | Contents |
 |---|---|
-| `specguard.toml` | スターター設定（`specguard.example.toml` のコピー） |
-| `.claude/settings.json` | SessionStart hook（`.specguard-pending` を検知してセッション開始時に提示） |
+| `specguard.toml` | starter config (a copy of `specguard.example.toml`) |
+| `.claude/settings.json` | SessionStart hook (detects `.specguard-pending` and surfaces it at session start) |
 
-`init` は **冪等**:
+`init` is **idempotent**:
 
-- 既存の `specguard.toml` は `--force` を付けない限り上書きしない。
-- 既存の `.claude/settings.json` の他の設定は壊さず、SessionStart hook だけを追記する。
-  再実行しても hook は重複しない。
+- it won't overwrite an existing `specguard.toml` without `--force`.
+- it preserves other settings in `.claude/settings.json` and only appends the
+  SessionStart hook; re-running never duplicates the hook.
 
-設定を作り直したいとき:
+To recreate the config:
 
 ```sh
-specguard init --force      # specguard.toml を example で上書き
+specguard init --force      # overwrite specguard.toml with the example
 ```
+
+> **Plugin mode**: when you use the Claude Code plugin, the SessionStart hook is
+> bundled, so you only need a `specguard.toml` (no hook setup). See the plugin
+> section in [README.md](README.md).
 
 ---
 
-## 4. 設定を編集する（`specguard.toml`）
+## 4. Edit the config (`specguard.toml`)
 
-`init` 直後の設定はサンプルなので、自分のリポジトリに合わせて編集する。要点:
+The config right after `init` is a sample; edit it for your repo. Key points:
 
 ```toml
 [project]
 name = "MyProject"
-root = "."                  # 監査するリポジトリルート（この設定ファイルからの相対）
+root = "."                  # repo root to audit (relative to this config file)
 
-# [agent] を省略すると、ハーネスで read-only を強制した既定 (claude --print) を使う。
-# 別エージェントに差し替えるときだけ書く。
+# Omitting [agent] uses the default (claude --print) with harness-enforced
+# read-only. Only set it to swap in a different agent.
 
 [scope]
-baseline_ref  = ""          # 空なら .last-ref → fallback_ref の順で解決
-fallback_ref  = "HEAD~20"   # 初回 / 解決不能時のベースライン
+baseline_ref  = ""          # empty => resolve via .last-ref then fallback_ref
+fallback_ref  = "HEAD~20"   # baseline for the first run / when unresolvable
 
 [output]
 report_dir = "reports/spec-audit"
 sentinel   = ".specguard-pending"
 
-# 領域: glob にマッチする変更があれば in-scope。canon に「どこを読むか」を指す。
+# area: in-scope when a change matches its globs. canon points at "what to read".
 [[area]]
 name  = "backend"
 globs = ["src/server/**", "api/**"]
 canon = ["docs/architecture/api.md"]
 
-# 不変条件: 変更の有無に関わらず毎回チェックする絶対ルール。
+# invariant: an absolute rule checked every run regardless of changes.
 [[invariant]]
 name        = "secrets path"
 description = "secrets are only read from the approved config path"
 canon       = ["docs/architecture/config.md"]
 ```
 
-- `[[area]]` か `[[invariant]]` が最低 1 つ必要（無いと「監査対象なし」エラー）。
-- `canon` は**ファイルパス／`file:section` ポインタ**だけを書く。仕様の中身はコピーしない
-  （コピーするとドリフトの種になる）。エージェントが実体を読みに行く。
+- At least one `[[area]]` or `[[invariant]]` is required (otherwise "nothing to
+  audit").
+- `canon` holds **file paths / `file:section` pointers** only — never copy the
+  spec's contents (copies breed drift). The agent reads the real source.
 
-設定が正しいかは、エージェントを呼ばずに確認できる:
+You can sanity-check the config without invoking the agent:
 
 ```sh
-specguard scope     # 解決された baseline / in-scope 領域 / skip 領域を表示
-specguard prompt    # 各 shard に渡るプロンプトを表示
+specguard scope     # show the resolved baseline / in-scope areas / skipped areas
+specguard prompt    # show the prompt handed to each shard
 ```
 
 ---
 
-## 5. 最初の監査
+## 5. First audit
 
 ```sh
 specguard run
 ```
 
-- in-scope 領域ごと + 不変条件を、それぞれ別プロセス（fresh context）で並列監査し統合する。
-- 結果:
-  - `reports/spec-audit/<date>.md` … レポート本体
-  - `reports/spec-audit/.last-ref` … 次回の change-triggered baseline（クリーンな回のみ前進）
-  - `.specguard-pending` … `needs_user=yes` の指摘があるときだけ生成（sentinel）
+- Each in-scope area + the invariants are audited in parallel, each in a separate
+  process (fresh context), then merged.
+- Results:
+  - `reports/spec-audit/<date>.md` … the report
+  - `reports/spec-audit/.last-ref` … next run's change-triggered baseline (advances only on a clean run)
+  - `.specguard-pending` … created only when there's a `needs_user=yes` finding (the sentinel)
 
-指摘に対応したら sentinel を消す:
+Once you've handled the findings, clear the sentinel:
 
 ```sh
 specguard ack
 ```
 
-> **重要**: 未処理の sentinel がある間は baseline を前進させない（未修正ドリフトを取りこぼさ
-> ないため）。対応して `ack` するまで同じ範囲を再監査し続ける。
+> **Important**: while a sentinel is pending, the baseline does not advance (so
+> unfixed drift isn't lost). The same scope keeps being re-audited until you
+> handle it and `ack`.
 
-### よく使うフラグ
+### Common flags
 
 ```sh
-specguard --config path/to/specguard.toml run    # 設定ファイルを指定 (-c)
-specguard --baseline HEAD~5 run                   # baseline を上書き (-b)
-SPECGUARD_BASELINE_REF=origin/main specguard run  # 同上（環境変数）
-specguard --date 2026-06-17 run                   # レポート日付を固定（テスト用）
+specguard --config path/to/specguard.toml run    # specify the config (-c)
+specguard --baseline HEAD~5 run                   # override the baseline (-b)
+SPECGUARD_BASELINE_REF=origin/main specguard run  # same, via env var
+specguard --date 2026-06-17 run                   # pin the report date (for tests)
 ```
 
 ---
 
-## 5.5 決定ログ（ADR）と D3 監査
+## 5.5 Decision records (ADR) and the D3 audit
 
-仕様変更の *理由* を、その時点の canon commit に pin して残せる:
+You can pin the *reason* for a spec change to the canon commit at that time:
 
 ```sh
 specguard decide "Single signing path"
-# -> decisions/<date>-single-signing-path.md を生成 (canon_commit に pin)
+# -> creates decisions/<date>-single-signing-path.md (pinned to canon_commit)
 ```
 
-生成された記録の frontmatter を編集する:
+Edit the generated record's frontmatter:
 
-- `canon:` … この決定が支配する canon ポインタ（`file` / `file:section`）
-- `drivers:` … **反証可能な理由**（例: "HMAC 鍵ローテーションが単一署名経路を要求"）
-- `review_when:` … driver が崩れる＝再検討すべき条件
+- `canon:` … the canon pointer this decision governs (`file` / `file:section`)
+- `drivers:` … the **refutable reasons** (e.g. "HMAC key rotation requires a single signing path")
+- `review_when:` … the condition under which a driver breaks and the rule should be revisited
 
-以降の `specguard run` では **D3 監査**が走り、各決定について
-(a) 指す canon が今も一致するか（鮮度）、(b) driver/review_when が今も成立するか
-（陳腐化＝理由より長生きした規則）を照合する。決定ログは *証拠* であって権威ではなく、
-canon が常に正。`[decisions] dir` は in-repo ディレクトリでも Obsidian vault path でも
-指せる（`""` で無効化）。
+Subsequent `specguard run`s then perform the **D3 audit**, checking for each
+decision (a) whether the canon it points at still matches (freshness), and
+(b) whether the driver/review_when still hold (staleness = a rule that outlived
+its reason). A decision log is *evidence*, not authority — the canon is always
+the source of truth. `[decisions] dir` can point at an in-repo directory or an
+Obsidian vault path (`""` disables it).
 
-## 6. 定期実行（Human-on-the-loop）
+## 6. Scheduled runs (Human-on-the-loop)
 
-`specguard run` をスケジューラから定期起動し、`.specguard-pending` を SessionStart hook
-（`specguard init` が設定済み）で拾って「修正に着手?」を促す運用に組み込める。
+Run `specguard run` from a scheduler and have the SessionStart hook (installed by
+`specguard init`) pick up `.specguard-pending` to prompt "start fixing?".
 
-cron（Linux / WSL2）の例:
+cron example (Linux / WSL2):
 
 ```cron
 0 9 * * * cd /path/to/your/repo && /home/you/.local/bin/specguard run >> /tmp/specguard.log 2>&1
 ```
 
-Windows タスクスケジューラなら `specguard.exe run` を作業ディレクトリ＝リポジトリルートで
-登録する。
+On the Windows Task Scheduler, register `specguard.exe run` with the working
+directory set to the repo root.
 
 ---
 
-## 7. 終了コード（スケジューラ／フック連携用）
+## 7. Exit codes (for scheduler / hook integration)
 
-ここでは再掲しない（複製はドリフトの種になる）。一覧は **[README.md の「終了コード」表](README.md#終了コード)**、
-一次情報は `src/main.rs` の `EXIT_*` 定数を参照。
+Not repeated here (copies breed drift). See the
+**[exit-codes table in README.md](README.md#exit-codes)**; the source of truth is
+the `EXIT_*` constants in `src/main.rs`.
 
 ---
 
-## 8. アンインストール
+## 8. Uninstall
 
 ```sh
-rm ~/.local/bin/specguard                 # バイナリ
-# 対象リポジトリ側（任意）:
+rm ~/.local/bin/specguard                 # the binary
+# on the target repo side (optional):
 rm specguard.toml .specguard-pending
 rm -r reports/spec-audit
-# .claude/settings.json の SessionStart hook は手動で削除
+# remove the SessionStart hook from .claude/settings.json by hand
 ```
 
 ---
 
-## 9. トラブルシューティング
+## 9. Troubleshooting
 
-| 症状 | 原因 / 対処 |
+| Symptom | Cause / fix |
 |---|---|
-| `specguard: command not found` | `~/.local/bin` が PATH に無い。§2 の PATH 設定を実施 |
-| `spawning agent 'claude'` 失敗 | `claude` CLI 未インストール／未認証。`run` 以外なら不要 |
-| exit 2「nothing to audit」 | `[[area]]`/`[[invariant]]` が未定義。`specguard.toml` を編集 |
-| `baseline ... failed` → all-tracked | baseline も fallback も解決できず全 tracked file を監査（若い repo の初回など）。意図通りなら無視可、嫌なら `[scope].fallback_ref` を調整 |
-| sentinel が消えない | 対応後に `specguard ack` を実行（クリーンランだけでは消えない） |
-| エージェントが書き込もうとして失敗 | 既定はハーネスで read-only を強制（allowlist + auto-deny）。仕様どおり。**初回は実 `claude` で一度 `run` し、書き込み/任意 Bash が実際に弾かれるか確認推奨**（CLI バージョンで権限フラグ挙動に差が出ることがある） |
+| `specguard: command not found` | `~/.local/bin` isn't on PATH. Do the PATH setup in §2 |
+| `spawning agent 'claude'` fails | the `claude` CLI is missing/unauthenticated. Not needed for anything but `run` |
+| exit 2 "nothing to audit" | no `[[area]]`/`[[invariant]]` defined. Edit `specguard.toml` |
+| `baseline ... failed` → all-tracked | neither baseline nor fallback resolved, so all tracked files are audited (e.g. a young repo's first run). Ignore if intended, else tune `[scope].fallback_ref` |
+| sentinel won't clear | run `specguard ack` after handling (a clean run alone doesn't clear it) |
+| the agent tries to write and fails | by default the harness enforces read-only (allowlist + auto-deny). Working as intended. **For the first run, do one real `claude` `run` and confirm writes / arbitrary Bash are actually blocked** (permission-flag behavior can vary by CLI version) |
 
 ---
 
-## 開発者向け
+## For developers
 
 ```sh
-cargo test                  # unit + integration（擬似エージェント。実 LLM 不要）
+cargo test                  # unit + integration (fake agent; no real LLM)
 cargo clippy --all-targets
 ```

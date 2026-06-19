@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "if [ -f .specguard-pending ]; then echo '⚠ specguard: 未処理の仕様ドリフト指摘があります (対応後に `/specguard:ack` で解除):'; cat .specguard-pending; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
