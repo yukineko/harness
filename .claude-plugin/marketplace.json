@@ -1,0 +1,14 @@
+{
+  "name": "yukineko",
+  "owner": { "name": "yukineko" },
+  "metadata": {
+    "description": "yukineko's Claude Code tools. Hosts donegate, a subscription-native completion-verification gate."
+  },
+  "plugins": [
+    {
+      "name": "donegate",
+      "source": ".",
+      "description": "Completion gate: a Stop hook that runs your acceptance checks (build/test/lint) as subprocesses and blocks the stop until they pass, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+    }
+  ]
+}
