@@ -110,6 +110,7 @@ the SessionStart hook keeps nagging about the same issue).
 | Command | Backing binary | Description |
 |---|---|---|
 | `/specguard:run [--baseline <ref>]` | `prompt --json` + subagent + `ingest` | subscription-native audit |
+| `/specguard:brief <task>` | `brief --prompt` + subagent | read-only pre-task spec briefing (prevent drift before coding) |
 | `/specguard:scope` | `scope` | show the resolved scope (no agent) |
 | `/specguard:ack` | `ack` | clear a handled sentinel |
 | `/specguard:accept-prompt <reason>` | `accept-prompt` | ratify & pin the prompt (meta-canon) |
@@ -124,6 +125,9 @@ specguard prompt                   # print each shard's prompt (no agent)
 specguard prompt --json            # emit shards as machine-readable JSON (used by the plugin)
 specguard ingest [--from <file>]   # feed pre-collected shard outputs (JSON/stdin) into
                                    #   parse→report→sentinel (does NOT spawn an agent)
+specguard brief "<task>"           # read-only pre-task spec briefing (runs the agent)
+specguard brief "<task>" --prompt  # render the briefing prompt only (used by the plugin)
+specguard pending                  # print the active fix-offer if a sentinel is pending (SessionStart hook)
 specguard ack                      # clear a handled sentinel
 specguard decide "<title>"         # scaffold a decision record (ADR)
 specguard accept-prompt -m "reason"  # ratify the prompt (meta-canon)

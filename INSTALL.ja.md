@@ -82,7 +82,7 @@ specguard init
 | パス | 内容 |
 |---|---|
 | `specguard.toml` | スターター設定（`specguard.example.toml` のコピー） |
-| `.claude/settings.json` | SessionStart hook（`.specguard-pending` を検知してセッション開始時に提示） |
+| `.claude/settings.json` | SessionStart hook（`specguard pending` を実行し、sentinel があれば修正提案を提示） |
 
 `init` は **冪等**:
 

@@ -400,6 +400,59 @@ fi"#;
     assert!(sentinel.contains("[beta] beta drift"), "sentinel:\n{sentinel}");
 }
 
+// --- `specguard pending`: SessionStart hook entry point (fix-offer). ---
+
+#[test]
+fn pending_is_silent_without_sentinel_and_offers_fix_with_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+    write_config(repo, "unused"); // sets sentinel = ".pending"
+
+    // No sentinel -> nothing printed (never blocks the session).
+    let none = run_specguard(repo, "HEAD", &["pending"]);
+    assert!(none.status.success());
+    assert!(none.stdout.is_empty(), "silent when no sentinel");
+
+    // Sentinel at the CONFIGURED path (not a hardcoded one) -> fix-offer block.
+    fs::write(
+        repo.join(".pending"),
+        "date: 2026-01-01\nreport: reports/2026-01-01.md\nsummary: fix the drift\n",
+    )
+    .unwrap();
+    let out = run_specguard(repo, "HEAD", &["pending"]);
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("未処理の仕様ドリフト"), "surfaces drift: {s}");
+    assert!(s.contains("reports/2026-01-01.md"), "includes the report path");
+    assert!(s.contains("fix the drift"), "includes the summary");
+    assert!(s.contains("AskUserQuestion"), "drives the active fix-offer");
+}
+
+// --- `specguard brief`: read-only pre-task spec briefing. ---
+
+#[test]
+fn brief_renders_prompt_and_runs_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+    write_config(repo, "## spec-brief: do X\n\nbriefing body"); // fake agent echoes this
+
+    // --prompt: render only (no agent). Task is embedded, every area's canon is
+    // listed, and no placeholder leaks.
+    let p = run_specguard(repo, "HEAD", &["brief", "Add a new endpoint", "--prompt"]);
+    assert!(p.status.success(), "stderr: {}", String::from_utf8_lossy(&p.stderr));
+    let ps = String::from_utf8_lossy(&p.stdout);
+    assert!(ps.contains("Add a new endpoint"), "task embedded: {ps}");
+    assert!(ps.contains("docs/spec.md"), "area canon listed");
+    assert!(!ps.contains("{{"), "no leftover placeholders");
+
+    // default: runs the (fake) agent and prints its brief verbatim.
+    let r = run_specguard(repo, "HEAD", &["brief", "Add a new endpoint"]);
+    assert!(r.status.success(), "stderr: {}", String::from_utf8_lossy(&r.stderr));
+    assert!(String::from_utf8_lossy(&r.stdout).contains("spec-brief: do X"));
+}
+
 // --- `specguard init`: scaffold config + Claude Code SessionStart hook. ---
 
 fn specguard_init(repo: &Path, args: &[&str]) -> std::process::Output {
@@ -424,7 +477,7 @@ fn init_scaffolds_config_and_hook_idempotently() {
 
     let settings = fs::read_to_string(repo.join(".claude/settings.json")).unwrap();
     assert!(settings.contains("SessionStart"));
-    assert!(settings.contains(".specguard-pending"));
+    assert!(settings.contains("specguard pending"), "hook delegates to the binary");
     assert_eq!(settings.matches("\"matcher\"").count(), 1, "one hook group");
 
     // Re-running init must not duplicate the hook nor clobber the config.
@@ -462,7 +515,7 @@ fn init_preserves_existing_settings() {
     assert!(s.contains("\"model\""), "unrelated keys preserved");
     assert!(s.contains("PreToolUse"), "existing hooks preserved");
     assert!(s.contains("SessionStart"), "our hook added");
-    assert!(s.contains(".specguard-pending"));
+    assert!(s.contains("specguard pending"));
 }
 
 // --- Decision records (ADR) + canon-change trigger + D3 audit. ---
