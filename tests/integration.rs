@@ -886,6 +886,98 @@ fn enabling_verify_gate_forces_reratification() {
     assert!(run_specguard(repo, &base, &["run"]).status.success());
 }
 
+// --- Subscription-native split: `prompt --json` (harness renders shards) +
+// `ingest` (harness parses pre-collected subagent outputs) reproduce `run`
+// without the binary ever spawning an agent. ---
+
+/// Run specguard feeding `stdin_data` on stdin (for `ingest`).
+fn run_specguard_stdin(
+    repo: &Path,
+    baseline: &str,
+    sub: &[&str],
+    stdin_data: &str,
+) -> std::process::Output {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_specguard"))
+        .current_dir(repo)
+        .args(["--config", "specguard.toml", "--baseline", baseline, "--date", "2026-01-01"])
+        .args(sub)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("specguard spawns");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin_data.as_bytes())
+        .unwrap();
+    child.wait_with_output().expect("specguard runs")
+}
+
+#[test]
+fn prompt_json_then_ingest_reproduces_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "add src"]);
+
+    // The agent here is never invoked by `prompt --json`/`ingest`; it only needs
+    // to be a valid config entry.
+    write_config(repo, "unused");
+
+    // 1. Harness renders the shard prompts (no agent).
+    let pj = run_specguard(repo, &base, &["prompt", "--json"]);
+    assert!(pj.status.success(), "stderr: {}", String::from_utf8_lossy(&pj.stderr));
+    let env: serde_json::Value = serde_json::from_slice(&pj.stdout).expect("valid JSON envelope");
+    assert_eq!(env["marker"], "<<<SPEC_AUDIT>>>");
+    let shards = env["shards"].as_array().expect("shards array");
+    assert_eq!(shards.len(), 1, "one in-scope area => one shard");
+    let label = shards[0]["label"].as_str().unwrap().to_string();
+    assert!(shards[0]["prompt"].as_str().unwrap().contains("docs/spec.md"));
+
+    // 2. The plugin would dispatch each prompt to a read-only subagent; here we
+    // hand-build the outputs and feed them back via `ingest`.
+    let ingest_input = serde_json::json!({
+        "shards": [
+            { "label": label, "stdout": "# audit\n\nbody\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: ingested drift", "code": 0 }
+        ]
+    })
+    .to_string();
+    let ing = run_specguard_stdin(repo, &base, &["ingest"], &ingest_input);
+    assert!(ing.status.success(), "stderr: {}", String::from_utf8_lossy(&ing.stderr));
+
+    // Same outcome as `run`: report written, sentinel raised, baseline held.
+    let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
+    assert!(report.contains("body"));
+    assert!(!report.contains("<<<SPEC_AUDIT>>>"), "trailer stripped");
+    let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
+    assert!(sentinel.contains("summary: ingested drift"), "sentinel:\n{sentinel}");
+    assert!(!repo.join("reports/.last-ref").exists(), "findings hold the baseline");
+}
+
+#[test]
+fn ingest_missing_shard_output_maps_to_agent_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "add src"]);
+    write_config(repo, "unused");
+
+    // A shard the plugin failed to return -> harness treats it as a failed shard.
+    let ing = run_specguard_stdin(repo, &base, &["ingest"], r#"{"shards":[]}"#);
+    assert_eq!(ing.status.code(), Some(4), "missing shard output => EXIT_AGENT_FAILED");
+    let stderr = String::from_utf8_lossy(&ing.stderr);
+    assert!(stderr.contains("no output provided"), "stderr names the gap: {stderr}");
+}
+
 #[test]
 fn audit_only_project_never_asked_to_ratify_verify() {
     // A project that never enables verify must not be re-blocked by the new
