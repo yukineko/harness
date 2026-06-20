@@ -2,7 +2,7 @@
   "name": "yukineko",
   "owner": { "name": "yukineko" },
   "metadata": {
-    "description": "yukineko's Claude Code tools. Hosts the harness family: ctxrot (context-rot guard), playbook (project-knowledge retriever), stuckguard (stuck-loop detector), and donegate (completion-verification gate), all subscription-native."
+    "description": "yukineko's Claude Code tools. Hosts the harness family: ctxrot (context-rot guard), playbook (project-knowledge retriever), stuckguard (stuck-loop detector), donegate (completion-verification gate), and precommit-audit (pre-commit static audit), all subscription-native."
   },
   "plugins": [
     {
@@ -24,6 +24,11 @@
       "name": "donegate",
       "source": { "source": "url", "url": "https://github.com/yukineko/donegate.git" },
       "description": "Completion gate: a Stop hook that runs your acceptance checks (build/test/lint) as subprocesses and blocks the stop until they pass, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+    },
+    {
+      "name": "precommit-audit",
+      "source": { "source": "url", "url": "https://github.com/yukineko/precommit-audit.git" },
+      "description": "Pre-commit static audit: a Stop hook that runs generic checks plus your TOML-configured project rules over the pending diff (shelling out to git and optional linters) and blocks the stop, feeding findings back until clean, with a bundled Rust binary. Runs on your Claude subscription; no API key."
     }
   ]
 }
