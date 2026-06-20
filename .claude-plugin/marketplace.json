@@ -2,7 +2,7 @@
   "name": "yukineko",
   "owner": { "name": "yukineko" },
   "metadata": {
-    "description": "yukineko's Claude Code tools. Hosts the harness family: ctxrot (context-rot guard), playbook (project-knowledge retriever), and stuckguard (stuck-loop detector), all subscription-native."
+    "description": "yukineko's Claude Code tools. Hosts the harness family: ctxrot (context-rot guard), playbook (project-knowledge retriever), stuckguard (stuck-loop detector), and donegate (completion-verification gate), all subscription-native."
   },
   "plugins": [
     {
@@ -19,6 +19,11 @@
       "name": "stuckguard",
       "source": { "source": "url", "url": "https://github.com/yukineko/stuckguard.git" },
       "description": "Stuck-loop detector: a PostToolUse hook that spots repeated actions and edit thrash and nudges the agent to change approach or ask the user, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+    },
+    {
+      "name": "donegate",
+      "source": { "source": "url", "url": "https://github.com/yukineko/donegate.git" },
+      "description": "Completion gate: a Stop hook that runs your acceptance checks (build/test/lint) as subprocesses and blocks the stop until they pass, with a bundled Rust binary. Runs on your Claude subscription; no API key."
     }
   ]
 }
