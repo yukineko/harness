@@ -2,7 +2,7 @@
   "name": "yukineko",
   "owner": { "name": "yukineko" },
   "metadata": {
-    "description": "yukineko's Claude Code tools. Hosts the harness family: ctxrot (context-rot guard) and playbook (project-knowledge retriever), both subscription-native."
+    "description": "yukineko's Claude Code tools. Hosts the harness family: ctxrot (context-rot guard), playbook (project-knowledge retriever), and stuckguard (stuck-loop detector), all subscription-native."
   },
   "plugins": [
     {
@@ -14,6 +14,11 @@
       "name": "playbook",
       "source": { "source": "url", "url": "https://github.com/yukineko/playbook.git" },
       "description": "Knowledge retrieval: a UserPromptSubmit hook that scores curated notes against your prompt and injects the relevant ones under a char budget, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+    },
+    {
+      "name": "stuckguard",
+      "source": { "source": "url", "url": "https://github.com/yukineko/stuckguard.git" },
+      "description": "Stuck-loop detector: a PostToolUse hook that spots repeated actions and edit thrash and nudges the agent to change approach or ask the user, with a bundled Rust binary. Runs on your Claude subscription; no API key."
     }
   ]
 }
