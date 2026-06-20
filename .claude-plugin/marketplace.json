@@ -2,13 +2,18 @@
   "name": "yukineko",
   "owner": { "name": "yukineko" },
   "metadata": {
-    "description": "yukineko's Claude Code tools. Currently hosts ctxrot, a subscription-native context-rot guard."
+    "description": "yukineko's Claude Code tools. Hosts the harness family: ctxrot (context-rot guard) and playbook (project-knowledge retriever), both subscription-native."
   },
   "plugins": [
     {
       "name": "ctxrot",
       "source": ".",
       "description": "Context-rot guard: 5 hooks (guard/rescue/restore/preguard/toolguard) + /distill skill + ctxrot-distiller subagent, with a bundled Rust binary. Runs on your Claude subscription; no API key."
+    },
+    {
+      "name": "playbook",
+      "source": { "source": "github", "repo": "yukineko/playbook" },
+      "description": "Knowledge retrieval: a UserPromptSubmit hook that scores curated notes against your prompt and injects the relevant ones under a char budget, with a bundled Rust binary. Runs on your Claude subscription; no API key."
     }
   ]
 }
