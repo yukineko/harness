@@ -1,0 +1,22 @@
+# session-insights.toml — per-session work metrics for Claude Code.
+#
+# Copy to ./session-insights.toml (project) or ~/.session-insights/config.toml
+# (global). The first file that exists wins. Recording only writes to its own
+# state dir (and, opt-in, an Obsidian vault) and never blocks a turn. Set
+# SESSION_INSIGHTS_DISABLE=1 to turn it off.
+
+enabled = true
+
+# Tools excluded from the metrics (bookkeeping noise).
+ignore_tools = ["TodoWrite"]
+
+# Size class by total recorded tool events: [S, M, L, XL] lower bounds.
+# < 5 = XS, < 15 = S, < 40 = M, < 100 = L, >= 100 = XL.
+size_thresholds = [5, 15, 40, 100]
+
+# Optional: write a dated session note into an Obsidian vault on every Stop.
+# Off by default; only writes if the vault directory already exists.
+obsidian_log = false
+obsidian_vault = "~/Documents/vault/yukineko"
+
+# state_dir = "~/.session-insights/state"
