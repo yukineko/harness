@@ -2,7 +2,7 @@
 name: distill
 description: context-rot 対策の能動蒸留。現在の会話を蒸留して ctxrot ストアへ退避し、main context を「要約＋リンク」に置換する。context 使用率が高い時、長い会話を畳みたい時、/compact の前に使う。
 argument-hint: [蒸留のフォーカス（任意。例: "認証まわりだけ"）]
-allowed-tools: Task, Bash(ctxrot:*), Read, Write
+allowed-tools: Task, Bash(ctxrot:*), Bash(echo:*), Read, Write
 ---
 
 context-rot に対抗するため、**今のセッションを能動的に蒸留**して外部ストアへ退避し、以降は
@@ -16,8 +16,11 @@ main context を軽く保つ運用に切り替える。
 ## 手順
 
 1. **退避先・transcript・session id を把握**:
-   - 退避先ディレクトリ: !`ctxrot note dir --cwd "$PWD"`
-   - **この（元）セッションの id**: !`printf '%s' "$CLAUDE_CODE_SESSION_ID"`
+   - 退避先ディレクトリ: !`ctxrot note dir`
+   - **この（元）セッションの id**: この（メイン）セッションで `echo "$CLAUDE_CODE_SESSION_ID"` を実行して取得する。
+     （ロード時のコマンド注入記法（行頭の感嘆符＋バックティック）は env 変数や PWD 等のシェル変数・
+     クォート文字列を含むと静的解析を通らず skill 全体が失敗するため、env 由来の値は実行時に取得する。
+     subagent は子セッションで id が異なるので、必ず**この**メインセッションで実行すること。）
      並列セッション運用で「元セッションが自分のノートに確実に戻る」ための鍵。
      ノート名に hash として埋め込まれ、`restore` がこの id で前方一致検索する。
    - 現在の transcript パスは、このセッションのもの（環境のフックが受け取っている JSONL）。
