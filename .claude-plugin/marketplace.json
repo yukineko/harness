@@ -12,7 +12,7 @@
     },
     {
       "name": "playbook",
-      "source": { "source": "github", "repo": "yukineko/playbook" },
+      "source": { "source": "url", "url": "https://github.com/yukineko/playbook.git" },
       "description": "Knowledge retrieval: a UserPromptSubmit hook that scores curated notes against your prompt and injects the relevant ones under a char budget, with a bundled Rust binary. Runs on your Claude subscription; no API key."
     }
   ]
