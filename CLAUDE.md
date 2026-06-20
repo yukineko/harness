@@ -17,6 +17,16 @@ cargo clippy --all-targets
 
 The `[profile.release]` is tuned for a tiny binary (`opt-level = "z"`, `lto`, `strip`). The committed `bin/playbook` and `bin/playbook-linux-x86_64` are the artifacts the plugin hook actually invokes (`hooks/hooks.json` runs `${CLAUDE_PLUGIN_ROOT}/bin/playbook inject`) — **rebuild and refresh those binaries when you change behavior the plugin relies on**, otherwise the installed hook runs stale code.
 
+### Refreshing the bundled binaries
+
+```sh
+make bins     # refresh both bin/playbook (host) and bin/playbook-linux-x86_64
+make mac      # just the native macOS binary
+make linux    # just the Linux x86_64 cross-build
+```
+
+The Linux artifact is cross-compiled from macOS with **cargo-zigbuild** (no Docker), pinned to an old glibc floor (`x86_64-unknown-linux-gnu.2.17`) so it runs across distros. One-time setup: `brew install zig && cargo install cargo-zigbuild && rustup target add x86_64-unknown-linux-gnu`. (On rustc < 1.88, pin `cargo install cargo-zigbuild --version 0.21.8`.)
+
 ## Exercising the hook locally
 
 `inject` reads a JSON `HookInput` on stdin and prints injected context to stdout. To test retrieval without wiring the hook:
