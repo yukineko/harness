@@ -1,0 +1,24 @@
+#!/bin/sh
+# gauge plugin launcher — selects the per-platform binary bundled here.
+# Hooks call `${CLAUDE_PLUGIN_ROOT}/bin/gauge <sub>`; this execs the matching
+# `gauge-<os>-<arch>` build, or exits 0 silently if none exists, so a missing
+# binary never breaks a turn.
+root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+case "$(uname -s)" in
+  Linux)  os=linux ;;
+  Darwin) os=darwin ;;
+  *)      os="$(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64)   arch=x86_64 ;;
+  arm64|aarch64)  arch=arm64 ;;
+  *)              arch="$(uname -m)" ;;
+esac
+
+binary="$root/gauge-$os-$arch"
+if [ ! -x "$binary" ]; then
+  echo "gauge: no bundled binary for $os-$arch ($binary)." >&2
+  exit 0
+fi
+exec "$binary" "$@"

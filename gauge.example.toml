@@ -1,0 +1,28 @@
+# gauge.toml — local LLMOps telemetry for Claude Code.
+#
+# A Stop hook reads each session's transcript and records token usage, cache
+# hits, tool calls, latency, and estimated cost to a local store. The hook only
+# records — it never blocks a turn and never sends anything off the machine.
+# Set GAUGE_DISABLE=1 to turn recording off entirely.
+
+enabled = true
+track_tools = true        # record per-tool call counts (Bash, Edit, …)
+
+# state_dir = "~/.gauge/store"   # where per-session records live
+
+# --- pricing overrides (optional) ---
+# Estimated cost uses a built-in table (USD per 1M tokens):
+#   Opus 5/25 · Sonnet 3/15 · Haiku 1/5 · Fable 10/50.
+# Cache writes bill at 1.25x input (5m TTL) / 2x (1h); cache reads at 0.1x.
+# Override or add a model with one [[pricing]] block per pattern — `pattern`
+# is matched as a substring against the model id (first match wins).
+#
+# [[pricing]]
+# pattern = "opus"
+# input = 5.0
+# output = 25.0
+#
+# [[pricing]]
+# pattern = "my-custom-model"
+# input = 2.0
+# output = 8.0
