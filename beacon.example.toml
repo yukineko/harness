@@ -1,0 +1,29 @@
+# beacon.toml — desktop & webhook notifications for Claude Code.
+#
+# Copy to ./beacon.toml (project) or ~/.beacon/config.toml (global). The first
+# file that exists wins; the layers are not merged. The hook only ever notifies
+# — it never blocks a turn. Set BEACON_DISABLE=1 to silence everything.
+
+enabled = true
+on_stop = true            # notify when a turn finishes (Stop)
+on_notification = true    # notify when Claude needs input/permission (Notification)
+include_snippet = true    # on Stop, append a tail of Claude's last message
+snippet_chars = 160
+
+# --- channels (any combination) ---
+desktop = true            # macOS osascript / Linux notify-send
+# sound = "Glass"         # macOS notification sound name (omit = silent)
+
+# Slack incoming webhook. Prefer the env var BEACON_SLACK_WEBHOOK so the URL
+# isn't committed; it overrides this field when set.
+# slack_webhook = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+
+# Generic webhook — receives {event, project, title, body} as a JSON POST.
+# webhook = "https://example.com/hook"
+
+# Escape hatch: a shell command run with BEACON_EVENT / BEACON_PROJECT /
+# BEACON_TITLE / BEACON_BODY in the environment.
+# command = "terminal-notifier -title \"$BEACON_TITLE\" -message \"$BEACON_BODY\""
+
+log = true                # append deliveries to <state_dir>/log.jsonl
+# state_dir = "~/.beacon/state"
