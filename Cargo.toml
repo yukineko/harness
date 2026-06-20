@@ -1,0 +1,24 @@
+[package]
+name = "runbook"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable procedure includes for Claude Code. A UserPromptSubmit hook that expands `!name` macros in a prompt into the matching repo-committed procedure (.runbook/<name>.md), so recurring workflows run the same way every time."
+license = "MIT"
+
+[[bin]]
+name = "runbook"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["clock"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"
