@@ -18,6 +18,11 @@ pub struct Config {
     /// or above this many bytes is denied, steering the model to a sub-agent.
     /// 0 disables the gate entirely.
     pub gate_file_bytes: u64,
+    /// PreToolUse Bash gate (opt-in, default off): deny obviously-unbounded
+    /// dumps (`cat huge.log`, `journalctl` with no `-n`, recursive `grep` with no
+    /// `-m`, full `tail -n +1`, …) when no downstream bound caps the output.
+    /// Heuristic on the command string — conservative to avoid false positives.
+    pub gate_bash: bool,
     /// Append one JSONL metrics line per hook event to `<state_dir>/metrics.jsonl`
     /// (budget trajectory, band crossings, note sizes, gate denies). Local only.
     pub metrics: bool,
@@ -43,6 +48,7 @@ struct FileConfig {
     large_file_bytes: Option<u64>,
     huge_tool_output_bytes: Option<u64>,
     gate_file_bytes: Option<u64>,
+    gate_bash: Option<bool>,
     metrics: Option<bool>,
     bands: Option<Vec<f64>>,
     reanchor_enabled: Option<bool>,
@@ -80,6 +86,7 @@ impl Default for Config {
             large_file_bytes: 50_000,
             huge_tool_output_bytes: 50_000,
             gate_file_bytes: 1_000_000,
+            gate_bash: false,
             metrics: true,
             bands: vec![0.50, 0.75, 0.90],
             reanchor_enabled: true,
@@ -119,6 +126,9 @@ impl Config {
                 if let Some(v) = fc.gate_file_bytes {
                     cfg.gate_file_bytes = v;
                 }
+                if let Some(v) = fc.gate_bash {
+                    cfg.gate_bash = v;
+                }
                 if let Some(v) = fc.metrics {
                     cfg.metrics = v;
                 }
@@ -151,6 +161,9 @@ impl Config {
         }
         if let Some(v) = env_bool("GUARD_METRICS") {
             cfg.metrics = v;
+        }
+        if let Some(v) = env_bool("GUARD_GATE_BASH") {
+            cfg.gate_bash = v;
         }
 
         // bands must be ascending and within (0,1]; sanitize defensively
