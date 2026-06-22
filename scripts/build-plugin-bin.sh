@@ -13,17 +13,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-plugin="${1:?usage: build-plugin-bin.sh <plugin> [rust-target] [bin-name]}"
+plugin="${1:?usage: build-plugin-bin.sh <crate-dir> [rust-target] [bin-name]}"
 target="${2:-}"
-binname="${3:-$plugin}"
+# The cargo package name can differ from the crate directory (e.g. crate dir
+# run-book → package runbook), so read it from the member manifest; `-p` and the
+# artifact name must use the package, while bin/ stays under the crate dir.
+# bin-name defaults to the package name.
+pkg="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "crates/$plugin/Cargo.toml" | head -n1)"
+pkg="${pkg:-$plugin}"
+binname="${3:-$pkg}"
 
 if [ -n "$target" ]; then
   rustc_triple="$target"
-  cargo build --release -p "$plugin" --target "$target"
+  cargo build --release -p "$pkg" --target "$target"
   src="target/$target/release/$binname"
 else
   rustc_triple="$(rustc -vV | sed -n 's/^host: //p')"
-  cargo build --release -p "$plugin"
+  cargo build --release -p "$pkg"
   src="target/release/$binname"
 fi
 
