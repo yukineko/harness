@@ -1,0 +1,26 @@
+[package]
+name = "reviewgate"
+version = "0.1.0"
+edition = "2021"
+description = "Code-review gate for Claude Code. On Stop it reviews the diff before the agent can declare done: either by injecting a review rubric for the running agent to self-review (no API key), or by spawning an independent reviewer command. Findings are fed back for a fix loop."
+license = "MIT"
+
+[[bin]]
+name = "reviewgate"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+globset = "0.4"
+wait-timeout = "0.2"
+chrono = { version = "0.4", features = ["clock"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

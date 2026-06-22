@@ -1,0 +1,14 @@
+{
+  "name": "yukineko",
+  "owner": { "name": "yukineko" },
+  "metadata": {
+    "description": "yukineko's Claude Code tools. Hosts reviewgate, a subscription-native code-review gate."
+  },
+  "plugins": [
+    {
+      "name": "reviewgate",
+      "source": ".",
+      "description": "Code-review gate: a Stop hook that reviews the diff before the agent finishes — inject a rubric for the agent to self-review, or run an independent reviewer and surface its findings. Bundled Rust binary, runs on your Claude subscription; no API key."
+    }
+  ]
+}
