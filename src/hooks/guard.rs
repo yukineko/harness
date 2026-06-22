@@ -52,7 +52,21 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         blocks.push((Prio::Anchor, b));
     }
 
-    cap_blocks(blocks, cfg.guard_inject_max_chars)
+    let block_count = blocks.len();
+    let out = cap_blocks(blocks, cfg.guard_inject_max_chars)?;
+
+    // Observe ctxrot's OWN per-turn injection (post-cap). Several UserPromptSubmit
+    // hooks across the harness family inject every prompt; summing this `inject`
+    // metric is the in-repo foundation for the cross-harness injection budget
+    // (see docs/adr/0001-cross-harness-injection-budget.md).
+    crate::metrics::emit(
+        cfg,
+        &input.session_id,
+        "inject",
+        serde_json::json!({ "chars": out.chars().count(), "blocks": block_count }),
+    );
+
+    Some(out)
 }
 
 /// Apply the per-turn injection cap. Blocks keep their original order; when the

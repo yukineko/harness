@@ -7,6 +7,8 @@
 //!   * `restore`  (SessionStart)        — carryover bytes + which sections hit.
 //!   * `gate`     (preguard deny)       — the file we kept OUT of context.
 //!   * `tooldump` (toolguard)           — a big payload that DID land.
+//!   * `inject`   (guard, per prompt)   — chars ctxrot itself injected post-cap;
+//!     the in-repo seed for a cross-harness injection budget (ADR 0001).
 //!
 //! Writes are best-effort and never break a hook: all errors are swallowed, and
 //! each line is a single `O_APPEND` write well under PIPE_BUF (4096B), so
@@ -76,6 +78,10 @@ pub struct SessionStat {
     /// the top band). The *shape* of occupancy, not just its peak — guard-ON
     /// should spend fewer prompts in the high bands than guard-OFF.
     pub band_prompts: Vec<u64>,
+    /// Total chars ctxrot itself injected across the session (post-cap). The
+    /// guard's own contribution to per-turn injection — sum it across the harness
+    /// family to bound the combined load (ADR 0001).
+    pub inject_chars: u64,
 }
 
 /// Stream the metrics log and roll up per session, preserving first-seen order.
@@ -151,6 +157,7 @@ pub fn summarize(cfg: &Config) -> Vec<SessionStat> {
                 s.tooldump_bytes += u("bytes");
             }
             "anchor" => s.anchors += 1,
+            "inject" => s.inject_chars += u("chars"),
             _ => {}
         }
     }
@@ -182,6 +189,7 @@ fn fold_group(label: &str, members: &[&SessionStat]) -> SessionStat {
         g.tooldumps += m.tooldumps;
         g.tooldump_bytes += m.tooldump_bytes;
         g.anchors += m.anchors;
+        g.inject_chars += m.inject_chars;
         for (i, c) in m.band_prompts.iter().enumerate() {
             if g.band_prompts.len() <= i {
                 g.band_prompts.resize(i + 1, 0);
@@ -294,16 +302,20 @@ mod tests {
         emit(&cfg, "on-1", "budget", json!({"est_tokens": 110_000, "band": 1}));
         emit(&cfg, "on-1", "budget", json!({"est_tokens": 160_000, "band": 2}));
         emit(&cfg, "on-2", "budget", json!({"est_tokens": 185_000, "band": 3}));
+        emit(&cfg, "on-1", "inject", json!({"chars": 300, "blocks": 2}));
+        emit(&cfg, "on-2", "inject", json!({"chars": 500, "blocks": 1}));
 
         let stats = summarize(&cfg);
         let s1 = stats.iter().find(|s| s.session == "on-1").unwrap();
         assert_eq!(s1.band_prompts, vec![1, 1, 1]); // one prompt each in b0/b1/b2
+        assert_eq!(s1.inject_chars, 300);
 
         // Folding a group sums band dwell element-wise (b3 from on-2 included).
         let (g, n) = group_by_prefix(&stats, "on-").unwrap();
         assert_eq!(n, 2);
         assert_eq!(g.band_prompts, vec![1, 1, 1, 1]);
         assert_eq!(fmt_dwell(&g.band_prompts), "b0=1 b1=1 b2=1 b3=1");
+        assert_eq!(g.inject_chars, 800); // summed across the group
 
         let _ = std::fs::remove_dir_all(&cfg.state_dir);
     }
