@@ -1,0 +1,38 @@
+name: build (workspace smoke)
+
+# Phase A skeleton: build + test the whole workspace on Linux and macOS as a
+# smoke test. This does NOT yet build/commit the per-plugin bundled binaries —
+# that matrix (member × target → commit into crates/<plugin>/bin/) lands in
+# Phase F when this workflow replaces the old per-repo macos-binaries.yml jobs.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**/src/**'
+      - 'crates/**/Cargo.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/build-plugin-bin.sh'
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release
+      - run: cargo test  --workspace
