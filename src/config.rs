@@ -45,6 +45,13 @@ pub struct Config {
     /// Coalescing: skip a *preemptive* (`band-NN%`) rescue write when this session
     /// already has a rescue note newer than this many seconds. 0 disables.
     pub rescue_coalesce_secs: u64,
+    /// Per-turn injection cap (CJK-safe char count): the combined `guard` output
+    /// for one prompt is held to at most this many chars. The guard fights rot by
+    /// keeping context light, so its OWN injection must be bounded — left
+    /// unbounded, large-ref + budget + anchor can stack into a rot source. When
+    /// over the cap, blocks are dropped lowest-priority first (anchor → advice →
+    /// safety). 0 disables the cap (legacy: inject every block in full).
+    pub guard_inject_max_chars: usize,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -65,6 +72,7 @@ struct FileConfig {
     keep_notes_per_project: Option<usize>,
     keep_distill_min: Option<usize>,
     rescue_coalesce_secs: Option<u64>,
+    guard_inject_max_chars: Option<usize>,
 }
 
 fn home() -> PathBuf {
@@ -106,6 +114,7 @@ impl Default for Config {
             keep_notes_per_project: 30,
             keep_distill_min: 10,
             rescue_coalesce_secs: 120,
+            guard_inject_max_chars: 1200,
         }
     }
 }
@@ -169,6 +178,9 @@ impl Config {
                 if let Some(v) = fc.rescue_coalesce_secs {
                     cfg.rescue_coalesce_secs = v;
                 }
+                if let Some(v) = fc.guard_inject_max_chars {
+                    cfg.guard_inject_max_chars = v;
+                }
             }
         }
 
@@ -187,6 +199,9 @@ impl Config {
         }
         if let Some(v) = env_bool("GUARD_GATE_BASH") {
             cfg.gate_bash = v;
+        }
+        if let Some(v) = env_u64("GUARD_INJECT_MAX_CHARS") {
+            cfg.guard_inject_max_chars = v as usize;
         }
 
         // bands must be ascending and within (0,1]; sanitize defensively
