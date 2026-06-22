@@ -59,6 +59,22 @@ fn tagged_note_re() -> Regex {
     Regex::new(r"-([0-9a-f]{8}|nosess)-\d{8}-\d{6}$").expect("static regex")
 }
 
+/// A `distill-*` note (the high-value, LLM-distilled carryover), as opposed to a
+/// deterministic `rescue-*`. Used by `prune` to protect distills preferentially.
+fn is_distill(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|n| n.starts_with("distill-"))
+        .unwrap_or(false)
+}
+
+/// Outcome of `Store::prune`: how many notes survived and which were removed
+/// (the removal set is also the dry-run preview).
+pub struct PruneResult {
+    pub kept: usize,
+    pub removed: Vec<PathBuf>,
+}
+
 pub struct Store {
     pub root: PathBuf,
 }
@@ -135,6 +151,75 @@ impl Store {
             notes.into_iter().next()
         } else {
             notes.into_iter().find(|p| note_session_tag(p).is_none())
+        }
+    }
+
+    /// Most recent `rescue-<tag>-*` note for this session whose mtime is within
+    /// `within_secs` of now — the coalescing probe (P3). None when there's no such
+    /// fresh rescue, so the caller writes a new one.
+    pub fn recent_session_rescue(
+        &self,
+        cwd: &Path,
+        session_id: &str,
+        within_secs: u64,
+    ) -> Option<PathBuf> {
+        if session_id.is_empty() {
+            return None;
+        }
+        let prefix = format!("rescue-{}-", session_tag(session_id));
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(within_secs))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        // list_notes is newest-first, so the first match in window wins.
+        for p in self.list_notes(cwd) {
+            let is_ours = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.starts_with(&prefix))
+                .unwrap_or(false);
+            if !is_ours {
+                continue;
+            }
+            let fresh = std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .map(|t| t >= cutoff)
+                .unwrap_or(false);
+            if fresh {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// GC (`ctxrot note prune`): keep the newest `keep` notes overall, plus the
+    /// newest `keep_distill_min` `distill-*` notes (higher value than rescues)
+    /// even if they fall outside that window; delete the rest. `dry_run` computes
+    /// the removal set without touching disk. Deletes are best-effort.
+    pub fn prune(
+        &self,
+        cwd: &Path,
+        keep: usize,
+        keep_distill_min: usize,
+        dry_run: bool,
+    ) -> PruneResult {
+        let notes = self.list_notes(cwd); // newest first
+        let mut protect: HashSet<PathBuf> = notes.iter().take(keep).cloned().collect();
+        for p in notes.iter().filter(|p| is_distill(p)).take(keep_distill_min) {
+            protect.insert(p.clone());
+        }
+        let mut removed = Vec::new();
+        for p in &notes {
+            if protect.contains(p) {
+                continue;
+            }
+            if !dry_run {
+                let _ = std::fs::remove_file(p);
+            }
+            removed.push(p.clone());
+        }
+        PruneResult {
+            kept: notes.len() - removed.len(),
+            removed,
         }
     }
 
@@ -229,6 +314,66 @@ mod tests {
         let fb = store.latest_fallback_note(cwd).unwrap();
         assert!(std::fs::read_to_string(&fb).unwrap().contains("newer"));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Write `n` notes with the given slug prefix, oldest first, nudging mtime
+    /// forward so `list_notes` ordering is deterministic.
+    fn write_series(store: &Store, cwd: &Path, prefix: &str, n: usize) {
+        for i in 0..n {
+            store
+                .write_note_named(cwd, &format!("{prefix}-{i:02}"), &format!("body {i}"))
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn prune_dry_run_removes_nothing() {
+        let (cfg, root) = temp_store("prune-dry");
+        let store = Store::new(&cfg);
+        let cwd = Path::new("/some/project");
+        write_series(&store, cwd, "rescue-aaaaaaaa-2026010", 5);
+
+        let res = store.prune(cwd, 2, 0, true);
+        assert_eq!(res.removed.len(), 3);
+        // Nothing actually deleted.
+        assert_eq!(store.list_notes(cwd).len(), 5);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prune_keeps_newest_n() {
+        let (cfg, root) = temp_store("prune-n");
+        let store = Store::new(&cfg);
+        let cwd = Path::new("/some/project");
+        write_series(&store, cwd, "rescue-aaaaaaaa-2026010", 5);
+
+        let res = store.prune(cwd, 2, 0, false);
+        assert_eq!(res.removed.len(), 3);
+        assert_eq!(store.list_notes(cwd).len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prune_protects_distill_floor() {
+        let (cfg, root) = temp_store("prune-distill");
+        let store = Store::new(&cfg);
+        let cwd = Path::new("/some/project");
+        // Oldest = one distill, then 4 rescues on top.
+        store.write_note_named(cwd, "distill-aaaaaaaa-20260101-000000", "d").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_series(&store, cwd, "rescue-aaaaaaaa-2026010", 4);
+
+        // keep newest 2 (both rescues) + protect newest 1 distill (the old one).
+        let res = store.prune(cwd, 2, 1, false);
+        assert_eq!(res.removed.len(), 2); // the two oldest rescues
+        let remaining = store.list_notes(cwd);
+        assert_eq!(remaining.len(), 3);
+        assert!(
+            remaining.iter().any(|p| is_distill(p)),
+            "the distill note must survive: {remaining:?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
