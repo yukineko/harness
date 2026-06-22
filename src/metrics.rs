@@ -72,6 +72,10 @@ pub struct SessionStat {
     pub tooldumps: u64,
     pub tooldump_bytes: u64,
     pub anchors: u64,
+    /// Prompts spent in each band (index = band: 0 below the lowest band … N at
+    /// the top band). The *shape* of occupancy, not just its peak — guard-ON
+    /// should spend fewer prompts in the high bands than guard-OFF.
+    pub band_prompts: Vec<u64>,
 }
 
 /// Stream the metrics log and roll up per session, preserving first-seen order.
@@ -119,6 +123,11 @@ pub fn summarize(cfg: &Config) -> Vec<SessionStat> {
                 if band > s.max_band {
                     s.max_band = band;
                 }
+                let bi = band as usize;
+                if s.band_prompts.len() <= bi {
+                    s.band_prompts.resize(bi + 1, 0);
+                }
+                s.band_prompts[bi] += 1;
                 if o.get("crossed").and_then(Value::as_bool).unwrap_or(false) {
                     s.crossings += 1;
                 }
@@ -173,8 +182,27 @@ fn fold_group(label: &str, members: &[&SessionStat]) -> SessionStat {
         g.tooldumps += m.tooldumps;
         g.tooldump_bytes += m.tooldump_bytes;
         g.anchors += m.anchors;
+        for (i, c) in m.band_prompts.iter().enumerate() {
+            if g.band_prompts.len() <= i {
+                g.band_prompts.resize(i + 1, 0);
+            }
+            g.band_prompts[i] += c;
+        }
     }
     g
+}
+
+/// Render band-dwell counts as `b0=.. b1=.. …` for the A/B occupancy report.
+pub fn fmt_dwell(band_prompts: &[u64]) -> String {
+    if band_prompts.is_empty() {
+        return "(no samples)".to_string();
+    }
+    band_prompts
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("b{i}={c}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Aggregate every session whose id starts with `prefix` into one group stat
@@ -256,6 +284,27 @@ mod tests {
         assert_eq!(b.peak_tokens, 180_000);
 
         assert!(group_by_prefix(&stats, "zzz").is_none());
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    #[test]
+    fn band_dwell_counts_and_folds() {
+        let cfg = temp_cfg("dwell");
+        emit(&cfg, "on-1", "budget", json!({"est_tokens": 40_000, "band": 0}));
+        emit(&cfg, "on-1", "budget", json!({"est_tokens": 110_000, "band": 1}));
+        emit(&cfg, "on-1", "budget", json!({"est_tokens": 160_000, "band": 2}));
+        emit(&cfg, "on-2", "budget", json!({"est_tokens": 185_000, "band": 3}));
+
+        let stats = summarize(&cfg);
+        let s1 = stats.iter().find(|s| s.session == "on-1").unwrap();
+        assert_eq!(s1.band_prompts, vec![1, 1, 1]); // one prompt each in b0/b1/b2
+
+        // Folding a group sums band dwell element-wise (b3 from on-2 included).
+        let (g, n) = group_by_prefix(&stats, "on-").unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(g.band_prompts, vec![1, 1, 1, 1]);
+        assert_eq!(fmt_dwell(&g.band_prompts), "b0=1 b1=1 b2=1 b3=1");
+
         let _ = std::fs::remove_dir_all(&cfg.state_dir);
     }
 
