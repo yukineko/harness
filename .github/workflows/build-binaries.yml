@@ -1,9 +1,17 @@
-name: build (workspace smoke)
+name: build & commit plugin binaries
 
-# Phase A skeleton: build + test the whole workspace on Linux and macOS as a
-# smoke test. This does NOT yet build/commit the per-plugin bundled binaries —
-# that matrix (member × target → commit into crates/<plugin>/bin/) lands in
-# Phase F when this workflow replaces the old per-repo macos-binaries.yml jobs.
+# Phase F: build the per-plugin bundled binaries on real runners and commit them
+# back into crates/<plugin>/bin/. The committed per-platform binaries are what
+# `/plugin install` ships, so end users need neither cargo nor an API key.
+#
+#   * smoke  — build + test the whole workspace on Linux and macOS (the gate).
+#   * darwin — build every distributable plugin for both apple targets (macos-14).
+#   * linux  — build every distributable plugin for x86_64 linux (ubuntu).
+#   * commit — collect the artifacts and commit the refreshed bin/<name>-<os>-<arch>
+#              back to main (only on push-to-main / manual dispatch, never on PRs).
+#
+# specguard (no committed bin/, dual-binary) and harness-core (a library) are not
+# distributed and are intentionally excluded from the binary matrix.
 on:
   workflow_dispatch:
   push:
@@ -23,6 +31,13 @@ concurrency:
   group: build-binaries-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Distributable plugins, by crate directory (the script reads the package name
+  # from each Cargo.toml, so run-book → package runbook is handled).
+  PLUGINS: >-
+    beacon condukt ctxrot deepwiki donegate gauge playbook
+    precommit-audit reviewgate run-book session-insights stuckguard
+
 jobs:
   smoke:
     strategy:
@@ -36,3 +51,90 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --release
       - run: cargo test  --workspace
+
+  darwin:
+    name: darwin binaries
+    if: github.event_name != 'pull_request'
+    needs: smoke
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build darwin binaries (arm64 + x86_64)
+        run: |
+          set -euo pipefail
+          for p in $PLUGINS; do
+            for t in aarch64-apple-darwin x86_64-apple-darwin; do
+              scripts/build-plugin-bin.sh "$p" "$t"
+            done
+          done
+      # tar preserves the crates/<plugin>/bin/ layout AND the executable bit.
+      - run: tar czf darwin-bins.tar.gz crates/*/bin/*-darwin-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-bins
+          path: darwin-bins.tar.gz
+          retention-days: 1
+
+  linux:
+    name: linux binaries
+    if: github.event_name != 'pull_request'
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Build linux binaries (x86_64)
+        run: |
+          set -euo pipefail
+          for p in $PLUGINS; do
+            scripts/build-plugin-bin.sh "$p" x86_64-unknown-linux-gnu
+          done
+      - run: tar czf linux-bins.tar.gz crates/*/bin/*-linux-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bins
+          path: linux-bins.tar.gz
+          retention-days: 1
+
+  commit:
+    name: commit binaries
+    # Only land binaries on main; never from a PR (can't/shouldn't push).
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [darwin, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage rebuilt binaries
+        run: |
+          set -euo pipefail
+          tar xzf artifacts/darwin-bins/darwin-bins.tar.gz
+          tar xzf artifacts/linux-bins/linux-bins.tar.gz
+      - name: Commit if changed
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add crates/*/bin
+          if git diff --cached --quiet; then
+            echo "binaries unchanged — nothing to commit"
+            exit 0
+          fi
+          # [skip ci] is belt-and-suspenders: the bin/ paths are not in this
+          # workflow's path filter, and pushes made with GITHUB_TOKEN do not
+          # re-trigger workflows, so this commit will not loop.
+          git commit -m "ci: rebuild plugin binaries [skip ci]"
+          # checkout leaves a detached HEAD at the triggering SHA; push the new
+          # commit explicitly onto main (fast-forward from that SHA).
+          git push origin HEAD:main
