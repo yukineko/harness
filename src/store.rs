@@ -163,8 +163,10 @@ mod tests {
     fn temp_store(name: &str) -> (Config, PathBuf) {
         let root = std::env::temp_dir().join(format!("ctxrot-test-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let mut cfg = Config::default();
-        cfg.store_dir = root.clone();
+        let cfg = Config {
+            store_dir: root.clone(),
+            ..Config::default()
+        };
         (cfg, root)
     }
 

@@ -125,6 +125,15 @@ pub fn install(dry_run: bool) -> Result<()> {
         hooks.insert((*event).to_string(), Value::Array(arr));
     }
 
+    // statusLine: a live context-usage meter. Set it only when there is no
+    // status line yet or the existing one is ours — never clobber a custom bar.
+    if is_our_statusline(root.get("statusLine")) {
+        root.insert(
+            "statusLine".to_string(),
+            json!({ "type": "command", "command": format!("{bin} statusline"), "padding": 0 }),
+        );
+    }
+
     if dry_run {
         println!("--- dry run (settings.json would become) ---");
         println!("{}", serde_json::to_string_pretty(&settings)?);
@@ -134,7 +143,21 @@ pub fn install(dry_run: bool) -> Result<()> {
     println!("\nInstalled hooks → {bin}");
     println!("  UserPromptSubmit=guard  PreCompact=rescue  SessionStart=restore");
     println!("  PreToolUse=preguard  PostToolUse=toolguard");
+    println!("  statusLine=statusline (context-usage meter)");
     Ok(())
+}
+
+/// True if there is no status line yet, or the existing one is ctxrot's (so it
+/// is safe to (re)install). A foreign custom status line returns false.
+fn is_our_statusline(sl: Option<&Value>) -> bool {
+    match sl {
+        None => true,
+        Some(v) => v
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|c| c.contains("ctxrot statusline"))
+            .unwrap_or(false),
+    }
 }
 
 pub fn uninstall(dry_run: bool) -> Result<()> {
@@ -157,6 +180,11 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
                 }
             }
         }
+    }
+    // Drop our statusLine too (but leave a user's custom one untouched).
+    if root.get("statusLine").is_some() && is_our_statusline(root.get("statusLine")) {
+        root.remove("statusLine");
+        removed += 1;
     }
 
     if dry_run {

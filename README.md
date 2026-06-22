@@ -20,6 +20,7 @@ error it exits 0 and stays silent.
 | `ctxrot restore` | `SessionStart` | At session start, injects a **compact carryover** (decisions + open todos + a link). It prefers *this* session's own note (matched by session tag); the cross-session fallback returns the latest note when the stream is unambiguous (≤1 session in the dir) but, when **parallel sessions** share one project dir (≥2 sessions), restricts to untagged/shared notes so it never grabs a sibling's carryover. Never the whole note. |
 | `ctxrot preguard` | `PreToolUse` | **Preventive gate, before the load.** An *unbounded* `Read` (no `limit`) of a local file at/above `gate_file_bytes` (default **1MB**) is **denied** with an actionable reason — route it through a sub-agent or re-`Read` a bounded slice. Narrow by design (only `Read`, only huge files, `limit` always bypasses) so normal source reads are untouched. Set `gate_file_bytes = 0` to disable. |
 | `ctxrot toolguard` | `PostToolUse` | When a `Read`/`Bash`/`Grep`/… returns a huge payload, nudges you to route the *next* heavy read through a sub-agent and keep only conclusions. (Handles the 50KB–1MB middle band the `preguard` gate lets through.) |
+| `ctxrot statusline` | `statusLine` | Always-on context-usage meter (`ctxrot 52% ▮▮▯▯ band1 ~104k/200k`), colored by band (green→yellow→red). Reads Claude's `context_window.used_percentage` from the status JSON (falls back to estimating from the transcript). `ctxrot install` sets it only when no status line exists yet, so a custom one is never clobbered. |
 
 Plus the **`/distill` skill** for on-demand, high-quality LLM distillation (the
 hooks are the cheap deterministic safety net; `/distill` is the smart one).
@@ -172,7 +173,14 @@ got through. Local only; disable with `metrics = false` or `GUARD_METRICS=0`.
 ctxrot metrics            # per-session rollup (prompts / crossings / peak tokens / rescue / gate / dump)
 ctxrot metrics path       # the metrics.jsonl path (pipe to jq for ad-hoc analysis)
 ctxrot metrics compare A B # A/B two session-id prefixes; prints both groups + Δ(A−B)
+ctxrot metrics peak ID    # peak % + max band for a session-id prefix (for /record to stamp in a note)
 ```
+
+`ctxrot usage` prints the **current** session's usage (`ctxrot 52% … band1` + an
+action `hint:`) by resolving the live transcript from `$CLAUDE_CODE_SESSION_ID`.
+The `/distill` skill calls it first to act on the reading: skip when usage is low
+(band 0), distill normally (band 1), or distill **and** mandate `/compact` when
+high (band ≥ 2).
 
 This is the substrate for measuring whether the guard actually holds N down.
 The A/B protocol: run a representative heavy task once normally (group A) and

@@ -11,6 +11,7 @@ mod metrics;
 mod model;
 mod store;
 mod transcript;
+mod usage;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -66,6 +67,19 @@ enum Command {
         #[command(subcommand)]
         action: Option<MetricsAction>,
     },
+    /// statusLine command: read the status JSON on stdin, print a one-line
+    /// context-usage meter (`ctxrot 52% ▮▮▯▯▯ band1 ~104k/200k`).
+    Statusline,
+    /// Print the current session's context usage (for usage-aware /distill).
+    /// Resolves the transcript from the session id unless --transcript is given.
+    Usage {
+        /// Transcript path to read (default: resolve from --session).
+        #[arg(long)]
+        transcript: Option<PathBuf>,
+        /// Session id to resolve the transcript for (default: $CLAUDE_CODE_SESSION_ID).
+        #[arg(long)]
+        session: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -81,6 +95,12 @@ enum MetricsAction {
         a: String,
         /// Session-id prefix for group B (the standard protocol: GUARD_DISABLE).
         b: String,
+    },
+    /// Print the peak context usage (% and max band) for a session id prefix.
+    /// For /record to stamp "how close this session got" into the session note.
+    Peak {
+        /// Session-id prefix (pass $CLAUDE_CODE_SESSION_ID for the current one).
+        session: String,
     },
 }
 
@@ -384,9 +404,78 @@ fn main() {
                         }
                     }
                 }
+                MetricsAction::Peak { session } => {
+                    let stats = metrics::summarize(&cfg);
+                    match metrics::group_by_prefix(&stats, &session) {
+                        None => {
+                            eprintln!("no session matches prefix '{session}'");
+                            std::process::exit(1);
+                        }
+                        Some((g, n)) => {
+                            let pct = usage::pct_from_tokens(&cfg, g.peak_tokens);
+                            println!(
+                                "peak ~{pct}% (band{}, ~{}/{} tokens, {n} session(s))",
+                                g.max_band, g.peak_tokens, cfg.context_window
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Command::Statusline => {
+            // Never break the status bar: any failure prints nothing, exits 0.
+            let cfg = Config::load();
+            let raw = read_stdin();
+            if let Some(line) = statusline_from(&cfg, &raw) {
+                println!("{line}");
+            }
+        }
+        Command::Usage { transcript, session } => {
+            let cfg = Config::load();
+            let path = transcript.map(|p| p.to_string_lossy().into_owned()).or_else(|| {
+                let sid = session
+                    .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+                    .unwrap_or_default();
+                usage::find_transcript_for_session(&sid).map(|p| p.to_string_lossy().into_owned())
+            });
+            match path.as_deref().and_then(transcript::estimate_tokens) {
+                Some((tokens, _src)) => {
+                    let pct = usage::pct_from_tokens(&cfg, tokens);
+                    println!("{}", usage::line(&cfg, pct, Some(tokens)));
+                    println!("hint: {}", usage::hint(&cfg, pct));
+                }
+                None => {
+                    println!("context使用量は不明（transcript 未解決）。focus 指定があれば distill を続行可。");
+                }
             }
         }
     }
+}
+
+/// Build the status-bar line from the statusLine stdin JSON. Prefers Claude's own
+/// `context_window.used_percentage`; falls back to estimating from the transcript.
+fn statusline_from(cfg: &Config, raw: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let cw = v.get("context_window");
+    let pct = cw
+        .and_then(|c| c.get("used_percentage"))
+        .and_then(serde_json::Value::as_f64);
+    let tokens = cw.and_then(|c| {
+        let inp = c.get("total_input_tokens").and_then(serde_json::Value::as_u64);
+        let out = c.get("total_output_tokens").and_then(serde_json::Value::as_u64);
+        match (inp, out) {
+            (Some(i), Some(o)) => Some(i + o),
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    });
+    if let Some(p) = pct {
+        return Some(usage::line(cfg, p.round() as u64, tokens));
+    }
+    // Fallback: estimate from the transcript when Claude didn't supply a %.
+    let path = v.get("transcript_path").and_then(serde_json::Value::as_str)?;
+    let (t, _src) = transcript::estimate_tokens(path)?;
+    Some(usage::line(cfg, usage::pct_from_tokens(cfg, t), Some(t)))
 }
 
 const SAMPLE_CONFIG: &str = r#"# ctxrot configuration
