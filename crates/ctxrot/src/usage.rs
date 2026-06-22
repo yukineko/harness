@@ -1,0 +1,134 @@
+//! Context-usage readout shared by `ctxrot statusline` (the live status bar) and
+//! `ctxrot usage` (the skill-facing readout that makes `/distill` usage-aware).
+//!
+//! Both render the same one-line meter from a single `(percent, tokens)` pair so
+//! the number the user sees in the status bar matches the number `/distill`
+//! branches on. The percentage source differs: `statusline` trusts Claude's own
+//! `context_window.used_percentage` from the hook stdin; `usage` estimates from
+//! the transcript (the same `transcript::estimate_tokens` the guard uses).
+
+use std::path::PathBuf;
+
+use crate::config::Config;
+
+/// A proportional band meter like `▮▮▯▯▯`, filled to `frac` of `slots` cells.
+fn bar(frac: f64, slots: usize) -> String {
+    let filled = ((frac * slots as f64).round() as usize).min(slots);
+    let mut s = String::with_capacity(slots * 3);
+    for i in 0..slots {
+        s.push(if i < filled { '▮' } else { '▯' });
+    }
+    s
+}
+
+/// ANSI color for a band: 0–1 green, 2 yellow, 3+ red. Suppressed under NO_COLOR.
+fn color(band: usize) -> (&'static str, &'static str) {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return ("", "");
+    }
+    let c = match band {
+        0 | 1 => "\x1b[32m",
+        2 => "\x1b[33m",
+        _ => "\x1b[31m",
+    };
+    (c, "\x1b[0m")
+}
+
+/// Tokens as a compact `104k` / `512` string.
+fn fmt_k(tokens: u64) -> String {
+    if tokens >= 1000 {
+        format!("{}k", (tokens as f64 / 1000.0).round() as u64)
+    } else {
+        format!("{tokens}")
+    }
+}
+
+/// The shared one-line readout: `ctxrot 52% ▮▮▯▯▯ band1 ~104k/200k`.
+/// `pct` is 0–100; `tokens` adds the absolute `~used/window` suffix when known.
+pub fn line(cfg: &Config, pct: u64, tokens: Option<u64>) -> String {
+    let frac = pct as f64 / 100.0;
+    let band = cfg.band_for(frac);
+    let slots = cfg.bands.len() + 1; // +1 for the "below the lowest band" slot
+    let (c, r) = color(band);
+    let tok = match tokens {
+        Some(t) => format!(" ~{}/{}", fmt_k(t), fmt_k(cfg.context_window)),
+        None => String::new(),
+    };
+    format!("{c}ctxrot {pct}% {} band{band}{r}{tok}", bar(frac, slots))
+}
+
+/// A band-keyed action hint for usage-aware `/distill`. Centralizing it here (not
+/// in the skill prose) keeps the threshold logic next to `band_for`.
+pub fn hint(cfg: &Config, pct: u64) -> &'static str {
+    match cfg.band_for(pct as f64 / 100.0) {
+        0 => "使用率は低め。distill は急ぎ不要（focus 指定があるときだけ実施）。",
+        1 => "中程度。区切りが良ければ distill して要約＋リンク化を。",
+        _ => "高い。distill したら、その場で /compact してトークンを実際に解放すること。",
+    }
+}
+
+/// Locate the Claude Code transcript for a session id without replicating
+/// Claude's cwd-mangling: scan every `~/.claude/projects/*/` for `<id>.jsonl`
+/// and take the most recently modified match. Returns None if nothing matches.
+pub fn find_transcript_for_session(session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty() {
+        return None;
+    }
+    let home = std::env::var_os("HOME")?;
+    let projects = PathBuf::from(home).join(".claude").join("projects");
+    let target = format!("{session_id}.jsonl");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&projects).ok()?.flatten() {
+        let p = entry.path().join(&target);
+        if let Ok(meta) = std::fs::metadata(&p) {
+            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
+                best = Some((mtime, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Percentage (0–100) from raw token count against the configured window.
+pub fn pct_from_tokens(cfg: &Config, tokens: u64) -> u64 {
+    (tokens as f64 / cfg.context_window as f64 * 100.0).round() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config::default()
+    }
+
+    #[test]
+    fn bar_fills_proportionally() {
+        assert_eq!(bar(0.0, 4), "▯▯▯▯");
+        assert_eq!(bar(1.0, 4), "▮▮▮▮");
+        assert_eq!(bar(0.5, 4), "▮▮▯▯");
+    }
+
+    #[test]
+    fn line_has_percent_and_band() {
+        std::env::set_var("NO_COLOR", "1");
+        let l = line(&cfg(), 52, Some(104_000));
+        assert!(l.contains("52%"), "{l}");
+        assert!(l.contains("band1"), "{l}");
+        assert!(l.contains("~104k/200k"), "{l}");
+    }
+
+    #[test]
+    fn hint_escalates_with_band() {
+        assert!(hint(&cfg(), 10).contains("急ぎ不要"));
+        assert!(hint(&cfg(), 60).contains("区切り"));
+        assert!(hint(&cfg(), 80).contains("/compact"));
+    }
+
+    #[test]
+    fn pct_from_tokens_rounds() {
+        assert_eq!(pct_from_tokens(&cfg(), 100_000), 50);
+        assert_eq!(pct_from_tokens(&cfg(), 150_000), 75);
+    }
+}
