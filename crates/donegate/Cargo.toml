@@ -1,0 +1,26 @@
+[package]
+name = "donegate"
+version = "0.1.0"
+edition = "2021"
+description = "Completion-verification gate for Claude Code. On Stop it runs your acceptance commands as subprocesses; the agent can't declare done until every applicable check is green. Failures are fed back for an auto-fix loop."
+license = "MIT"
+
+[[bin]]
+name = "donegate"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+globset = "0.4"
+wait-timeout = "0.2"
+chrono = { version = "0.4", features = ["clock"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

@@ -1,0 +1,38 @@
+# donegate.example.toml — copy to ./donegate.toml (or ~/.donegate/config.toml).
+#
+# On Stop, donegate runs every applicable [[check]] as a subprocess. The agent
+# cannot finish its turn until all REQUIRED checks exit 0; a failing check's tail
+# output is fed back so it fixes and continues. Optional checks warn only.
+#
+# Scoping: a check with `when_changed` runs only when a changed file (git diff vs
+# HEAD + untracked) matches one of its globs — so editing only docs won't trigger
+# the test suite. Omit `when_changed` to always run. No git repo ⇒ all run.
+
+enabled = true
+max_attempts = 3          # after N consecutive blocks in a session, allow the stop
+default_timeout_secs = 300
+output_tail_lines = 40    # trailing lines of a failing command fed back to the agent
+reset_after_secs = 600    # attempt counter resets after this idle gap between stops
+# state_dir = "~/.donegate/state"
+
+[[check]]
+name = "build"
+cmd = "cargo build --quiet"
+when_changed = ["**/*.rs", "Cargo.toml", "Cargo.lock"]
+timeout_secs = 300
+
+[[check]]
+name = "test"
+cmd = "cargo test --quiet"
+when_changed = ["**/*.rs"]
+
+[[check]]
+name = "clippy"
+cmd = "cargo clippy --quiet --all-targets -- -D warnings"
+when_changed = ["**/*.rs"]
+
+[[check]]
+name = "fmt"
+cmd = "cargo fmt --check"
+when_changed = ["**/*.rs"]
+optional = true           # failing fmt warns but doesn't block the stop
