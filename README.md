@@ -138,7 +138,16 @@ context_window = 200000         # see the warning below
 large_file_bytes = 50000        # "large reference" nudge in guard (UserPromptSubmit)
 huge_tool_output_bytes = 50000  # PostToolUse nudge after a big payload lands
 gate_file_bytes = 1000000       # PreToolUse hard gate (deny); 0 = off
+gate_bash = false               # opt-in Bash gate: deny obvious unbounded dumps
 bands = [0.50, 0.75, 0.90]
+
+reanchor_enabled = true         # re-surface decisions/todos near window end (anti lost-in-the-middle)
+reanchor_min_band = 2           # only at/above this band (≈75%)
+reanchor_every_prompts = 8      # at most once per N qualifying prompts
+
+keep_notes_per_project = 30     # `ctxrot note prune` keeps the newest N
+keep_distill_min = 10           # …but always protects the newest N distill notes
+rescue_coalesce_secs = 120      # skip a preemptive rescue within N s of the last (0 = off)
 ```
 
 > **⚠️ `context_window` is the *effective cap you want to stay under* — the
@@ -149,7 +158,18 @@ bands = [0.50, 0.75, 0.90]
 > anything. This is counter-intuitive, so leave it at your target on purpose.
 
 Env overrides (Python v1 compatibility): `GUARD_DISABLE` (any value → no-op),
-`CLAUDE_CONTEXT_WINDOW`, `GUARD_LARGE_FILE_BYTES`, `GUARD_GATE_FILE_BYTES`.
+`CLAUDE_CONTEXT_WINDOW`, `GUARD_LARGE_FILE_BYTES`, `GUARD_GATE_FILE_BYTES`,
+`GUARD_GATE_BASH`, `GUARD_METRICS`.
+
+> **CJK / token-estimate note.** The byte-based thresholds (`large_file_bytes`,
+> `huge_tool_output_bytes`, `gate_file_bytes`) and the `bytes/4` token estimate
+> are calibrated for English prose. For Japanese and other CJK text a token is
+> typically far fewer than 4 bytes (UTF-8 CJK is ~3 bytes/char, often ~1 token/
+> char), so the byte→token figures shown in nudges run low. This is cosmetic: the
+> **primary path is the real `usage` block** from the transcript, which is exact
+> regardless of language, and the bands fire on that. The `bytes/4` proxy is only
+> a fallback used when no `usage` block has been written yet. (All truncation is
+> char-based via `truncate_chars`, so CJK is never cut mid-character.)
 
 ## Store
 

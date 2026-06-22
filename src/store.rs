@@ -60,8 +60,9 @@ fn tagged_note_re() -> Regex {
 }
 
 /// A `distill-*` note (the high-value, LLM-distilled carryover), as opposed to a
-/// deterministic `rescue-*`. Used by `prune` to protect distills preferentially.
-fn is_distill(path: &Path) -> bool {
+/// deterministic `rescue-*`. Used by `prune` to protect distills preferentially,
+/// and by `restore` to nudge when only deterministic rescues exist.
+pub fn is_distill(path: &Path) -> bool {
     path.file_name()
         .and_then(|s| s.to_str())
         .map(|n| n.starts_with("distill-"))

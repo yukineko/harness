@@ -62,6 +62,16 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         latest.display()
     ));
 
+    // Quality nudge (P4): if the carryover came from a deterministic `rescue-*`
+    // note (no `/distill` was run last session), its Decisions/todos are just
+    // regex-extracted and may be thin/empty. One line nudging /distill now —
+    // kept to a single line so the injection itself doesn't bloat.
+    if !crate::store::is_distill(&latest) {
+        out.push_str(
+            "\n（前回 /distill 未実行。重要な結論は今のうちに /distill で蒸留推奨）",
+        );
+    }
+
     // If both sections were empty/missing, only the pointer is useful.
     if decisions.is_none() && todos.is_none() {
         let msg = format!(
@@ -234,6 +244,47 @@ mod tests {
         let note = "## 決定事項 / Decisions\n\n- A\n\n## 残課題 / Open todos\n\n_(なし / none)_\n";
         assert!(missing_sections(note).is_empty());
         assert_eq!(missing_recommended_sections(note).len(), 3);
+    }
+
+    fn restore_fixture(name: &str, slug_prefix: &str) -> (Config, std::path::PathBuf, HookInput) {
+        let base = std::env::temp_dir().join(format!("ctxrot-restore-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cwd = base.join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cfg = Config {
+            state_dir: base.join("state"),
+            store_dir: base.join("store"),
+            ..Config::default()
+        };
+        let session = "sess-restore";
+        let body = "## 決定事項 / Decisions\n\n- A を採用\n\n## 残課題 / Open todos\n\n- B\n";
+        let slug = format!("{slug_prefix}-{}-20260101-000000", crate::store::session_tag(session));
+        crate::store::Store::new(&cfg).write_note(&cwd, &slug, body).unwrap();
+        let input = HookInput {
+            session_id: session.into(),
+            source: "startup".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        };
+        (cfg, base, input)
+    }
+
+    #[test]
+    fn nudges_when_only_rescue_exists() {
+        let (cfg, base, input) = restore_fixture("rescue", "rescue");
+        let out = run(&input, &cfg).expect("carryover from rescue note");
+        assert!(out.contains("A を採用"));
+        assert!(out.contains("/distill 未実行"), "rescue-only restore should nudge: {out}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn no_nudge_when_distill_exists() {
+        let (cfg, base, input) = restore_fixture("distill", "distill");
+        let out = run(&input, &cfg).expect("carryover from distill note");
+        assert!(out.contains("A を採用"));
+        assert!(!out.contains("/distill 未実行"), "distill restore must not nudge: {out}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
