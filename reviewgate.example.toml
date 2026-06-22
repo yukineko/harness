@@ -1,0 +1,53 @@
+# reviewgate.toml — code-review gate for Claude Code.
+#
+# On Stop, reviewgate reviews the diff before the agent can declare a turn done.
+# Place this file at your project root (or ~/.reviewgate/config.toml for a
+# global default). Every field is optional; the values shown are the defaults.
+
+enabled = true
+
+# How the review is performed:
+#   "inject"     — block the stop once per new diff state and inject a review
+#                  rubric. The running (subscription) agent reviews its own
+#                  changes. No API key, no extra process. (default)
+#   "subprocess" — run `reviewer_cmd` as an independent reviewer over the diff
+#                  and block only when it reports issues (injecting just those).
+mode = "inject"
+
+# Consecutive review rounds in one session before reviewgate gives up and allows
+# the stop (so a churning agent isn't trapped forever).
+max_attempts = 2
+
+# The per-session counter resets after this many idle seconds (a fresh turn).
+reset_after_secs = 600
+
+# Don't bother reviewing fewer than this many reviewable files.
+min_changed_files = 1
+
+# Cap the diff fed to the hasher / reviewer (bytes); larger diffs are truncated.
+max_diff_bytes = 200000
+
+# Only files matching `include` (and not `exclude`) are reviewed. Defaults cover
+# common source extensions and skip lockfiles / vendored / generated trees.
+# include = ["**/*.rs", "**/*.ts", "**/*.tsx", "**/*.py", "**/*.go"]
+# exclude = ["**/*.lock", "**/node_modules/**", "**/target/**", "**/dist/**"]
+
+# The review checklist. Injected into the model (inject mode) or handed to the
+# reviewer (subprocess mode). Omit for the built-in default rubric.
+# rubric = """
+# - 正しさ: 境界・エッジケース、off-by-one、null/None、型の取り違え
+# - エラー処理: 失敗パスの握りつぶし、過剰な unwrap/expect、リソースリーク
+# - セキュリティ: 入力検証、インジェクション、機密の露出
+# - 並行性: データ競合、デッドロック
+# - テスト: 新規ロジックのカバレッジ
+# - 設計/簡潔さ: 重複、過剰な複雑さ、再利用漏れ、命名
+# """
+
+# --- subprocess mode only -------------------------------------------------
+# A command that reads the review prompt on stdin and prints findings on
+# stdout. Output that is empty or starts with "LGTM" means "no issues".
+# `claude -p` runs headless on your Claude subscription (no API key).
+# reviewer_cmd = "claude -p"
+# reviewer_timeout_secs = 300
+
+# state_dir = "~/.reviewgate/state"
