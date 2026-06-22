@@ -17,8 +17,3 @@ chrono = { version = "0.4", features = ["clock"], default-features = false }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
 anyhow = "1"
-
-[profile.release]
-strip = true
-lto = true
-opt-level = "z"
