@@ -18,25 +18,88 @@ use crate::model::HookInput;
 use crate::store::Store;
 use crate::transcript;
 
+/// Drop-priority for the per-turn injection cap (`guard_inject_max_chars`). When
+/// the assembled blocks exceed the cap, the *lowest* priority is dropped first.
+/// The anchor is purely supplemental ("あると良い" — its absence is harmless), so
+/// it goes first; safety-critical warnings (large-ref, and the danger-band budget
+/// which says "you are losing context NOW") are kept to the last and only
+/// truncated if a single one still overflows. `Ord` is derived for `min_by_key`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Prio {
+    Anchor = 0,
+    Advice = 1,
+    Safety = 2,
+}
+
 /// Returns the text to inject (already trimmed), or None to stay silent.
 pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
-    let mut blocks: Vec<String> = Vec::new();
+    let mut blocks: Vec<(Prio, String)> = Vec::new();
 
     if let Some(b) = check_large_references(&input.prompt, &input.cwd_or_current(), cfg) {
-        blocks.push(b);
+        blocks.push((Prio::Safety, b));
     }
-    if let Some(b) = check_context_budget(input, cfg) {
-        blocks.push(b);
+    if let Some((band, b)) = check_context_budget(input, cfg) {
+        // The top band is a "losing context now" warning → keep it like a safety
+        // block; lower bands are advice that may be dropped before the warnings.
+        let prio = if band >= cfg.bands.len() {
+            Prio::Safety
+        } else {
+            Prio::Advice
+        };
+        blocks.push((prio, b));
     }
     if let Some(b) = check_reanchor(input, cfg) {
-        blocks.push(b);
+        blocks.push((Prio::Anchor, b));
     }
 
+    cap_blocks(blocks, cfg.guard_inject_max_chars)
+}
+
+/// Apply the per-turn injection cap. Blocks keep their original order; when the
+/// combined render exceeds `max_chars` (CJK-safe char count), whole blocks are
+/// dropped lowest-priority first (anchor → advice → safety). If a single block
+/// still overflows on its own it is truncated rather than dropped, so a
+/// safety-critical warning is never silently lost. `max_chars == 0` disables the
+/// cap (legacy behaviour: inject every block in full).
+fn cap_blocks(mut blocks: Vec<(Prio, String)>, max_chars: usize) -> Option<String> {
     if blocks.is_empty() {
-        None
-    } else {
-        Some(blocks.join("\n\n"))
+        return None;
     }
+    let render = |bs: &[(Prio, String)]| {
+        bs.iter()
+            .map(|(_, s)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+
+    if max_chars == 0 {
+        return Some(render(&blocks));
+    }
+
+    // Drop whole blocks (lowest priority first) until the rest fit or one remains.
+    while blocks.len() > 1 && render(&blocks).chars().count() > max_chars {
+        // Lowest priority wins; on ties drop the *later* block so the earlier
+        // (typically more safety-critical) one is kept.
+        let drop_idx = blocks
+            .iter()
+            .enumerate()
+            .min_by_key(|(i, (p, _))| (*p, std::cmp::Reverse(*i)))
+            .map(|(i, _)| i)
+            .expect("non-empty");
+        blocks.remove(drop_idx);
+    }
+
+    // A lone block may still exceed the cap — truncate it instead of dropping the
+    // last (possibly safety) block to nothing. `truncate_chars` appends a 13-char
+    // " …[truncated]" marker, so leave room for it.
+    if render(&blocks).chars().count() > max_chars {
+        let budget = max_chars.saturating_sub(13).max(1);
+        if let Some((_, text)) = blocks.first_mut() {
+            *text = transcript::truncate_chars(text, budget);
+        }
+    }
+
+    Some(render(&blocks))
 }
 
 // ----------------------------------------------------------------- T1
@@ -151,7 +214,9 @@ fn check_large_references(prompt: &str, cwd: &Path, cfg: &Config) -> Option<Stri
 
 // ----------------------------------------------------------------- T2
 
-fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<String> {
+/// Returns `(band, advice text)` so the caller can prioritise the danger band as
+/// a safety block under the injection cap. None when no escalation fires.
+fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<(usize, String)> {
     if input.transcript_path.is_empty() {
         return None;
     }
@@ -225,7 +290,7 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<String> {
         }
     }
 
-    Some(format!("[context-rot guard] {body}"))
+    Some((band, format!("[context-rot guard] {body}")))
 }
 
 // ----------------------------------------------------------------- re-anchor (P1)
@@ -379,7 +444,8 @@ mod tests {
         };
 
         // First crossing: advice mentions the preemptive note, and one is on disk.
-        let out = check_context_budget(&input, &cfg).expect("band advice on first crossing");
+        let (band, out) = check_context_budget(&input, &cfg).expect("band advice on first crossing");
+        assert_eq!(band, 3, "fixture usage ≈92% → danger band");
         assert!(
             out.contains("先行退避ノート"),
             "should confirm preemptive rescue: {out}"
@@ -479,6 +545,68 @@ mod tests {
             reanchor_fixture("off", "sess-off", "- A を採用", "- B");
         cfg.reanchor_enabled = false;
         assert!(check_reanchor(&input, &cfg).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ----------------------------------------------------------- N2 inject cap
+
+    /// A fresh fixture where all three blocks fire at once: a high-band fixture
+    /// (≈92% → danger budget), a heavy-keyword prompt (large-ref), and a bulky
+    /// session note so the anchor block is the largest of the three. The crafted
+    /// rescue note is fresh, so the preemptive band rescue coalesces onto it and
+    /// `latest_note_for_session` routes the anchor at it.
+    fn cap_fixture(name: &str, cap: usize) -> (Config, std::path::PathBuf, HookInput) {
+        let base = std::env::temp_dir().join(format!("ctxrot-cap-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cwd = base.join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cfg = Config {
+            state_dir: base.join("state"),
+            store_dir: base.join("store"),
+            guard_inject_max_chars: cap,
+            ..Config::default()
+        };
+        // Bulky Decisions/Open todos → the anchor block dominates and is the cap's
+        // first casualty. Each section is truncated to ANCHOR_SECTION_CAP_CHARS.
+        let big = format!("- {}", "決定".repeat(400));
+        let body = format!("## 決定事項 / Decisions\n\n{big}\n\n## 残課題 / Open todos\n\n{big}\n");
+        let slug = format!("rescue-{}-20260101-000000", crate::store::session_tag("sess-cap"));
+        crate::store::Store::new(&cfg).write_note(&cwd, &slug, &body).unwrap();
+        let input = HookInput {
+            session_id: "sess-cap".into(),
+            prompt: "このログを全文ください".into(), // heavy keyword → large-ref block
+            transcript_path: "tests/fixtures/transcript.jsonl".into(), // ≈92% → band 3
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        };
+        (cfg, base, input)
+    }
+
+    #[test]
+    fn inject_cap_drops_anchor_keeps_safety() {
+        let (cfg, base, input) = cap_fixture("on", 1200);
+        let out = run(&input, &cfg).expect("guard injects at high band");
+        assert!(
+            out.chars().count() <= 1200,
+            "combined output must respect the cap, got {} chars",
+            out.chars().count()
+        );
+        // Supplemental anchor is dropped first…
+        assert!(!out.contains("[ctxrot anchor]"), "anchor should be dropped: {out}");
+        // …while both safety-critical blocks survive.
+        assert!(out.contains("大きい参照を検知"), "large-ref warning must survive");
+        assert!(out.contains("危険域"), "danger-band budget must survive");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn inject_cap_zero_injects_all_blocks() {
+        let (cfg, base, input) = cap_fixture("off", 0);
+        let out = run(&input, &cfg).expect("guard injects at high band");
+        assert!(out.contains("[ctxrot anchor]"), "no cap → anchor present");
+        assert!(out.contains("大きい参照を検知"), "no cap → large-ref present");
+        assert!(out.contains("危険域"), "no cap → budget present");
+        assert!(out.chars().count() > 1200, "uncapped output exceeds the default cap");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
