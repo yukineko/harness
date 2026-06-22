@@ -24,58 +24,25 @@ fn binary_path() -> String {
         .unwrap_or_else(|| "gauge".to_string())
 }
 
+/// Command substrings gauge owns. Settings-file mechanics
+/// (load/backup/write/strip) are shared via `harness_core::install`.
+const MARKERS: &[&str] = &["gauge"];
+
+#[cfg(test)]
 fn is_ours(group: &Value) -> bool {
-    group
-        .get("hooks")
-        .and_then(Value::as_array)
-        .map(|hs| {
-            hs.iter().any(|h| {
-                h.get("command")
-                    .and_then(Value::as_str)
-                    .map(|c| c.contains("gauge"))
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+    harness_core::install::group_matches(group, MARKERS)
 }
 
 fn load_settings() -> Result<Value> {
-    let path = settings_path();
-    if !path.exists() {
-        return Ok(json!({}));
-    }
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    if text.trim().is_empty() {
-        return Ok(json!({}));
-    }
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-}
-
-fn backup(path: &PathBuf) -> Result<()> {
-    if path.exists() {
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let bak = path.with_extension(format!("json.bak-{stamp}"));
-        std::fs::copy(path, &bak)?;
-        println!("backup: {}", bak.display());
-    }
-    Ok(())
+    harness_core::install::load_settings(&settings_path())
 }
 
 fn write_settings(value: &Value) -> Result<()> {
-    let path = settings_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    backup(&path)?;
-    let text = serde_json::to_string_pretty(value)? + "\n";
-    std::fs::write(&path, text)?;
-    println!("updated: {}", path.display());
-    Ok(())
+    harness_core::install::write_settings(&settings_path(), value)
 }
 
 fn strip_ours(arr: &[Value]) -> Vec<Value> {
-    arr.iter().filter(|g| !is_ours(g)).cloned().collect()
+    harness_core::install::strip_matching(arr, MARKERS)
 }
 
 pub fn install(dry_run: bool) -> Result<()> {

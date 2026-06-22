@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+// Re-exported so existing `crate::config::expand_tilde` call sites keep working.
+pub use harness_core::config::expand_tilde;
+
 /// One acceptance command, run as a subprocess on Stop.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Check {
@@ -60,22 +63,9 @@ struct FileConfig {
     check: Vec<Check>,
 }
 
-fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-}
-
+/// The `~/.donegate` base directory. Thin wrapper over the shared primitive.
 pub fn base_dir() -> PathBuf {
-    home().join(".donegate")
-}
-
-pub fn expand_tilde(s: &str) -> PathBuf {
-    if let Some(rest) = s.strip_prefix("~/") {
-        home().join(rest)
-    } else if s == "~" {
-        home()
-    } else {
-        PathBuf::from(s)
-    }
+    harness_core::config::base_dir("donegate")
 }
 
 impl Default for Config {

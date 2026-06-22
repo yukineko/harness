@@ -4,6 +4,8 @@
 //! for users who build from source without installing the plugin. Idempotent:
 //! it strips any prior condukt entries (matched by the `condukt ` command
 //! prefix) before adding the current one, and backs up settings.json first.
+//! Settings-file mechanics (load/backup/write/strip) are shared via
+//! `harness_core::install`.
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -13,28 +15,13 @@ use std::path::PathBuf;
 const EVENTS: &[(&str, Option<&str>, &str)] =
     &[("SessionStart", Some("startup|resume|clear"), "restore")];
 
-const CMD_PREFIX: &str = "condukt ";
+/// Command substrings condukt owns (the `condukt ` command prefix).
+const MARKERS: &[&str] = &["condukt "];
 
 fn settings_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
+    harness_core::config::home()
         .join(".claude")
         .join("settings.json")
-}
-
-fn is_condukt_entry(group: &Value) -> bool {
-    group
-        .get("hooks")
-        .and_then(|h| h.as_array())
-        .map(|arr| {
-            arr.iter().any(|h| {
-                h.get("command")
-                    .and_then(|c| c.as_str())
-                    .map(|c| c.contains(CMD_PREFIX))
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
 }
 
 /// Remove every condukt-owned hook group from each event array.
@@ -43,17 +30,10 @@ fn strip(settings: &mut Value) {
         return;
     };
     for (_event, groups) in hooks.iter_mut() {
-        if let Some(arr) = groups.as_array_mut() {
-            arr.retain(|g| !is_condukt_entry(g));
+        if let Some(arr) = groups.as_array() {
+            *groups = Value::Array(harness_core::install::strip_matching(arr, MARKERS));
         }
     }
-}
-
-fn load(path: &PathBuf) -> Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| json!({}))
 }
 
 /// Print what install would do without writing.
@@ -68,16 +48,7 @@ pub fn dry_run() -> Result<()> {
 
 pub fn install() -> Result<()> {
     let path = settings_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut settings = load(&path);
-
-    if path.exists() {
-        let backup = path.with_extension("json.condukt-bak");
-        std::fs::copy(&path, &backup)
-            .with_context(|| format!("backing up to {}", backup.display()))?;
-    }
+    let mut settings = harness_core::install::load_settings(&path)?;
 
     strip(&mut settings);
 
@@ -107,8 +78,8 @@ pub fn install() -> Result<()> {
         }
     }
 
-    let out = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(&path, out).with_context(|| format!("writing {}", path.display()))?;
+    harness_core::install::write_settings(&path, &settings)
+        .with_context(|| format!("writing {}", path.display()))?;
     eprintln!("installed condukt hooks into {}", path.display());
     Ok(())
 }
@@ -119,10 +90,10 @@ pub fn uninstall() -> Result<()> {
         eprintln!("no settings.json at {}", path.display());
         return Ok(());
     }
-    let mut settings = load(&path);
+    let mut settings = harness_core::install::load_settings(&path)?;
     strip(&mut settings);
-    let out = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(&path, out).with_context(|| format!("writing {}", path.display()))?;
+    harness_core::install::write_settings(&path, &settings)
+        .with_context(|| format!("writing {}", path.display()))?;
     eprintln!("removed condukt hooks from {}", path.display());
     Ok(())
 }

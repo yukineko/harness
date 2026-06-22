@@ -7,6 +7,9 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+// Re-exported so existing `crate::config::expand_tilde` call sites keep working.
+pub use harness_core::config::expand_tilde;
+
 pub struct Config {
     /// Where worktrees are created (must be outside the repo).
     pub worktree_base: PathBuf,
@@ -29,20 +32,10 @@ struct FileConfig {
     state_dir: Option<String>,
 }
 
-/// `~/.condukt` (falls back to `./.condukt` if there is no home dir).
+/// `~/.condukt` (falls back to `./.condukt` if there is no home dir). Thin
+/// wrapper over the shared base-dir resolution.
 pub fn base_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".condukt")
-}
-
-fn expand_tilde(s: &str) -> PathBuf {
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(s)
+    harness_core::config::base_dir("condukt")
 }
 
 impl Config {

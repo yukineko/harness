@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+// Re-exported so existing `crate::config::expand_tilde` call sites keep working.
+pub use harness_core::config::expand_tilde;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub enabled: bool,
@@ -39,22 +42,9 @@ struct FileConfig {
     state_dir: Option<String>,
 }
 
-fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-}
-
+/// The `~/.stuckguard` base directory.
 pub fn base_dir() -> PathBuf {
-    home().join(".stuckguard")
-}
-
-pub fn expand_tilde(s: &str) -> PathBuf {
-    if let Some(rest) = s.strip_prefix("~/") {
-        home().join(rest)
-    } else if s == "~" {
-        home()
-    } else {
-        PathBuf::from(s)
-    }
+    harness_core::config::base_dir("stuckguard")
 }
 
 impl Default for Config {
