@@ -1,0 +1,29 @@
+[package]
+name = "specguard"
+version = "0.1.0"
+edition = "2021"
+description = "Project-agnostic spec/implementation drift audit harness. Drives an LLM agent (read-only) to check that an implementation still matches its canonical specs, and that the specs themselves are free of silence/contradiction/duplication."
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "specguard"
+path = "src/main.rs"
+
+# specforge — the generation-side harness (sibling to specguard, see DESIGN.md).
+# A separate binary so specguard's read-only enforcement stays uncontaminated.
+[[bin]]
+name = "specforge"
+path = "src/forge/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+globset = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tempfile = "3"

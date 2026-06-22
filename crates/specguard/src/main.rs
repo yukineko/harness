@@ -1,0 +1,859 @@
+//! specguard — project-agnostic spec/implementation drift audit harness.
+//!
+//! Reads a TOML config describing a project's canon (areas, canon pointers,
+//! invariants), resolves a change-triggered scope from `git diff`, renders a
+//! read-only audit prompt, drives an LLM agent to produce findings, and
+//! persists a report plus a sentinel when something needs human review.
+//!
+//! The judgment lives in the agent (it reads the live canon and quotes it
+//! verbatim); this binary is the deterministic harness around it.
+
+mod agent;
+mod config;
+mod decision;
+mod init;
+mod parse;
+mod prompt;
+mod ratify;
+mod report;
+mod scope;
+mod verify;
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use config::Config;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+/// Exit codes (stable contract for schedulers/hooks). These are specguard's own
+/// and must stay disjoint from anything the agent might return: an agent failure
+/// always maps to [`EXIT_AGENT_FAILED`] (its real code goes to stderr) rather
+/// than being propagated raw, so a caller can never confuse "agent exited 3"
+/// with "no marker".
+const EXIT_OK: u8 = 0;
+const EXIT_USAGE: u8 = 2;
+const EXIT_NO_MARKER: u8 = 3;
+const EXIT_AGENT_FAILED: u8 = 4;
+/// The prompt (meta-canon) is unratified or changed since ratification, and
+/// `[prompt].require_ratification` is on — a human must `accept-prompt` first.
+const EXIT_UNRATIFIED: u8 = 5;
+
+#[derive(Parser)]
+#[command(name = "specguard", version, about = "Spec/implementation drift audit harness")]
+struct Cli {
+    /// Path to the config file.
+    #[arg(short, long, default_value = "specguard.toml", global = true)]
+    config: PathBuf,
+
+    /// Override the baseline ref (also via SPECGUARD_BASELINE_REF).
+    #[arg(short, long, global = true)]
+    baseline: Option<String>,
+
+    /// Override the run date (YYYY-MM-DD); default is today (also SPECGUARD_NOW).
+    #[arg(long, global = true)]
+    date: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Run the full audit (default).
+    Run,
+    /// Print the resolved scope only (no agent call).
+    Scope,
+    /// Print the rendered per-shard prompts only (no agent call).
+    Prompt {
+        /// Emit a machine-readable JSON envelope ({project, baseline, head, date,
+        /// marker, shards:[{label, prompt}]}) for subscription-native orchestration
+        /// (Claude Code plugin) instead of the human debug view.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ingest pre-collected per-shard agent outputs (JSON on stdin, or `--from`)
+    /// and run the parse→report→sentinel pipeline WITHOUT spawning agents. This is
+    /// the subscription-native counterpart to `run`: the Claude Code plugin gets
+    /// shard prompts via `prompt --json`, dispatches each to a read-only in-session
+    /// subagent (billed to the host subscription, no nested `claude --print`), then
+    /// feeds the outputs back here. Same exit codes as `run`.
+    Ingest {
+        /// Read the outputs JSON from a file instead of stdin.
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
+    /// Print the active fix-offer block if a sentinel is pending (for the
+    /// SessionStart hook). Resolves the sentinel path from `[output].sentinel`,
+    /// so a custom path still works. Never fails the session: any error (missing
+    /// config etc.) prints nothing and exits 0.
+    Pending,
+    /// Clear the sentinel after a human has handled the pending findings.
+    Ack,
+    /// Scaffold specguard into a repo: starter config + Claude Code SessionStart
+    /// hook. Idempotent; existing config kept unless `--force`.
+    Init {
+        /// Overwrite an existing config file.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Pre-task spec briefing (read-only): before you start a task, summarize the
+    /// canon rules and invariants it touches — to prevent drift before it happens
+    /// (the front-line counterpart to `run`'s post-hoc audit).
+    Brief {
+        /// The task you're about to start (free text).
+        task: String,
+        /// Print the rendered briefing prompt only (no agent); used by the plugin
+        /// to dispatch it to a read-only subagent.
+        #[arg(long)]
+        prompt: bool,
+    },
+    /// Scaffold a decision record (ADR) pinned to the current canon commit.
+    Decide {
+        /// Title of the decision (becomes part of the record id).
+        title: String,
+        /// Overwrite an existing record with the same id.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Ratify the prompt templates (meta-canon) after reviewing them: contract-
+    /// check, then pin the current version with a rationale. Required before a
+    /// gated `run` when `[prompt].require_ratification = true`.
+    AcceptPrompt {
+        /// Why this prompt version is accepted (recorded in the lock).
+        #[arg(short = 'm', long = "reason")]
+        reason: String,
+    },
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match run(&cli) {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            eprintln!("specguard: error: {e:#}");
+            ExitCode::from(EXIT_USAGE)
+        }
+    }
+}
+
+struct Loaded {
+    cfg: Config,
+    repo_root: PathBuf,
+    template: String,
+    date: String,
+}
+
+/// Load config + resolve repo root, template and date (shared by all commands).
+fn load(cli: &Cli) -> Result<Loaded> {
+    let cfg = Config::load(&cli.config)?;
+    let config_dir = cli
+        .config
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let repo_root = canonicalize(&config_dir.join(&cfg.project.root))
+        .with_context(|| "resolving project.root")?;
+    let template = load_template(&cfg, config_dir)?;
+    let date = resolve_date(cli.date.clone());
+    Ok(Loaded {
+        cfg,
+        repo_root,
+        template,
+        date,
+    })
+}
+
+fn run(cli: &Cli) -> Result<u8> {
+    // `init` runs before config load: the config may not exist yet.
+    if let Some(Command::Init { force }) = &cli.command {
+        init::run(&cli.config, *force)?;
+        return Ok(EXIT_OK);
+    }
+
+    // `pending` is the SessionStart hook entry point: best-effort, never errors.
+    if let Some(Command::Pending) = &cli.command {
+        return Ok(pending(cli));
+    }
+
+    let l = load(cli)?;
+    let paths = report::paths(&l.cfg, &l.repo_root, &l.date);
+
+    // `ack` only touches the sentinel; no scope/agent work needed.
+    if let Some(Command::Ack) = cli.command {
+        return ack(&paths);
+    }
+
+    // `decide` scaffolds a decision record pinned to the current canon commit.
+    if let Some(Command::Decide { title, force }) = &cli.command {
+        return decide(&l, title, *force);
+    }
+
+    // `accept-prompt` ratifies the prompt (meta-canon): contract-check + pin.
+    if let Some(Command::AcceptPrompt { reason }) = &cli.command {
+        return accept_prompt(&l, reason);
+    }
+
+    // `brief` is a read-only pre-task briefing; no scope/git resolution needed.
+    if let Some(Command::Brief { task, prompt }) = &cli.command {
+        return brief(&l, task, *prompt);
+    }
+
+    let last_ref = report::read_last_ref(&paths);
+    let override_ref = cli
+        .baseline
+        .clone()
+        .or_else(|| std::env::var("SPECGUARD_BASELINE_REF").ok());
+
+    let scope = scope::resolve(&l.cfg, &l.repo_root, override_ref.as_deref(), last_ref.as_deref())?;
+    let shards = prompt::shards(&l.cfg, &scope);
+
+    match cli.command {
+        Some(Command::Scope) => {
+            print_scope(&l.cfg, &scope);
+            return Ok(EXIT_OK);
+        }
+        Some(Command::Prompt { json }) => {
+            // The ratification gate guards the gateway to dispatch: refuse to emit
+            // machine-readable prompts (which the plugin hands to subagents) until
+            // the prompt (meta-canon) is ratified, just as `run` refuses before it
+            // spawns. The human debug view is not gated (it audits nothing).
+            if json {
+                if let Some(code) = ratification_block(&l)? {
+                    return Ok(code);
+                }
+                emit_prompt_json(&l, &scope, &shards)?;
+            } else {
+                print_prompts(&l, &scope, &shards);
+            }
+            return Ok(EXIT_OK);
+        }
+        Some(Command::Ingest { ref from }) => {
+            if let Some(code) = ratification_block(&l)? {
+                return Ok(code);
+            }
+            let outs = read_ingest(from.as_deref(), &l, &scope, &shards)?;
+            return finish(&l, &scope, &shards, &paths, outs);
+        }
+        Some(Command::Ack)
+        | Some(Command::Pending)
+        | Some(Command::Brief { .. })
+        | Some(Command::Init { .. })
+        | Some(Command::Decide { .. })
+        | Some(Command::AcceptPrompt { .. }) => unreachable!("handled above"),
+        Some(Command::Run) | None => {}
+    }
+
+    // Run (default): ratify, render every shard, dispatch to the agent, finish.
+    if let Some(code) = ratification_block(&l)? {
+        return Ok(code);
+    }
+
+    if !shards.is_empty() {
+        eprintln!(
+            "specguard: auditing {} (baseline {}, {} shard(s): {} area(s) + {} invariant + {} decision)",
+            l.cfg.project.name,
+            scope.baseline,
+            shards.len(),
+            scope.in_scope.len(),
+            if l.cfg.invariants.is_empty() { 0 } else { 1 },
+            if scope.decision_files.is_empty() { 0 } else { 1 },
+        );
+    }
+
+    let shard_prompts: Vec<agent::ShardPrompt> = shards
+        .iter()
+        .map(|&sh| agent::ShardPrompt {
+            label: prompt::shard_label(&l.cfg, &scope, sh),
+            prompt: prompt::render_shard(&l.template, &l.cfg, &scope, sh, &l.date),
+        })
+        .collect();
+
+    let outs = if shards.is_empty() {
+        Vec::new()
+    } else {
+        agent::run_shards(&l.cfg.agent, &l.repo_root, shard_prompts)
+    };
+
+    finish(&l, &scope, &shards, &paths, outs)
+}
+
+/// The ratification gate as a reusable guard. Returns `Ok(Some(EXIT_UNRATIFIED))`
+/// when `[prompt].require_ratification` is on and the prompt (meta-canon) is
+/// unratified or has drifted since ratification — the caller should return that
+/// code rather than audit. `Ok(None)` means auditing may proceed.
+fn ratification_block(l: &Loaded) -> Result<Option<u8>> {
+    if !l.cfg.prompt.require_ratification {
+        return Ok(None);
+    }
+    let hashes = current_hashes(l);
+    match ratify::read_lock(&l.repo_root) {
+        None => {
+            eprintln!(
+                "specguard: prompt (メタ正典) が未批准です。内容を確認し、\n  `specguard accept-prompt -m \"理由\"` で批准してください。"
+            );
+            Ok(Some(EXIT_UNRATIFIED))
+        }
+        Some(lock) => {
+            let drift = ratify::drifted(&lock, &hashes, l.cfg.verify.enabled, l.cfg.verify.completeness);
+            if !drift.is_empty() {
+                eprintln!(
+                    "specguard: prompt (メタ正典) に未批准の変更があります: {}\n  内容を確認し、合意できるなら `specguard accept-prompt -m \"理由\"` で再批准してください。",
+                    drift.join(", ")
+                );
+                return Ok(Some(EXIT_UNRATIFIED));
+            }
+            // Surface which ratified policy version is in force.
+            eprintln!(
+                "specguard: prompt 批准済み (date {}, canon {}) 理由: {}",
+                lock.date, lock.canon_commit, lock.reason
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Shared tail of `run` and `ingest`: given the per-shard agent outputs (already
+/// collected — by spawning for `run`, from JSON for `ingest`), parse them, run the
+/// optional verification gates, merge the report, and update sentinel/baseline.
+/// When there are no shards, `outs` is ignored and the empty-scope progress path
+/// runs instead. Returns the same exit codes `run` always has.
+fn finish(
+    l: &Loaded,
+    scope: &scope::Scope,
+    shards: &[prompt::Shard],
+    paths: &report::Paths,
+    outs: Vec<agent::ShardOutput>,
+) -> Result<u8> {
+    let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
+
+    // Nothing in scope and no invariants: record progress without an agent call.
+    if shards.is_empty() {
+        let body = format!(
+            "# {} 仕様↔実装 整合監査 {}\n\n## スコープ\n- baseline: {}\n- canon commit (HEAD): {}\n- in-scope 領域: なし / 不変条件: なし / 決定ログ: なし\n\n## findings\n監査対象なし。\n",
+            l.cfg.project.name, l.date, scope.baseline, head
+        );
+        report::write_report(&paths, &body)?;
+        if report::sentinel_pending(&paths) {
+            println!(
+                "specguard: 監査対象なし。ただし未処理 sentinel ({}) があるため baseline を据え置く (`specguard ack` で解除)",
+                paths.sentinel.display()
+            );
+        } else {
+            report::advance_baseline(&paths, &head)?;
+            println!("specguard: 監査対象なし (report: {})", paths.report.display());
+        }
+        return Ok(EXIT_OK);
+    }
+
+    // B: any shard whose agent failed -> a single EXIT_AGENT_FAILED, with each
+    // real exit code on stderr. Never propagate raw (would collide with 2/3).
+    let failed: Vec<&agent::ShardOutput> = outs.iter().filter(|o| o.out.code != 0).collect();
+    if !failed.is_empty() {
+        for f in &failed {
+            eprintln!(
+                "specguard: shard '{}' agent exited with code {}\n--- agent stderr ---\n{}",
+                f.label,
+                f.out.code,
+                f.out.stderr.trim_end()
+            );
+        }
+        return Ok(EXIT_AGENT_FAILED);
+    }
+
+    let parsed: Vec<(String, parse::Parsed)> = outs
+        .iter()
+        .map(|o| (o.label.clone(), parse::parse(&o.out.stdout)))
+        .collect();
+
+    // If any shard omitted the marker, the audit is incomplete: save the merged
+    // report for inspection but do NOT advance the baseline, raise a sentinel, or
+    // run verification (which needs complete audit output to refine).
+    let missing: Vec<&str> = parsed
+        .iter()
+        .filter(|(_, p)| !p.marker_found)
+        .map(|(l, _)| l.as_str())
+        .collect();
+    if !missing.is_empty() {
+        let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
+        if let Some(dir) = paths.report.parent() {
+            std::fs::create_dir_all(dir).ok();
+        }
+        std::fs::write(&paths.report, &merged)
+            .with_context(|| format!("writing report {}", paths.report.display()))?;
+        eprintln!(
+            "specguard: WARN marker '{}' missing in shard(s): {}; saved {} but cannot assess findings",
+            parse::MARKER,
+            missing.join(", "),
+            paths.report.display()
+        );
+        return Ok(EXIT_NO_MARKER);
+    }
+
+    // Verification gates (opt-in): refute false positives (V1) and surface missed
+    // rules (V2). A pure transform over the parsed shards so the merge/sentinel
+    // logic below is unchanged. See DESIGN-VERIFY.md.
+    let parsed = if l.cfg.verify.enabled || l.cfg.verify.completeness {
+        verify::apply(&l.cfg, &l.repo_root, &scope, &shards, &l.date, parsed)
+    } else {
+        parsed
+    };
+
+    let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
+    report::write_report(&paths, &merged)?;
+
+    let report_rel = format!("{}/{}.md", l.cfg.output.report_dir, l.date);
+    let needs_user = parsed.iter().any(|(_, p)| p.needs_user);
+    if needs_user {
+        // Findings: raise the sentinel and HOLD the baseline. Not advancing keeps
+        // the unfixed drift in the next run's diff so it is re-detected; a human
+        // releases it with `specguard ack` once handled.
+        let summary = merge_summary(&parsed);
+        report::write_sentinel(&paths, &l.date, &report_rel, &summary)?;
+        println!(
+            "specguard: 修正候補あり -> {} (report: {}); baseline は据え置き (ack するまで再検出)",
+            paths.sentinel.display(),
+            paths.report.display()
+        );
+    } else if report::sentinel_pending(&paths) {
+        // Clean this run, but a prior run's sentinel is still unhandled: keep the
+        // baseline put so its drift stays in scope. Leave the sentinel untouched.
+        println!(
+            "specguard: 修正候補なし。ただし未処理 sentinel ({}) が残るため baseline を据え置く (`specguard ack` で解除)",
+            paths.sentinel.display()
+        );
+    } else {
+        // Fully clean: advance the baseline.
+        report::advance_baseline(&paths, &head)?;
+        println!("specguard: 修正候補なし (report: {})", paths.report.display());
+    }
+    Ok(EXIT_OK)
+}
+
+/// Machine-readable envelope for `prompt --json`: enough for the plugin to
+/// dispatch each shard to a read-only subagent and label the results.
+#[derive(serde::Serialize)]
+struct PromptJson<'a> {
+    project: &'a str,
+    baseline: &'a str,
+    head: String,
+    date: &'a str,
+    /// The marker each shard's report must end with (so the orchestrator can
+    /// remind the subagent, and reject output that lacks it).
+    marker: &'a str,
+    shards: Vec<ShardJson>,
+}
+
+#[derive(serde::Serialize)]
+struct ShardJson {
+    label: String,
+    prompt: String,
+}
+
+/// Input envelope for `ingest`: the per-shard outputs the plugin collected from
+/// its subagents. `stdout` is the subagent's report (must carry the marker);
+/// `code` is its exit status (default 0 = success); `stderr` is optional context.
+#[derive(serde::Deserialize)]
+struct IngestJson {
+    shards: Vec<IngestShard>,
+}
+
+#[derive(serde::Deserialize)]
+struct IngestShard {
+    label: String,
+    #[serde(default)]
+    stdout: String,
+    #[serde(default)]
+    stderr: String,
+    #[serde(default)]
+    code: i32,
+}
+
+/// Emit the JSON envelope of rendered shard prompts (for `prompt --json`).
+fn emit_prompt_json(l: &Loaded, scope: &scope::Scope, shards: &[prompt::Shard]) -> Result<()> {
+    let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
+    let shards_json: Vec<ShardJson> = shards
+        .iter()
+        .map(|&sh| ShardJson {
+            label: prompt::shard_label(&l.cfg, scope, sh),
+            prompt: prompt::render_shard(&l.template, &l.cfg, scope, sh, &l.date),
+        })
+        .collect();
+    let env = PromptJson {
+        project: &l.cfg.project.name,
+        baseline: &scope.baseline,
+        head,
+        date: &l.date,
+        marker: parse::MARKER,
+        shards: shards_json,
+    };
+    println!("{}", serde_json::to_string_pretty(&env).context("serializing prompt JSON")?);
+    Ok(())
+}
+
+/// Read the `ingest` input (stdin or `--from`) and align its outputs to the
+/// freshly resolved shards by label. A shard with no matching output becomes an
+/// agent failure (`code = -1`) so `finish` flags it like any other failed shard —
+/// the plugin must return every shard it was handed.
+fn read_ingest(
+    from: Option<&Path>,
+    l: &Loaded,
+    scope: &scope::Scope,
+    shards: &[prompt::Shard],
+) -> Result<Vec<agent::ShardOutput>> {
+    let raw = match from {
+        Some(p) => std::fs::read_to_string(p)
+            .with_context(|| format!("reading ingest file {}", p.display()))?,
+        None => {
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .context("reading ingest JSON from stdin")?;
+            s
+        }
+    };
+    let parsed: IngestJson = serde_json::from_str(&raw).context("parsing ingest JSON")?;
+    let mut by_label: std::collections::HashMap<String, IngestShard> =
+        parsed.shards.into_iter().map(|s| (s.label.clone(), s)).collect();
+    let outs = shards
+        .iter()
+        .map(|&sh| {
+            let label = prompt::shard_label(&l.cfg, scope, sh);
+            match by_label.remove(&label) {
+                Some(s) => agent::ShardOutput {
+                    label,
+                    out: agent::AgentOutput {
+                        stdout: s.stdout,
+                        stderr: s.stderr,
+                        code: s.code,
+                    },
+                },
+                None => agent::ShardOutput {
+                    out: agent::AgentOutput {
+                        stdout: String::new(),
+                        stderr: format!("no output provided for shard '{label}' in ingest input"),
+                        code: -1,
+                    },
+                    label,
+                },
+            }
+        })
+        .collect();
+    Ok(outs)
+}
+
+/// Pre-task spec briefing (read-only). Renders the briefing prompt over every
+/// configured area + the invariants and either prints it (`--prompt`, for the
+/// plugin to dispatch to a subagent) or runs the configured agent once and prints
+/// its brief. Produces no report/sentinel — it is advisory, drift-prevention.
+fn brief(l: &Loaded, task: &str, prompt_only: bool) -> Result<u8> {
+    if task.trim().is_empty() {
+        anyhow::bail!("brief には着手するタスクの説明が必要です (例: specguard brief \"...\")");
+    }
+    let rendered = prompt::render_brief(prompt::BRIEF_TEMPLATE, &l.cfg, task, &l.date);
+    if prompt_only {
+        print!("{rendered}");
+        return Ok(EXIT_OK);
+    }
+    let shard = agent::ShardPrompt {
+        label: "brief".to_string(),
+        prompt: rendered,
+    };
+    let outs = agent::run_shards(&l.cfg.agent, &l.repo_root, vec![shard]);
+    let o = &outs[0];
+    if o.out.code != 0 {
+        eprintln!(
+            "specguard: brief agent exited with code {}\n--- agent stderr ---\n{}",
+            o.out.code,
+            o.out.stderr.trim_end()
+        );
+        return Ok(EXIT_AGENT_FAILED);
+    }
+    print!("{}", o.out.stdout);
+    Ok(EXIT_OK)
+}
+
+/// SessionStart hook entry point: if a sentinel is pending, print an active
+/// fix-offer block so the host agent surfaces it (read the report, then ask the
+/// human whether to fix). Resolves the sentinel path from config, so a custom
+/// `[output].sentinel` still works (the old hook hardcoded `.specguard-pending`).
+/// Best-effort: any failure (no config, unreadable sentinel) prints nothing and
+/// exits 0, so it can never block a session from starting.
+fn pending(cli: &Cli) -> u8 {
+    let Ok(l) = load(cli) else {
+        return EXIT_OK;
+    };
+    let paths = report::paths(&l.cfg, &l.repo_root, &l.date);
+    if !report::sentinel_pending(&paths) {
+        return EXIT_OK;
+    }
+    let body = std::fs::read_to_string(&paths.sentinel).unwrap_or_default();
+    let field = |key: &str| -> String {
+        body.lines()
+            .find_map(|line| line.strip_prefix(key).map(|v| v.trim().to_string()))
+            .unwrap_or_default()
+    };
+    let report = field("report:");
+    let summary = field("summary:");
+
+    println!("⚠ specguard: 未処理の仕様ドリフト指摘があります (Human-on-the-loop)。");
+    if !report.is_empty() {
+        println!("report: {report}");
+    }
+    if !summary.is_empty() {
+        println!("summary: {summary}");
+    }
+    println!();
+    println!("対応方針: まず report (上記パス) を Read して指摘内容を把握し、`AskUserQuestion` で");
+    println!("次の3択を人間に提示せよ (人間が選ぶまで勝手に修正・ack しないこと):");
+    println!("  1. 別タスクで修正に着手 — 各 finding を B(コード修正)/C(doc 更新) に分類し、修正後 `specguard ack`");
+    println!("  2. 後で — sentinel を残す (次セッションで再提示)");
+    println!("  3. 不要 — `specguard ack` で sentinel を解除");
+    EXIT_OK
+}
+
+/// Clear the sentinel (C). Idempotent: succeeds whether or not one was present.
+fn ack(paths: &report::Paths) -> Result<u8> {
+    match std::fs::remove_file(&paths.sentinel) {
+        Ok(()) => println!("specguard: sentinel をクリアした ({})", paths.sentinel.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("specguard: sentinel は無い ({})", paths.sentinel.display());
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e))
+                .with_context(|| format!("removing sentinel {}", paths.sentinel.display()));
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+/// Scaffold a decision record (ADR) pinned to the current canon commit.
+fn decide(l: &Loaded, title: &str, force: bool) -> Result<u8> {
+    let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
+    let id = format!("{}-{}", l.date, decision::slug(title));
+    let path = decision::scaffold(
+        &l.repo_root,
+        &l.cfg.decisions.dir,
+        &id,
+        title,
+        &l.date,
+        &head,
+        force,
+    )?;
+    println!("specguard: 決定ログを生成 -> {}", path.display());
+    println!("  canon commit に pin 済み (canon_commit: {head})");
+    println!("  次: `canon:` に支配する canon ポインタ、`drivers:` に反証可能な理由、`review_when:` を記入");
+    Ok(EXIT_OK)
+}
+
+/// Ratify the prompt templates (meta-canon): contract-check then pin the
+/// current version with a rationale. This is the consent ceremony — it confers
+/// canon authority on the prompt version, recorded against the canon commit.
+fn accept_prompt(l: &Loaded, reason: &str) -> Result<u8> {
+    if reason.trim().is_empty() {
+        anyhow::bail!("批准には理由が必要です (-m \"...\")");
+    }
+    // Contract judgment: the templates must not contradict the render/parse
+    // contract (required placeholders present). The policy/constitution part is
+    // the human's responsibility, recorded as the rationale. Verify templates are
+    // contract-checked only when their gate is active (consent is scoped to the
+    // live policy surface; see ratify::drifted).
+    let mut violations: Vec<(&str, Vec<&'static str>)> = vec![
+        ("audit-prompt", prompt::missing_placeholders(&l.template, prompt::AUDIT_PLACEHOLDERS)),
+        (
+            "decisions-prompt",
+            prompt::missing_placeholders(prompt::DECISIONS_TEMPLATE, prompt::DECISIONS_PLACEHOLDERS),
+        ),
+    ];
+    if l.cfg.verify.enabled {
+        violations.push((
+            "refute-prompt",
+            prompt::missing_placeholders(prompt::REFUTE_TEMPLATE, prompt::REFUTE_PLACEHOLDERS),
+        ));
+    }
+    if l.cfg.verify.completeness {
+        violations.push((
+            "completeness-prompt",
+            prompt::missing_placeholders(
+                prompt::COMPLETENESS_TEMPLATE,
+                prompt::COMPLETENESS_PLACEHOLDERS,
+            ),
+        ));
+    }
+    if violations.iter().any(|(_, m)| !m.is_empty()) {
+        let mut msg = String::from("prompt が契約に矛盾 (必須 placeholder 不足); 批准を拒否:");
+        for (name, miss) in &violations {
+            if !miss.is_empty() {
+                msg.push_str(&format!("\n  {name}: {}", miss.join(", ")));
+            }
+        }
+        anyhow::bail!(msg);
+    }
+
+    let head = scope::current_head(&l.repo_root).unwrap_or_else(|_| "UNKNOWN".to_string());
+    // Pin only the live policy: a gate that is off leaves its slot empty, so
+    // turning it on later registers as drift and demands a fresh ratification.
+    let mut hashes = current_hashes(l);
+    if !l.cfg.verify.enabled {
+        hashes.refute = String::new();
+    }
+    if !l.cfg.verify.completeness {
+        hashes.completeness = String::new();
+    }
+    let path = ratify::write_lock(&l.repo_root, &hashes, &head, &l.date, reason)?;
+    println!("specguard: prompt (メタ正典) を批准した -> {}", path.display());
+    println!("  canon commit に pin (canon_commit: {head})");
+    let mut pinned = vec!["audit", "decisions"];
+    if l.cfg.verify.enabled {
+        pinned.push("refute");
+    }
+    if l.cfg.verify.completeness {
+        pinned.push("completeness");
+    }
+    println!("  pin したポリシー: {}", pinned.join(", "));
+    println!("  理由: {reason}");
+    Ok(EXIT_OK)
+}
+
+/// Fingerprints of all four prompt templates (meta-canon) as they stand now.
+/// Used by the ratification gate; `ratify::drifted` decides which to enforce.
+fn current_hashes(l: &Loaded) -> ratify::TemplateHashes {
+    ratify::TemplateHashes {
+        audit: ratify::hash(&l.template),
+        decisions: ratify::hash(prompt::DECISIONS_TEMPLATE),
+        refute: ratify::hash(prompt::REFUTE_TEMPLATE),
+        completeness: ratify::hash(prompt::COMPLETENESS_TEMPLATE),
+    }
+}
+
+/// Print every shard's rendered prompt (debug view for `specguard prompt`).
+fn print_prompts(l: &Loaded, scope: &scope::Scope, shards: &[prompt::Shard]) {
+    if shards.is_empty() {
+        println!("(in-scope 領域なし・不変条件なし — 監査対象の shard がない)");
+        return;
+    }
+    for (i, &sh) in shards.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("===== shard: {} =====", prompt::shard_label(&l.cfg, scope, sh));
+        print!("{}", prompt::render_shard(&l.template, &l.cfg, scope, sh, &l.date));
+    }
+}
+
+/// Assemble the merged human-readable report: a harness-built header + overall
+/// scope, then each shard's body verbatim under a divider.
+fn merge_report(
+    cfg: &Config,
+    scope: &scope::Scope,
+    date: &str,
+    head: &str,
+    parsed: &[(String, parse::Parsed)],
+) -> String {
+    let labels: Vec<&str> = parsed.iter().map(|(l, _)| l.as_str()).collect();
+    let mut out = format!("# {} 仕様↔実装 整合監査 {}\n\n", cfg.project.name, date);
+    out.push_str("## スコープ (全体)\n");
+    out.push_str(&format!("- baseline: `{}`", scope.baseline));
+    if scope.fell_back {
+        out.push_str(" (fallback)");
+    }
+    out.push('\n');
+    // Provenance: the canon commit this verdict was judged against, so a past
+    // report is reproducible and B/C classification has a temporal anchor.
+    out.push_str(&format!("- canon commit (HEAD): `{head}`\n"));
+    out.push_str(&format!("- 変更ファイル数: {}\n", scope.changed_files.len()));
+    out.push_str(&format!("- shard: {}\n", join(&labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())));
+    out.push_str("- 各 shard は独立した read-only エージェント (fresh context) で監査し、ここに統合した。\n");
+    for (label, p) in parsed {
+        out.push_str(&format!("\n---\n\n## shard: {label}\n\n"));
+        out.push_str(p.report.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// Merge the sentinel summary across shards that flagged `needs_user`. A single
+/// flagged shard contributes its summary verbatim; multiple shards are labelled.
+fn merge_summary(parsed: &[(String, parse::Parsed)]) -> String {
+    let flagged: Vec<(&str, &str)> = parsed
+        .iter()
+        .filter(|(_, p)| p.needs_user && !p.summary.trim().is_empty())
+        .map(|(l, p)| (l.as_str(), p.summary.trim()))
+        .collect();
+    match flagged.as_slice() {
+        [] => String::new(),
+        [(_, s)] => s.to_string(),
+        many => many
+            .iter()
+            .map(|(l, s)| format!("[{l}] {s}"))
+            .collect::<Vec<_>>()
+            .join(" / "),
+    }
+}
+
+fn print_scope(cfg: &Config, scope: &scope::Scope) {
+    println!("baseline: {}", scope.baseline);
+    if scope.fell_back {
+        println!("(baseline fell back from configured/recorded ref)");
+    }
+    println!("changed files: {}", scope.changed_files.len());
+    println!("in-scope areas:");
+    if scope.in_scope.is_empty() {
+        println!("  (none)");
+    }
+    for hit in &scope.in_scope {
+        let canon_note = if hit.changed_canon.is_empty() {
+            String::new()
+        } else {
+            format!(", canon changed: {}", hit.changed_canon.len())
+        };
+        println!(
+            "  - {} ({} file(s){})",
+            cfg.areas[hit.area_index].name,
+            hit.matched_files.len(),
+            canon_note
+        );
+    }
+    println!("skipped areas: {}", join(&scope.skipped_areas));
+    println!(
+        "invariants (always): {}",
+        join(&cfg.invariants.iter().map(|i| i.name.clone()).collect::<Vec<_>>())
+    );
+    println!("decision records (D3): {}", scope.decision_files.len());
+}
+
+fn join(items: &[String]) -> String {
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+/// Resolve the template text: explicit `[prompt].template` path, else embedded.
+fn load_template(cfg: &Config, config_dir: &Path) -> Result<String> {
+    if cfg.prompt.template.trim().is_empty() {
+        Ok(prompt::DEFAULT_TEMPLATE.to_string())
+    } else {
+        let p = config_dir.join(&cfg.prompt.template);
+        std::fs::read_to_string(&p)
+            .with_context(|| format!("reading prompt template {}", p.display()))
+    }
+}
+
+fn resolve_date(cli_date: Option<String>) -> String {
+    if let Some(d) = cli_date {
+        return d;
+    }
+    if let Ok(d) = std::env::var("SPECGUARD_NOW") {
+        if !d.trim().is_empty() {
+            return d.trim().to_string();
+        }
+    }
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Canonicalize a path, falling back to the joined path if it doesn't exist yet.
+fn canonicalize(p: &Path) -> Result<PathBuf> {
+    std::fs::canonicalize(p).or_else(|_| Ok(p.to_path_buf()))
+}

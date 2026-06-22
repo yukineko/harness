@@ -1,0 +1,117 @@
+# specguard.example.toml — fully documented sample config.
+# Copy to `specguard.toml` at your repo root and edit.
+#
+# Everything project-specific lives here so the binary stays generic. The audit
+# agent reads the canon files you point at; their *content* is never copied into
+# this file or the prompt (that would drift against the real canon).
+
+[project]
+name = "MyProject"
+# Repo root the audit runs against, relative to THIS file. Default ".".
+root = "."
+
+# How to invoke the read-only auditing agent. The rendered prompt is written to
+# its stdin; its stdout is captured as the report.
+#
+# The block below just REPRODUCES the built-in default (config.rs
+# DEFAULT_AGENT_ARGS) for documentation — omit [agent] entirely to use it. The
+# default enforces read-only *by the harness*, not just the prompt: an allowlist
+# grants Read/Grep/Glob + read-only git, mutating/network tools are denied, and
+# there is no `--permission-mode bypassPermissions`, so in --print mode anything
+# off the allowlist is auto-denied (arbitrary Bash / writes / network cannot run
+# even under prompt injection from the audited repo).
+[agent]
+command = "claude"
+args = [
+    "--print",
+    "--allowedTools", "Read", "Glob", "Grep",
+    "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git status *)",
+    "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch",
+    # add e.g. "--model", "claude-sonnet-4-6" to pin a model
+]
+
+[scope]
+# Explicit baseline ref. Leave empty to use the recorded .last-ref, then the
+# fallback. Overridden by --baseline / SPECGUARD_BASELINE_REF.
+baseline_ref = ""
+# Baseline for the very first run (no .last-ref yet).
+# If neither the baseline nor this fallback resolves (e.g. a young/shallow repo
+# where HEAD~20 doesn't exist), specguard audits ALL tracked files instead of
+# erroring -- the report then shows `baseline: (all tracked files)`.
+fallback_ref = "HEAD~20"
+
+[output]
+# Reports (`<date>.md`) and `.last-ref` go here, relative to repo root.
+report_dir = "reports/spec-audit"
+# Sentinel written when an audit finds something needing human review.
+sentinel = ".specguard-pending"
+
+[decisions]
+# Directory of decision records (ADRs): the *why* behind canon changes, pinned
+# to a canon commit. `specguard decide "<title>"` scaffolds one here; the D3
+# audit checks each record's cited canon (freshness) and its drivers/review_when
+# (obsolescence) against the live canon. Relative paths resolve under the repo
+# root; an absolute path can point at an Obsidian vault. Set to "" to disable.
+dir = "decisions"
+
+[prompt]
+# Optional path (relative to this file) to a custom prompt template. Leave empty
+# to use the embedded default. Placeholders: {{PROJECT_NAME}} {{DATE}}
+# {{MARKER}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}.
+template = ""
+# Treat the prompt as meta-canon (the audit policy) that must be ratified. When
+# true, `run` refuses to audit if the prompt changed since (or was never)
+# ratified, until a human reviews it and runs `specguard accept-prompt -m "why"`
+# (which contract-checks the template, then pins its fingerprint + canon commit +
+# reason to .specguard-prompt.lock). Commit that lock file.
+require_ratification = false
+
+[verify]
+# Verification gates over the audit's findings (DESIGN-VERIFY.md). Both default
+# OFF — each adds extra read-only agent calls (same allowlist as the audit).
+#
+# V1 refute: re-derive every `needs_user=yes` finding with an INDEPENDENT skeptic
+# and drop only those refuted by a verbatim canon quote. Uncertain findings are
+# KEPT — this removes false positives (wasted `ack`s) without ever silently
+# deleting real drift. Cost scales with the number of flagged findings (a clean
+# audit costs nothing extra).
+enabled = false
+# V2 completeness: a separate critic surfaces verifiable canon rules the sampling
+# audit never matched against the implementation (false negatives). Runs per
+# area/invariant shard, independently of `enabled`.
+#
+# DESIGN-VERIFY.md §8: prefer enabling BOTH together. `enabled` alone (refute with
+# no completeness) only ever REMOVES findings, compounding the audit's built-in
+# "under-claim when unsure" bias toward false negatives; completeness counters it.
+completeness = false
+# Ratification note: when [prompt].require_ratification = true, turning either gate
+# ON makes its prompt template active meta-canon, so `run` is blocked until you
+# re-run `accept-prompt` (scoped consent — you ratify the verify policy you just
+# activated). A gate left OFF is never asked to ratify. See DESIGN-VERIFY.md §7.
+
+# --- Areas: change-triggered. An area is in scope when any file changed since
+# the baseline matches one of its globs. `canon` lists where the agent should
+# read the rules for this area (file paths or "file:section" pointers).
+
+[[area]]
+name = "backend"
+globs = ["src/server/**", "api/**"]
+canon = ["docs/architecture/api.md", "src/server/README.md"]
+
+[[area]]
+name = "frontend"
+globs = ["web/**"]
+canon = ["docs/architecture/frontend.md"]
+
+# --- Invariants: checked every run regardless of the diff. Use for the few
+# absolute rules that must never be broken anywhere.
+
+[[invariant]]
+name = "secrets path"
+description = "secrets are only read from the approved config path"
+canon = ["docs/architecture/config.md"]
+
+[[invariant]]
+name = "api namespace split"
+description = "endpoints stay within their declared namespace"
+canon = ["docs/architecture/api.md"]
