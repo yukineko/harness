@@ -306,6 +306,26 @@ fn safe_session(id: &str) -> String {
 /// `restore`'s full carryover — this is a periodic re-surfacing, not a handoff).
 const ANCHOR_SECTION_CAP_CHARS: usize = 600;
 
+/// Best-effort snapshot time of the note the anchor is drawn from: the
+/// frontmatter `created:` field if present, else the file's mtime. Surfaced in
+/// the anchor heading so the model can judge how fresh the re-surfaced decisions
+/// are — a note that predates the latest decisions can otherwise re-float a stale
+/// conclusion and mislead. None only if neither source is readable.
+fn note_freshness(note: &Path, text: &str) -> Option<String> {
+    for line in text.lines().take(15) {
+        if let Some(rest) = line.trim().strip_prefix("created:") {
+            let v = rest.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    // Fallback: the file's mtime as a local timestamp.
+    let mtime = std::fs::metadata(note).ok()?.modified().ok()?;
+    let dt: chrono::DateTime<chrono::Local> = mtime.into();
+    Some(dt.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+}
+
 /// Re-anchor (P1): fight lost-in-the-middle by periodically re-surfacing THIS
 /// session's already-recorded Decisions / Open todos near the end of the window,
 /// where attention is strongest. The `restore` carryover injected at SessionStart
@@ -358,7 +378,12 @@ fn check_reanchor(input: &HookInput, cfg: &Config) -> Option<String> {
         return None;
     }
 
-    let mut out = String::from("[ctxrot anchor] 直近の確定事項（再掲・末尾再浮上）:\n");
+    // Label the source note's freshness so the re-surfaced decisions can be
+    // weighed against anything decided since (the note is a past snapshot).
+    let mut out = match note_freshness(&note, &text) {
+        Some(ts) => format!("[ctxrot anchor] 直近の確定事項（{ts}時点の退避ノートより・末尾再浮上）:\n"),
+        None => String::from("[ctxrot anchor] 直近の確定事項（再掲・末尾再浮上）:\n"),
+    };
     if let Some(d) = &decisions {
         out.push_str("\n■ 決定事項:\n");
         out.push_str(d);
@@ -486,7 +511,8 @@ mod tests {
             ..Config::default()
         };
         let body = format!(
-            "## 決定事項 / Decisions\n\n{decisions}\n\n## 残課題 / Open todos\n\n{todos}\n"
+            "---\ntype: ctxrot-rescue\ncreated: 2026-01-01T00:00:00+09:00\n---\n\n\
+             ## 決定事項 / Decisions\n\n{decisions}\n\n## 残課題 / Open todos\n\n{todos}\n"
         );
         let slug = format!("rescue-{}-20260101-000000", crate::store::session_tag(session));
         crate::store::Store::new(&cfg).write_note(&cwd, &slug, &body).unwrap();
@@ -516,6 +542,34 @@ mod tests {
         assert!(check_reanchor(&input, &cfg).is_none());
         assert!(check_reanchor(&input, &cfg).expect("re-fires after the cadence window").contains("[ctxrot anchor]"));
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reanchor_heading_shows_note_freshness() {
+        // The note carries a `created:` frontmatter; the anchor heading must label
+        // its snapshot time so a stale note is recognisable.
+        let (cfg, base, input) =
+            reanchor_fixture("fresh", "sess-fresh", "- serde を採用", "- tests を書く");
+        let out = check_reanchor(&input, &cfg).expect("anchor fires");
+        assert!(
+            out.contains("2026-01-01T00:00:00+09:00時点の退避ノートより"),
+            "heading must carry the note's created timestamp: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn note_freshness_falls_back_to_mtime() {
+        // No frontmatter `created:` → use the file mtime (here: just written, so a
+        // current local timestamp). We only assert a plausible timestamp is found.
+        let base = std::env::temp_dir().join(format!("ctxrot-fresh-mtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let note = base.join("note.md");
+        std::fs::write(&note, "## 決定事項\n\n- A\n").unwrap();
+        let ts = note_freshness(&note, "## 決定事項\n\n- A\n").expect("mtime available");
+        assert!(ts.starts_with("20"), "expected an ISO-ish local timestamp, got {ts}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
