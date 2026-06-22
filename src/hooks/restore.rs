@@ -157,8 +157,9 @@ pub fn missing_recommended_sections(text: &str) -> Vec<&'static str> {
 }
 
 /// Pull the body under a `## <title>` heading (any of the aliases), bounded.
-/// Skips the "_(なし / none)_" placeholder.
-fn extract_section(text: &str, titles: &[&str]) -> Option<String> {
+/// Skips the "_(なし / none)_" placeholder. Public so the re-anchor check
+/// (`guard::check_reanchor`) reuses the exact same extraction `restore` does.
+pub fn extract_section(text: &str, titles: &[&str]) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
     while i < lines.len() {

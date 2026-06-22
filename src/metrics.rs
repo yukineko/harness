@@ -71,6 +71,7 @@ pub struct SessionStat {
     pub gate_bytes_saved: u64,
     pub tooldumps: u64,
     pub tooldump_bytes: u64,
+    pub anchors: u64,
 }
 
 /// Stream the metrics log and roll up per session, preserving first-seen order.
@@ -140,6 +141,7 @@ pub fn summarize(cfg: &Config) -> Vec<SessionStat> {
                 s.tooldumps += 1;
                 s.tooldump_bytes += u("bytes");
             }
+            "anchor" => s.anchors += 1,
             _ => {}
         }
     }
@@ -170,6 +172,7 @@ fn fold_group(label: &str, members: &[&SessionStat]) -> SessionStat {
         g.gate_bytes_saved += m.gate_bytes_saved;
         g.tooldumps += m.tooldumps;
         g.tooldump_bytes += m.tooldump_bytes;
+        g.anchors += m.anchors;
     }
     g
 }

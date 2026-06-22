@@ -15,6 +15,7 @@ use regex::Regex;
 
 use crate::config::Config;
 use crate::model::HookInput;
+use crate::store::Store;
 use crate::transcript;
 
 /// Returns the text to inject (already trimmed), or None to stay silent.
@@ -25,6 +26,9 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         blocks.push(b);
     }
     if let Some(b) = check_context_budget(input, cfg) {
+        blocks.push(b);
+    }
+    if let Some(b) = check_reanchor(input, cfg) {
         blocks.push(b);
     }
 
@@ -158,11 +162,7 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<String> {
     // Persist current band (incl. 0). Real usage drops after /compact, so when it
     // falls and later re-climbs, the same band re-fires (not a one-way ratchet).
     let _ = std::fs::create_dir_all(&cfg.state_dir);
-    let safe: String = input
-        .session_id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '_' })
-        .collect();
+    let safe = safe_session(&input.session_id);
     let state_file = cfg.state_dir.join(format!("{safe}.band"));
     let last: usize = std::fs::read_to_string(&state_file)
         .ok()
@@ -226,6 +226,101 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<String> {
     }
 
     Some(format!("[context-rot guard] {body}"))
+}
+
+// ----------------------------------------------------------------- re-anchor (P1)
+
+/// Filesystem-safe form of a session id, for `<state_dir>/<safe>.{band,anchor}`.
+fn safe_session(id: &str) -> String {
+    id.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '_' })
+        .collect()
+}
+
+/// Hard ceiling per re-anchored section (CJK-safe char count, much tighter than
+/// `restore`'s full carryover — this is a periodic re-surfacing, not a handoff).
+const ANCHOR_SECTION_CAP_CHARS: usize = 600;
+
+/// Re-anchor (P1): fight lost-in-the-middle by periodically re-surfacing THIS
+/// session's already-recorded Decisions / Open todos near the end of the window,
+/// where attention is strongest. The `restore` carryover injected at SessionStart
+/// sinks into the mid-context blind spot as the session grows; this lifts the
+/// durable signal back to the tail.
+///
+/// Deliberately conservative (added tokens vs. ctxrot's own goal are in tension):
+///   * only at/above `reanchor_min_band`,
+///   * at most once per `reanchor_every_prompts` qualifying prompts (cooldown in
+///     `<state_dir>/<safe>.anchor`), and
+///   * only when this session's own note actually has Decisions/todos substance.
+fn check_reanchor(input: &HookInput, cfg: &Config) -> Option<String> {
+    if !cfg.reanchor_enabled || input.transcript_path.is_empty() {
+        return None;
+    }
+    let (est_tokens, _src) = transcript::estimate_tokens(&input.transcript_path)?;
+    let frac = est_tokens as f64 / cfg.context_window as f64;
+    let band = cfg.band_for(frac);
+    if band < cfg.reanchor_min_band {
+        return None;
+    }
+
+    // Cadence gate. The cooldown counts DOWN only on qualifying prompts (band ≥
+    // floor), so it freezes below the floor and resumes after a /compact-driven
+    // dip — re-fireable, never a one-way ratchet.
+    let _ = std::fs::create_dir_all(&cfg.state_dir);
+    let anchor_file = cfg.state_dir.join(format!("{}.anchor", safe_session(&input.session_id)));
+    let cooldown: u64 = std::fs::read_to_string(&anchor_file)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    if cooldown > 0 {
+        let _ = std::fs::write(&anchor_file, (cooldown - 1).to_string());
+        return None;
+    }
+
+    // Only re-surface what THIS session already committed to its own note; never
+    // a sibling/fallback note (that's restore's job at SessionStart).
+    let cwd = input.cwd_or_current();
+    let note = Store::new(cfg).latest_note_for_session(&cwd, &input.session_id)?;
+    let text = std::fs::read_to_string(&note).ok()?;
+
+    let decisions = crate::hooks::restore::extract_section(&text, &["決定事項", "Decisions"])
+        .map(|s| transcript::truncate_chars(&s, ANCHOR_SECTION_CAP_CHARS));
+    let todos = crate::hooks::restore::extract_section(&text, &["残課題", "Open todos", "todos"])
+        .map(|s| transcript::truncate_chars(&s, ANCHOR_SECTION_CAP_CHARS));
+    if decisions.is_none() && todos.is_none() {
+        // No substance (empty / "_(なし)_" only) → stay silent, leave cooldown at 0
+        // so we fire as soon as the note gains substance.
+        return None;
+    }
+
+    let mut out = String::from("[ctxrot anchor] 直近の確定事項（再掲・末尾再浮上）:\n");
+    if let Some(d) = &decisions {
+        out.push_str("\n■ 決定事項:\n");
+        out.push_str(d);
+        out.push('\n');
+    }
+    if let Some(t) = &todos {
+        out.push_str("\n■ 残課題:\n");
+        out.push_str(t);
+        out.push('\n');
+    }
+
+    // Armed: hold off for the next `reanchor_every_prompts` qualifying prompts.
+    let _ = std::fs::write(&anchor_file, cfg.reanchor_every_prompts.to_string());
+
+    crate::metrics::emit(
+        cfg,
+        &input.session_id,
+        "anchor",
+        serde_json::json!({
+            "bytes": out.len(),
+            "band": band,
+            "decisions": decisions.is_some(),
+            "todos": todos.is_some(),
+        }),
+    );
+
+    Some(out)
 }
 
 #[cfg(test)]
@@ -303,6 +398,87 @@ mod tests {
         // Escalate-only: the same band does not re-fire (so it won't re-rescue every turn).
         assert!(check_context_budget(&input, &cfg).is_none());
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Build a temp cfg + cwd and a session note carrying the given Decisions /
+    /// Open-todos bodies, tagged so `latest_note_for_session` routes to it.
+    fn reanchor_fixture(
+        name: &str,
+        session: &str,
+        decisions: &str,
+        todos: &str,
+    ) -> (Config, std::path::PathBuf, HookInput) {
+        let base = std::env::temp_dir().join(format!("ctxrot-anchor-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cwd = base.join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cfg = Config {
+            state_dir: base.join("state"),
+            store_dir: base.join("store"),
+            reanchor_every_prompts: 3,
+            ..Config::default()
+        };
+        let body = format!(
+            "## 決定事項 / Decisions\n\n{decisions}\n\n## 残課題 / Open todos\n\n{todos}\n"
+        );
+        let slug = format!("rescue-{}-20260101-000000", crate::store::session_tag(session));
+        crate::store::Store::new(&cfg).write_note(&cwd, &slug, &body).unwrap();
+        let input = HookInput {
+            session_id: session.into(),
+            // Fixture usage ≈ 92% → band 3 (≥ reanchor_min_band 2).
+            transcript_path: "tests/fixtures/transcript.jsonl".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        };
+        (cfg, base, input)
+    }
+
+    #[test]
+    fn reanchor_fires_then_respects_cadence() {
+        let (cfg, base, input) =
+            reanchor_fixture("fire", "sess-anchor", "- serde を採用", "- tests を書く");
+
+        let out = check_reanchor(&input, &cfg).expect("anchor on first qualifying prompt");
+        assert!(out.contains("[ctxrot anchor]"));
+        assert!(out.contains("serde を採用"));
+        assert!(out.contains("tests を書く"));
+
+        // Cooldown of reanchor_every_prompts (3) qualifying prompts before re-fire.
+        assert!(check_reanchor(&input, &cfg).is_none());
+        assert!(check_reanchor(&input, &cfg).is_none());
+        assert!(check_reanchor(&input, &cfg).is_none());
+        assert!(check_reanchor(&input, &cfg).expect("re-fires after the cadence window").contains("[ctxrot anchor]"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reanchor_silent_without_substance() {
+        // Only the "none" placeholder in both sections → nothing to re-surface.
+        let (cfg, base, input) =
+            reanchor_fixture("empty", "sess-empty", "_(なし / none)_", "_(なし / none)_");
+        assert!(check_reanchor(&input, &cfg).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reanchor_silent_without_own_note() {
+        let (mut cfg, base, mut input) =
+            reanchor_fixture("noown", "sess-has-note", "- A", "- B");
+        // A different session id has no tagged note of its own → no anchor.
+        input.session_id = "sess-other".into();
+        cfg.reanchor_every_prompts = 3;
+        assert!(check_reanchor(&input, &cfg).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reanchor_disabled_stays_silent() {
+        let (mut cfg, base, input) =
+            reanchor_fixture("off", "sess-off", "- A を採用", "- B");
+        cfg.reanchor_enabled = false;
+        assert!(check_reanchor(&input, &cfg).is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

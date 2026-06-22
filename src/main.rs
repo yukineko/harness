@@ -508,6 +508,15 @@ metrics = true
 
 # ascending fractions of the window that trigger escalating advice
 bands = [0.50, 0.75, 0.90]
+
+# Re-anchor (fights lost-in-the-middle): periodically re-surface THIS session's
+# already-recorded Decisions/Open todos near the end of the window, where the
+# model attends most. Conservative by design — only at/above reanchor_min_band,
+# and at most once per reanchor_every_prompts qualifying prompts. Set
+# reanchor_enabled=false to turn it off.
+reanchor_enabled = true
+reanchor_min_band = 2
+reanchor_every_prompts = 8
 "#;
 
 fn init() -> anyhow::Result<()> {
