@@ -1,0 +1,10 @@
+{
+  "goal": "Add a logout button and refactor auth, with shared models touched once",
+  "tasks": [
+    { "id": "ui",      "title": "Add logout button",        "touched_files": ["web/components/Nav.tsx"], "deps": [],   "class": "parallel", "suggested_model": "sonnet", "done_criteria": "button renders and calls logout()" },
+    { "id": "api",     "title": "Add /logout endpoint",     "touched_files": ["api/auth.py"],             "deps": [],   "class": "parallel", "suggested_model": "sonnet", "done_criteria": "endpoint returns 204" },
+    { "id": "models",  "title": "Add session revocation",   "touched_files": ["api/models.py"],           "deps": [],   "class": "parallel", "suggested_model": "opus",   "done_criteria": "migration applies" },
+    { "id": "wire",    "title": "Wire UI to endpoint",      "touched_files": ["web/components/Nav.tsx"], "deps": ["ui","api"], "class": "parallel", "suggested_model": "sonnet", "done_criteria": "logout works e2e" },
+    { "id": "deploy",  "title": "Deploy to staging",        "touched_files": ["deploy.sh"],              "deps": ["wire"], "class": "gated", "done_criteria": "staging healthy" }
+  ]
+}
