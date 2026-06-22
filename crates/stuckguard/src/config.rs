@@ -1,0 +1,142 @@
+//! Configuration: project `stuckguard.toml` (preferred) over a home-level
+//! `~/.stuckguard/config.toml` over built-in defaults. Env override last.
+//!
+//! Safe by default: detection only ever *injects advice*; it can never block a
+//! tool call or end a turn. Worst case is a spurious nudge, which the cooldown
+//! and thresholds are tuned to avoid.
+
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub enabled: bool,
+    /// Rolling window of recent tool events kept per session and inspected.
+    pub window: usize,
+    /// Same normalized (tool, input) this many times in the window ⇒ nudge.
+    pub repeat_threshold: usize,
+    /// Revert/thrash reversals on one file in the window ⇒ nudge.
+    pub oscillation_threshold: usize,
+    /// Don't re-nudge the same pattern within this many new events.
+    pub cooldown_events: u64,
+    /// After this many nudges for the same pattern, escalate to "ask the user".
+    pub escalate_after: u32,
+    /// Tools excluded from detection entirely (e.g. TodoWrite bookkeeping).
+    pub ignore_tools: Vec<String>,
+    pub state_dir: PathBuf,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileConfig {
+    enabled: Option<bool>,
+    window: Option<usize>,
+    repeat_threshold: Option<usize>,
+    oscillation_threshold: Option<usize>,
+    cooldown_events: Option<u64>,
+    escalate_after: Option<u32>,
+    ignore_tools: Option<Vec<String>>,
+    state_dir: Option<String>,
+}
+
+fn home() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn base_dir() -> PathBuf {
+    home().join(".stuckguard")
+}
+
+pub fn expand_tilde(s: &str) -> PathBuf {
+    if let Some(rest) = s.strip_prefix("~/") {
+        home().join(rest)
+    } else if s == "~" {
+        home()
+    } else {
+        PathBuf::from(s)
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            enabled: true,
+            window: 12,
+            repeat_threshold: 3,
+            oscillation_threshold: 2,
+            cooldown_events: 6,
+            escalate_after: 2,
+            ignore_tools: vec!["TodoWrite".to_string()],
+            state_dir: base_dir().join("state"),
+        }
+    }
+}
+
+impl Config {
+    pub fn project_path(root: &Path) -> PathBuf {
+        root.join("stuckguard.toml")
+    }
+
+    pub fn home_path() -> PathBuf {
+        base_dir().join("config.toml")
+    }
+
+    pub fn load(root: &Path) -> Self {
+        let mut cfg = Config::default();
+        let chosen = {
+            let p = Config::project_path(root);
+            if p.exists() {
+                Some(p)
+            } else {
+                let h = Config::home_path();
+                h.exists().then_some(h)
+            }
+        };
+        if let Some(path) = chosen {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Ok(fc) = toml::from_str::<FileConfig>(&text) {
+                    if let Some(v) = fc.enabled {
+                        cfg.enabled = v;
+                    }
+                    if let Some(v) = fc.window {
+                        cfg.window = v;
+                    }
+                    if let Some(v) = fc.repeat_threshold {
+                        cfg.repeat_threshold = v;
+                    }
+                    if let Some(v) = fc.oscillation_threshold {
+                        cfg.oscillation_threshold = v;
+                    }
+                    if let Some(v) = fc.cooldown_events {
+                        cfg.cooldown_events = v;
+                    }
+                    if let Some(v) = fc.escalate_after {
+                        cfg.escalate_after = v;
+                    }
+                    if let Some(v) = fc.ignore_tools {
+                        cfg.ignore_tools = v;
+                    }
+                    if let Some(v) = fc.state_dir {
+                        cfg.state_dir = expand_tilde(&v);
+                    }
+                }
+            }
+        }
+        // sanitize
+        cfg.window = cfg.window.max(2);
+        cfg.repeat_threshold = cfg.repeat_threshold.max(2);
+        cfg.oscillation_threshold = cfg.oscillation_threshold.max(1);
+        cfg.escalate_after = cfg.escalate_after.max(1);
+        cfg
+    }
+
+    pub fn disabled_env() -> bool {
+        std::env::var("STUCKGUARD_DISABLE")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+    }
+
+    pub fn is_ignored(&self, tool: &str) -> bool {
+        self.ignore_tools.iter().any(|t| t == tool)
+    }
+}
