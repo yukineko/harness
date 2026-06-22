@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           for p in $PLUGINS; do
             for t in aarch64-apple-darwin x86_64-apple-darwin; do
-              scripts/build-plugin-bin.sh "$p" "$t"
+              bash scripts/build-plugin-bin.sh "$p" "$t"
             done
           done
       # tar preserves the crates/<plugin>/bin/ layout AND the executable bit.
@@ -94,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           for p in $PLUGINS; do
-            scripts/build-plugin-bin.sh "$p" x86_64-unknown-linux-gnu
+            bash scripts/build-plugin-bin.sh "$p" x86_64-unknown-linux-gnu
           done
       - run: tar czf linux-bins.tar.gz crates/*/bin/*-linux-*
       - uses: actions/upload-artifact@v4
