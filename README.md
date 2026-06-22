@@ -67,6 +67,26 @@ the normal session model, no `ANTHROPIC_API_KEY` and no separate `cargo install`
 > Committing `.claude/settings.json` with `enabledPlugins` can pin *enabling*, but
 > not the marketplace registration.
 
+> **Status line is not auto-registered by the plugin.** The hooks, `/distill`
+> skill and subagent load automatically, but Claude Code plugin manifests can't
+> declare a general `statusLine` (`plugin.json` has no such field, and a plugin's
+> `settings.json` only supports `agent`/`subagentStatusLine`). So the
+> context-usage meter (`ctxrot statusline`) is **opt-in for plugin installs** —
+> add it to your `~/.claude/settings.json` once:
+>
+> ```json
+> "statusLine": {
+>   "type": "command",
+>   "command": "<CLAUDE_PLUGIN_ROOT>/bin/ctxrot statusline",
+>   "padding": 0
+> }
+> ```
+>
+> Replace `<CLAUDE_PLUGIN_ROOT>` with the installed plugin's absolute path
+> (`${CLAUDE_PLUGIN_ROOT}` expansion is only guaranteed inside `hooks.json`, not
+> in `settings.json`). The manual-install path below does this for you via
+> `ctxrot install`.
+
 ### Alternative: manual install (no plugin)
 
 ```sh
