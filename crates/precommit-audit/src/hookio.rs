@@ -2,7 +2,7 @@
 //! follow Claude Code's hook contract but are inert when the tool is run as a
 //! plain pre-commit-framework hook (no stdin JSON, no review artifact).
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Parsed subset of the Claude Code Stop-hook stdin payload.
@@ -13,8 +13,7 @@ pub struct HookInput {
 /// Read and parse stdin JSON. Returns a default (non-recursive) input when
 /// stdin is empty or unparseable, so non-Claude invocations Just Work.
 pub fn read_stdin() -> HookInput {
-    let mut raw = String::new();
-    let _ = std::io::stdin().read_to_string(&mut raw);
+    let raw = harness_core::hook::read_stdin();
     if raw.trim().is_empty() {
         return HookInput {
             stop_hook_active: false,

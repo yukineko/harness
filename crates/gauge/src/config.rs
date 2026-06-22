@@ -41,23 +41,13 @@ struct FileConfig {
     pricing: Option<Vec<FilePrice>>,
 }
 
-fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-}
-
+/// The `~/.gauge` base directory. Thin wrapper over the shared helper.
 pub fn base_dir() -> PathBuf {
-    home().join(".gauge")
+    harness_core::config::base_dir("gauge")
 }
 
-pub fn expand_tilde(s: &str) -> PathBuf {
-    if let Some(rest) = s.strip_prefix("~/") {
-        home().join(rest)
-    } else if s == "~" {
-        home()
-    } else {
-        PathBuf::from(s)
-    }
-}
+// Re-exported so existing `crate::config::expand_tilde` call sites keep working.
+pub use harness_core::config::expand_tilde;
 
 impl Default for Config {
     fn default() -> Self {

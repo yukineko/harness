@@ -20,10 +20,10 @@ mod model;
 mod review;
 mod state;
 
-use std::io::Read;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
+use harness_core::hook::read_stdin;
 use serde_json::json;
 
 use config::{Config, Mode};
@@ -62,12 +62,6 @@ enum Command {
     },
     /// Show the resolved config + what would be reviewed for the cwd.
     Status,
-}
-
-fn read_stdin() -> String {
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
-    buf
 }
 
 fn main() {

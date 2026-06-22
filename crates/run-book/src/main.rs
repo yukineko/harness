@@ -16,10 +16,11 @@ mod install;
 mod model;
 mod store;
 
-use std::io::Read;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
+
+use harness_core::hook::{read_stdin, run_hook};
 
 use config::Config;
 use model::HookInput;
@@ -71,17 +72,6 @@ enum Command {
     },
     /// Show resolved config + directories + runbook count.
     Status,
-}
-
-fn read_stdin() -> String {
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
-    buf
-}
-
-fn run_hook<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> ! {
-    let _ = std::panic::catch_unwind(f);
-    std::process::exit(0);
 }
 
 fn main() {

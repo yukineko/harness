@@ -8,8 +8,13 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use harness_core::install::{load_settings, strip_matching, write_settings};
+
 const EVENTS: [(&str, &str); 2] = [("Stop", "notify"), ("Notification", "notify")];
 const TIMEOUT_SECS: u64 = 10;
+
+/// Command-substring markers identifying hook groups this plugin owns.
+const MARKERS: [&str; 1] = ["beacon"];
 
 fn settings_path() -> PathBuf {
     dirs::home_dir()
@@ -25,62 +30,12 @@ fn binary_path() -> String {
         .unwrap_or_else(|| "beacon".to_string())
 }
 
-fn is_ours(group: &Value) -> bool {
-    group
-        .get("hooks")
-        .and_then(Value::as_array)
-        .map(|hs| {
-            hs.iter().any(|h| {
-                h.get("command")
-                    .and_then(Value::as_str)
-                    .map(|c| c.contains("beacon"))
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn load_settings() -> Result<Value> {
-    let path = settings_path();
-    if !path.exists() {
-        return Ok(json!({}));
-    }
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    if text.trim().is_empty() {
-        return Ok(json!({}));
-    }
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-}
-
-fn backup(path: &PathBuf) -> Result<()> {
-    if path.exists() {
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let bak = path.with_extension(format!("json.bak-{stamp}"));
-        std::fs::copy(path, &bak)?;
-        println!("backup: {}", bak.display());
-    }
-    Ok(())
-}
-
-fn write_settings(value: &Value) -> Result<()> {
-    let path = settings_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    backup(&path)?;
-    let text = serde_json::to_string_pretty(value)? + "\n";
-    std::fs::write(&path, text)?;
-    println!("updated: {}", path.display());
-    Ok(())
-}
-
 fn strip_ours(arr: &[Value]) -> Vec<Value> {
-    arr.iter().filter(|g| !is_ours(g)).cloned().collect()
+    strip_matching(arr, &MARKERS)
 }
 
 pub fn install(dry_run: bool) -> Result<()> {
-    let mut settings = load_settings()?;
+    let mut settings = load_settings(&settings_path())?;
     let bin = binary_path();
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
@@ -110,13 +65,13 @@ pub fn install(dry_run: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&settings)?);
         return Ok(());
     }
-    write_settings(&settings)?;
+    write_settings(&settings_path(), &settings)?;
     println!("\nInstalled Stop + Notification hooks → {bin} notify");
     Ok(())
 }
 
 pub fn uninstall(dry_run: bool) -> Result<()> {
-    let mut settings = load_settings()?;
+    let mut settings = load_settings(&settings_path())?;
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
@@ -142,7 +97,7 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&settings)?);
         return Ok(());
     }
-    write_settings(&settings)?;
+    write_settings(&settings_path(), &settings)?;
     println!("removed {removed} beacon hook group(s)");
     Ok(())
 }
@@ -150,13 +105,14 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harness_core::install::group_matches;
 
     #[test]
     fn detects_ours() {
         let g = json!({"hooks":[{"type":"command","command":"/x/beacon notify"}]});
-        assert!(is_ours(&g));
+        assert!(group_matches(&g, &MARKERS));
         let other = json!({"hooks":[{"type":"command","command":"stuckguard watch"}]});
-        assert!(!is_ours(&other));
+        assert!(!group_matches(&other, &MARKERS));
     }
 
     #[test]

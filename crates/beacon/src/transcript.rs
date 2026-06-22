@@ -52,6 +52,9 @@ fn flatten(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// CJK-safe truncation for a one-line notification snippet. Distinct from
+/// `harness_core::transcript::truncate_chars` (whose ` …[truncated]` marker
+/// suits transcript turns): a notification wants the terse trailing `…`.
 fn truncate(s: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {

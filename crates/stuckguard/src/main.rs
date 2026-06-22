@@ -13,11 +13,12 @@ mod model;
 mod sig;
 mod state;
 
-use std::io::Read;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
 use serde_json::json;
+
+use harness_core::hook::{read_stdin, run_hook};
 
 use config::Config;
 use detect::{Kind, Trip};
@@ -55,19 +56,6 @@ enum Command {
     },
     /// Show the resolved config.
     Status,
-}
-
-fn read_stdin() -> String {
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
-    buf
-}
-
-/// Run a hook handler with all errors swallowed; always exit 0. Detection must
-/// never break the user's turn.
-fn run_hook<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> ! {
-    let _ = std::panic::catch_unwind(f);
-    std::process::exit(0);
 }
 
 fn main() {
