@@ -23,6 +23,15 @@ pub struct Config {
     pub metrics: bool,
     /// ascending fractions of the window that trigger escalating advice
     pub bands: Vec<f64>,
+    /// Re-anchor (P1): periodically re-surface this session's own Decisions/Open
+    /// todos near the end of the window (where attention is strongest) to fight
+    /// lost-in-the-middle. Off → never inject the anchor block.
+    pub reanchor_enabled: bool,
+    /// Minimum band (1-based) at which re-anchor may fire (default 2 ≈ 75%).
+    pub reanchor_min_band: usize,
+    /// Re-anchor cadence: fire at most once per this many qualifying prompts, so
+    /// the block never lands every turn (which would itself accrete rot).
+    pub reanchor_every_prompts: u64,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -36,6 +45,9 @@ struct FileConfig {
     gate_file_bytes: Option<u64>,
     metrics: Option<bool>,
     bands: Option<Vec<f64>>,
+    reanchor_enabled: Option<bool>,
+    reanchor_min_band: Option<usize>,
+    reanchor_every_prompts: Option<u64>,
 }
 
 fn home() -> PathBuf {
@@ -70,6 +82,9 @@ impl Default for Config {
             gate_file_bytes: 1_000_000,
             metrics: true,
             bands: vec![0.50, 0.75, 0.90],
+            reanchor_enabled: true,
+            reanchor_min_band: 2,
+            reanchor_every_prompts: 8,
         }
     }
 }
@@ -112,6 +127,15 @@ impl Config {
                         cfg.bands = v;
                     }
                 }
+                if let Some(v) = fc.reanchor_enabled {
+                    cfg.reanchor_enabled = v;
+                }
+                if let Some(v) = fc.reanchor_min_band {
+                    cfg.reanchor_min_band = v;
+                }
+                if let Some(v) = fc.reanchor_every_prompts {
+                    cfg.reanchor_every_prompts = v;
+                }
             }
         }
 
@@ -138,6 +162,14 @@ impl Config {
         }
         if cfg.context_window == 0 {
             cfg.context_window = 200_000;
+        }
+        // Re-anchor needs a sane band floor (≥1) and a non-zero cadence, else it
+        // would fire on every band-0 prompt / every turn.
+        if cfg.reanchor_min_band == 0 {
+            cfg.reanchor_min_band = 1;
+        }
+        if cfg.reanchor_every_prompts == 0 {
+            cfg.reanchor_every_prompts = 8;
         }
         cfg
     }
