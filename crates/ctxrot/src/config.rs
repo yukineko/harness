@@ -56,6 +56,33 @@ pub struct Config {
     /// over the cap, blocks are dropped lowest-priority first (anchor → advice →
     /// safety). 0 disables the cap (legacy: inject every block in full).
     pub guard_inject_max_chars: usize,
+
+    // ---- load gate rules (feature ①: rule-based allow/deny) -------------------
+    /// Glob patterns whose matching `Read` targets are ALWAYS denied, regardless
+    /// of size — "never load these into main context" (logs, vendored dirs,
+    /// minified blobs, secrets). Takes precedence over `load_allow` and the size
+    /// gate. Empty → no rule denies (only the size gate applies).
+    pub load_deny: Vec<String>,
+    /// Glob patterns whose matching `Read` targets BYPASS the size gate —
+    /// "explicitly trusted, load even if large". Applied only when `load_deny`
+    /// did not match. Empty → nothing is force-allowed.
+    pub load_allow: Vec<String>,
+    /// Whether a `load_deny` match denies even when the `Read` carries an explicit
+    /// `limit` (a bounded slice). Default true: a deny rule means "keep this out
+    /// of context entirely", so even a slice is refused. false → bounded slices
+    /// of denied files are let through.
+    pub load_deny_even_with_limit: bool,
+
+    // ---- auto-injection control (feature ③) ----------------------------------
+    /// Master switch for the SessionStart carryover injection (`restore`).
+    /// false → never inject prior-session carryover.
+    pub restore_enabled: bool,
+    /// Include the Decisions section in the carryover.
+    pub inject_decisions: bool,
+    /// Include the Open-todos section in the carryover.
+    pub inject_todos: bool,
+    /// Append the project's pinned loadset items (as pointers) to the carryover.
+    pub inject_pinned: bool,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -77,11 +104,35 @@ struct FileConfig {
     keep_distill_min: Option<usize>,
     rescue_coalesce_secs: Option<u64>,
     guard_inject_max_chars: Option<usize>,
+    load_deny: Option<Vec<String>>,
+    load_allow: Option<Vec<String>>,
+    load_deny_even_with_limit: Option<bool>,
+    restore_enabled: Option<bool>,
+    inject_decisions: Option<bool>,
+    inject_todos: Option<bool>,
+    inject_pinned: Option<bool>,
 }
 
 /// The `~/.ctxrot` base directory.
 fn base_dir() -> PathBuf {
     harness_core::config::base_dir("ctxrot")
+}
+
+/// Parse a comma-separated env var into a trimmed, non-empty list, or None when
+/// unset/blank. Used for the glob rule lists (`CTXROT_LOAD_DENY/ALLOW`).
+fn env_list(key: &str) -> Option<Vec<String>> {
+    let raw = std::env::var(key).ok()?;
+    let items: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 impl Default for Config {
@@ -104,6 +155,13 @@ impl Default for Config {
             keep_distill_min: 10,
             rescue_coalesce_secs: 120,
             guard_inject_max_chars: 1200,
+            load_deny: Vec::new(),
+            load_allow: Vec::new(),
+            load_deny_even_with_limit: true,
+            restore_enabled: true,
+            inject_decisions: true,
+            inject_todos: true,
+            inject_pinned: true,
         }
     }
 }
@@ -170,6 +228,27 @@ impl Config {
                 if let Some(v) = fc.guard_inject_max_chars {
                     cfg.guard_inject_max_chars = v;
                 }
+                if let Some(v) = fc.load_deny {
+                    cfg.load_deny = v;
+                }
+                if let Some(v) = fc.load_allow {
+                    cfg.load_allow = v;
+                }
+                if let Some(v) = fc.load_deny_even_with_limit {
+                    cfg.load_deny_even_with_limit = v;
+                }
+                if let Some(v) = fc.restore_enabled {
+                    cfg.restore_enabled = v;
+                }
+                if let Some(v) = fc.inject_decisions {
+                    cfg.inject_decisions = v;
+                }
+                if let Some(v) = fc.inject_todos {
+                    cfg.inject_todos = v;
+                }
+                if let Some(v) = fc.inject_pinned {
+                    cfg.inject_pinned = v;
+                }
             }
         }
 
@@ -191,6 +270,16 @@ impl Config {
         }
         if let Some(v) = env_u64("GUARD_INJECT_MAX_CHARS") {
             cfg.guard_inject_max_chars = v as usize;
+        }
+        if let Some(v) = env_list("CTXROT_LOAD_DENY") {
+            cfg.load_deny = v;
+        }
+        if let Some(v) = env_list("CTXROT_LOAD_ALLOW") {
+            cfg.load_allow = v;
+        }
+        if let Some(v) = env_bool("CTXROT_RESTORE_DISABLE") {
+            // Convenience kill-switch: CTXROT_RESTORE_DISABLE=1 turns carryover off.
+            cfg.restore_enabled = !v;
         }
 
         // bands must be ascending and within (0,1]; sanitize defensively

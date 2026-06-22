@@ -40,24 +40,63 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
 }
 
 fn check_read(input: &HookInput, cfg: &Config) -> Option<String> {
-    if cfg.gate_file_bytes == 0 {
-        return None;
-    }
     let ti = input.tool_input.as_ref()?;
-
-    // An explicit `limit` means the model is already bounding the read — never
-    // gate those (reading 50 lines out of a 2MB file is fine).
-    if ti.get("limit").is_some() {
-        return None;
-    }
     let raw_path = ti.get("file_path").and_then(|v| v.as_str())?;
+    let has_limit = ti.get("limit").is_some();
 
     let expanded = crate::config::expand_tilde(raw_path);
+    let cwd = input.cwd_or_current();
     let path = if expanded.is_absolute() {
         expanded
     } else {
-        input.cwd_or_current().join(&expanded)
+        cwd.join(&expanded)
     };
+
+    // Rule-based DENY (feature ①) — wins over everything, independent of size.
+    // A deny rule means "never load this into main context"; by default it holds
+    // even for a bounded `limit` slice (load_deny_even_with_limit), so secrets /
+    // vendored dirs / dumps stay out entirely. Fires even when the size gate is
+    // disabled (gate_file_bytes=0) and even if the file can't be sized.
+    if !cfg.load_deny.is_empty()
+        && (cfg.load_deny_even_with_limit || !has_limit)
+        && crate::glob::any_match(&cfg.load_deny, raw_path, &path, Some(&cwd))
+    {
+        crate::metrics::emit(
+            cfg,
+            &input.session_id,
+            "gate",
+            serde_json::json!({
+                "tool": "Read",
+                "file": path.to_string_lossy(),
+                "rule": "deny",
+                "decision": "deny",
+            }),
+        );
+        return Some(format!(
+            "[context-rot guard] `{raw_path}` は load_deny ルールに一致するため main context への \
+             読み込みを拒否しました（設定で「絶対に載せない」と指定されたパスです）。 \
+             どうしても中身が要るなら Explore か general-purpose sub-agent に読ませて要約・該当行・ \
+             結論だけ受け取ってください。誤検知なら ~/.ctxrot/config.toml の load_deny から外せます。"
+        ));
+    }
+
+    // An explicit `limit` means the model is already bounding the read — never
+    // size-gate those (reading 50 lines out of a 2MB file is fine).
+    if has_limit {
+        return None;
+    }
+
+    // Rule-based ALLOW (feature ①): an explicitly-trusted path bypasses the size
+    // gate, so a large-but-wanted file (e.g. a key design doc) loads whole.
+    if !cfg.load_allow.is_empty()
+        && crate::glob::any_match(&cfg.load_allow, raw_path, &path, Some(&cwd))
+    {
+        return None;
+    }
+
+    if cfg.gate_file_bytes == 0 {
+        return None;
+    }
 
     let meta = std::fs::metadata(&path).ok()?;
     if !meta.is_file() || meta.len() < cfg.gate_file_bytes {
@@ -255,6 +294,77 @@ mod tests {
         let p = big_temp_file("huge3.log", 1_200_000);
         let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
         assert!(out.is_none(), "gate_file_bytes=0 disables the gate");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    // ----- rule-based allow/deny (feature ①) -----
+
+    #[test]
+    fn deny_rule_blocks_small_file() {
+        let cfg = Config {
+            load_deny: vec!["**/*.log".into()],
+            ..Config::default()
+        };
+        // A tiny file (well under the size gate) is still denied by the rule.
+        let p = big_temp_file("rule.log", 100);
+        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        assert!(out.unwrap().contains("load_deny"));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn deny_rule_holds_even_with_limit_by_default() {
+        let cfg = Config {
+            load_deny: vec!["**/*.log".into()],
+            ..Config::default()
+        };
+        let p = big_temp_file("rulelim.log", 100);
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy(), "limit": 10 })),
+            &cfg,
+        );
+        assert!(out.is_some(), "deny rule should hold even for a bounded slice");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn deny_rule_yields_to_limit_when_configured() {
+        let cfg = Config {
+            load_deny: vec!["**/*.log".into()],
+            load_deny_even_with_limit: false,
+            ..Config::default()
+        };
+        let p = big_temp_file("rulelim2.log", 100);
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy(), "limit": 10 })),
+            &cfg,
+        );
+        assert!(out.is_none(), "with the flag off, a slice of a denied file is allowed");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn allow_rule_bypasses_size_gate() {
+        let cfg = Config {
+            load_allow: vec!["**/*.md".into()],
+            ..Config::default()
+        };
+        let p = big_temp_file("huge.md", 1_200_000);
+        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        assert!(out.is_none(), "a huge but allow-listed file must bypass the gate");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn deny_fires_even_when_size_gate_disabled() {
+        let cfg = Config {
+            gate_file_bytes: 0,
+            load_deny: vec!["**/*.log".into()],
+            ..Config::default()
+        };
+        let p = big_temp_file("nogate.log", 100);
+        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        assert!(out.is_some(), "deny rules are independent of the size gate");
         let _ = std::fs::remove_file(&p);
     }
 

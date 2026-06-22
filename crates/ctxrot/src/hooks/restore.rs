@@ -8,14 +8,27 @@
 use std::path::Path;
 
 use crate::config::Config;
+use crate::loadset::LoadSet;
 use harness_core::hook::HookInput;
 use harness_core::store::Store;
 
 const READ_CAP: u64 = 256 * 1024;
 const SECTION_CAP_CHARS: usize = 1500;
+/// Cap on how many pinned items we inject as pointers (feature ②/③), so a long
+/// loadset can't itself become a rot source.
+const PINNED_INJECT_MAX: usize = 12;
 
-/// Returns the additionalContext text to inject, or None if there is no note.
+/// Returns the additionalContext text to inject, or None if nothing applies.
+///
+/// Two independent sources, each individually switchable (feature ③):
+///   * the prior-session carryover note (Decisions / Open todos), and
+///   * the project's pinned loadset items (feature ②), surfaced as pointers.
+///
+/// `restore_enabled=false` turns the whole thing off.
 pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
+    if !cfg.restore_enabled {
+        return None;
+    }
     // Don't re-inject right after a compaction restart — restore is for a fresh
     // session picking up prior work, not for the compact handoff.
     if input.source == "compact" {
@@ -23,14 +36,35 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     }
 
     let cwd = input.cwd_or_current();
+    let note_block = note_carryover(input, cfg, &cwd);
+    let pinned_block = if cfg.inject_pinned {
+        pinned_carryover(cfg, &cwd)
+    } else {
+        None
+    };
+
+    match (note_block, pinned_block) {
+        (None, None) => None,
+        (Some(n), None) => Some(n),
+        (None, Some(p)) => Some(format!(
+            "[ctxrot restore] ピン留め中の参照（本文は貼らず必要時に読む）:\n{p}"
+        )),
+        (Some(n), Some(p)) => Some(format!("{n}\n\n■ ピン留め中の参照:\n{p}")),
+    }
+}
+
+/// The prior-session carryover derived from the latest note, honoring the
+/// `inject_decisions` / `inject_todos` switches. None when there is no note (or
+/// both sections are off/empty and the note carries nothing else worth a pointer).
+fn note_carryover(input: &HookInput, cfg: &Config, cwd: &Path) -> Option<String> {
     let store = Store::new(cfg.store_dir.clone());
     // Prefer this session's own note (resume/compact keep the same session_id),
     // so parallel sessions don't grab each other's carryover. Else fall back to a
     // SAFE cross-session note: the latest when the stream is unambiguous, but
     // never a sibling session's tagged note when parallel usage is detected.
     let latest = store
-        .latest_note_for_session(&cwd, &input.session_id)
-        .or_else(|| store.latest_fallback_note(&cwd))?;
+        .latest_note_for_session(cwd, &input.session_id)
+        .or_else(|| store.latest_fallback_note(cwd))?;
 
     let meta = std::fs::metadata(&latest).ok()?;
     if meta.len() > READ_CAP {
@@ -42,8 +76,17 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     }
     let text = std::fs::read_to_string(&latest).ok()?;
 
-    let decisions = extract_section(&text, &["決定事項", "Decisions"]);
-    let todos = extract_section(&text, &["残課題", "Open todos", "todos"]);
+    // Section gating (feature ③): a disabled section is simply never extracted.
+    let decisions = if cfg.inject_decisions {
+        extract_section(&text, &["決定事項", "Decisions"])
+    } else {
+        None
+    };
+    let todos = if cfg.inject_todos {
+        extract_section(&text, &["残課題", "Open todos", "todos"])
+    } else {
+        None
+    };
 
     let mut out = String::new();
     out.push_str("[ctxrot restore] 前回セッションからの引き継ぎ（要約）:\n");
@@ -72,7 +115,7 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         );
     }
 
-    // If both sections were empty/missing, only the pointer is useful.
+    // If both sections were empty/missing/off, only the pointer is useful.
     if decisions.is_none() && todos.is_none() {
         let msg = format!(
             "[ctxrot restore] 前回の退避ノートあり: {}\n→ 続きから作業する場合は読み込んで。",
@@ -90,6 +133,26 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         todos.is_some(),
     );
     Some(out)
+}
+
+/// A bullet list of the project's pinned loadset items (paths/labels), capped at
+/// `PINNED_INJECT_MAX`. Pointers only — never the file contents. None if empty.
+fn pinned_carryover(cfg: &Config, cwd: &Path) -> Option<String> {
+    let ls = LoadSet::load(&cfg.state_dir, cwd);
+    if ls.pinned.is_empty() {
+        return None;
+    }
+    let shown = ls.pinned.len().min(PINNED_INJECT_MAX);
+    let mut out = String::new();
+    for item in ls.pinned.iter().take(shown) {
+        out.push_str("- ");
+        out.push_str(item);
+        out.push('\n');
+    }
+    if ls.pinned.len() > shown {
+        out.push_str(&format!("…他 {} 件（`/ctx list` で全件）\n", ls.pinned.len() - shown));
+    }
+    Some(out.trim_end().to_string())
 }
 
 fn emit_restore(
@@ -284,6 +347,63 @@ mod tests {
         let out = run(&input, &cfg).expect("carryover from distill note");
         assert!(out.contains("A を採用"));
         assert!(!out.contains("/distill 未実行"), "distill restore must not nudge: {out}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ----- auto-injection control (feature ③) + pinned (feature ②) -----
+
+    #[test]
+    fn restore_disabled_injects_nothing() {
+        let (mut cfg, base, input) = restore_fixture("disabled", "distill");
+        cfg.restore_enabled = false;
+        assert!(run(&input, &cfg).is_none(), "restore_enabled=false must inject nothing");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn inject_decisions_off_hides_decisions() {
+        let (mut cfg, base, input) = restore_fixture("nodec", "distill");
+        cfg.inject_decisions = false;
+        let out = run(&input, &cfg).expect("todos still carry");
+        assert!(!out.contains("A を採用"), "decisions must be omitted: {out}");
+        assert!(out.contains("■ 残課題"), "todos must remain: {out}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn both_sections_off_leaves_pointer_only() {
+        let (mut cfg, base, input) = restore_fixture("nosecs", "distill");
+        cfg.inject_decisions = false;
+        cfg.inject_todos = false;
+        let out = run(&input, &cfg).expect("pointer still useful");
+        assert!(!out.contains("A を採用"));
+        assert!(out.contains("退避ノートあり"), "should degrade to a pointer: {out}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pinned_items_are_injected_as_pointers() {
+        let (cfg, base, input) = restore_fixture("pinned", "distill");
+        let cwd = std::path::PathBuf::from(&input.cwd);
+        let mut ls = LoadSet::default();
+        ls.pin("docs/spec.md");
+        ls.save(&cfg.state_dir, &cwd).unwrap();
+        let out = run(&input, &cfg).expect("carryover + pinned");
+        assert!(out.contains("ピン留め中の参照"), "pinned header missing: {out}");
+        assert!(out.contains("docs/spec.md"), "pinned item missing: {out}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pinned_off_suppresses_pinned_block() {
+        let (mut cfg, base, input) = restore_fixture("pinoff", "distill");
+        cfg.inject_pinned = false;
+        let cwd = std::path::PathBuf::from(&input.cwd);
+        let mut ls = LoadSet::default();
+        ls.pin("docs/spec.md");
+        ls.save(&cfg.state_dir, &cwd).unwrap();
+        let out = run(&input, &cfg).expect("carryover");
+        assert!(!out.contains("docs/spec.md"), "inject_pinned=false must hide pins: {out}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
