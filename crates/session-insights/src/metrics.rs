@@ -1,0 +1,231 @@
+//! Per-session rollup: a small JSON file under the state dir, updated in place on
+//! each tool call and turn. Derives a size class (XS–XL) and a work category from
+//! the recorded tool mix — the deterministic analogue of Devin's Session Insights.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::config::Config;
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Session {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default)]
+    pub last_at: String,
+    /// Assistant turns completed (Stop events).
+    #[serde(default)]
+    pub turns: u64,
+    /// Total non-ignored tool events recorded.
+    #[serde(default)]
+    pub tool_events: u64,
+    /// Per-tool counts.
+    #[serde(default)]
+    pub tools: BTreeMap<String, u64>,
+    /// Distinct files touched (Edit/Write/Read targets).
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+fn now() -> String {
+    chrono::Local::now().to_rfc3339()
+}
+
+fn path_for(cfg: &Config, session: &str) -> PathBuf {
+    cfg.state_dir.join(format!("{session}.json"))
+}
+
+pub fn load(cfg: &Config, session: &str) -> Session {
+    std::fs::read_to_string(path_for(cfg, session))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save(cfg: &Config, session: &str, s: &Session) {
+    let p = path_for(cfg, session);
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(s) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+impl Session {
+    /// Ensure identity/started fields are set (idempotent).
+    pub fn ensure(&mut self, session_id: &str, project: &str, cwd: &str) {
+        if self.started_at.is_empty() {
+            self.started_at = now();
+            self.session_id = session_id.to_string();
+        }
+        self.project = project.to_string();
+        self.cwd = cwd.to_string();
+        self.last_at = now();
+    }
+
+    pub fn record_tool(&mut self, tool: &str, target: Option<String>) {
+        self.tool_events += 1;
+        *self.tools.entry(tool.to_string()).or_insert(0) += 1;
+        if let Some(f) = target {
+            if !self.files.contains(&f) {
+                self.files.push(f);
+            }
+        }
+        self.last_at = now();
+    }
+
+    pub fn record_turn(&mut self) {
+        self.turns += 1;
+        self.last_at = now();
+    }
+
+    /// XS / S / M / L / XL from total tool events against the thresholds.
+    pub fn size(&self, thresholds: &[usize; 4]) -> &'static str {
+        let n = self.tool_events as usize;
+        if n < thresholds[0] {
+            "XS"
+        } else if n < thresholds[1] {
+            "S"
+        } else if n < thresholds[2] {
+            "M"
+        } else if n < thresholds[3] {
+            "L"
+        } else {
+            "XL"
+        }
+    }
+
+    /// Coarse work category from the dominant tool group.
+    pub fn category(&self) -> &'static str {
+        let group = |names: &[&str]| -> u64 {
+            names.iter().filter_map(|n| self.tools.get(*n)).sum()
+        };
+        let coding = group(&["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+        let ops = group(&["Bash"]);
+        let research = group(&["Read", "Grep", "Glob", "WebFetch", "WebSearch"]);
+        let total = coding + ops + research;
+        if total == 0 {
+            return "empty";
+        }
+        let max = coding.max(ops).max(research);
+        // Require a clear plurality, else "mixed".
+        if max * 2 < total {
+            return "mixed";
+        }
+        if max == coding {
+            "coding"
+        } else if max == ops {
+            "ops"
+        } else {
+            "research"
+        }
+    }
+
+    /// Top tools by count, descending.
+    pub fn top_tools(&self, n: usize) -> Vec<(String, u64)> {
+        let mut v: Vec<(String, u64)> = self.tools.iter().map(|(k, c)| (k.clone(), *c)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.truncate(n);
+        v
+    }
+
+    pub fn render_report(&self, cfg: &Config) -> String {
+        let mut s = String::new();
+        s.push_str(&format!(
+            "session {}  [{}]\n  project: {}\n  size: {}   category: {}\n  turns: {}   tool events: {}   files: {}\n",
+            short(&self.session_id),
+            self.started_at,
+            self.project,
+            self.size(&cfg.size_thresholds),
+            self.category(),
+            self.turns,
+            self.tool_events,
+            self.files.len(),
+        ));
+        let tops = self.top_tools(6);
+        if !tops.is_empty() {
+            let parts: Vec<String> = tops.iter().map(|(t, c)| format!("{t} {c}")).collect();
+            s.push_str(&format!("  top tools: {}\n", parts.join(", ")));
+        }
+        s
+    }
+}
+
+pub fn short(s: &str) -> String {
+    s.chars().take(8).collect()
+}
+
+/// All session rollups on disk, newest first.
+pub fn load_all(cfg: &Config) -> Vec<Session> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&cfg.state_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(s) = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| serde_json::from_str::<Session>(&t).ok())
+            {
+                out.push(s);
+            }
+        }
+    }
+    out.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+    out
+}
+
+pub fn latest(cfg: &Config) -> Option<Session> {
+    load_all(cfg).into_iter().next()
+}
+
+pub fn find(cfg: &Config, prefix: &str) -> Option<Session> {
+    load_all(cfg)
+        .into_iter()
+        .find(|s| s.session_id.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config::default()
+    }
+
+    #[test]
+    fn size_classes() {
+        let mut s = Session::default();
+        let t = &cfg().size_thresholds;
+        assert_eq!(s.size(t), "XS");
+        s.tool_events = 5;
+        assert_eq!(s.size(t), "S");
+        s.tool_events = 40;
+        assert_eq!(s.size(t), "L");
+        s.tool_events = 100;
+        assert_eq!(s.size(t), "XL");
+    }
+
+    #[test]
+    fn category_plurality() {
+        let mut s = Session::default();
+        s.tools.insert("Edit".into(), 8);
+        s.tools.insert("Bash".into(), 1);
+        assert_eq!(s.category(), "coding");
+        s.tools.clear();
+        s.tools.insert("Edit".into(), 3);
+        s.tools.insert("Bash".into(), 3);
+        s.tools.insert("Read".into(), 3);
+        assert_eq!(s.category(), "mixed");
+    }
+}
