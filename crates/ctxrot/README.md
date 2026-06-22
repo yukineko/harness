@@ -5,7 +5,7 @@ A **context-rot guard for Claude Code**, written in Rust.
 In long sessions the model's attention degrades: early instructions get buried,
 decisions and open todos sink, raw dumps dilute everything (*context rot*).
 `ctxrot` is a single binary that hooks into Claude Code to **detect, rescue,
-restore, and distill** conversation context.
+restore, distill, and control** what enters your conversation context.
 
 ## What it does
 
@@ -18,12 +18,23 @@ error it exits 0 and stays silent.
 | `ctxrot guard` | `UserPromptSubmit` | Detects large refs (big local files / URLs / "全文" keywords) and **context-budget bands** (50/75/90% of the window). Injects *minimal, conditional* advice — only when something is relevant, and budget advice only once per band crossing (so the advice itself doesn't cause rot). At **band ≥ 2 (~75%+)** it also **preemptively writes a rescue note** (same format as below), so a manual `/compact` *or `/clear`* is safe without waiting for PreCompact. |
 | `ctxrot rescue` | `PreCompact` | Right before `/compact`, streams the recent transcript and writes a durable **rescue note** (decisions, open todos, touched files, links, raw recent turns) so nothing is lost to lossy compaction. Deterministic, no LLM. The note filename carries a **session tag** (`rescue-<session>-<ts>.md`). Same writer also powers guard's preemptive rescue (labeled `trigger: band-NN%`). |
 | `ctxrot restore` | `SessionStart` | At session start, injects a **compact carryover** (decisions + open todos + a link). It prefers *this* session's own note (matched by session tag); the cross-session fallback returns the latest note when the stream is unambiguous (≤1 session in the dir) but, when **parallel sessions** share one project dir (≥2 sessions), restricts to untagged/shared notes so it never grabs a sibling's carryover. Never the whole note. |
-| `ctxrot preguard` | `PreToolUse` | **Preventive gate, before the load.** An *unbounded* `Read` (no `limit`) of a local file at/above `gate_file_bytes` (default **1MB**) is **denied** with an actionable reason — route it through a sub-agent or re-`Read` a bounded slice. Narrow by design (only `Read`, only huge files, `limit` always bypasses) so normal source reads are untouched. Set `gate_file_bytes = 0` to disable. |
+| `ctxrot preguard` | `PreToolUse` | **Preventive gate, before the load.** Two layers: (1) **rule-based** — a `Read` matching a `load_deny` glob is denied *regardless of size* ("never load these"; holds even for a bounded slice by default), while a `load_allow` glob bypasses the size gate ("trusted, load whole"). (2) **size-based** — an *unbounded* `Read` (no `limit`) of a local file at/above `gate_file_bytes` (default **1MB**) is denied with an actionable reason. Precedence: **deny → limit → allow → size**. Narrow by design so normal source reads are untouched. |
 | `ctxrot toolguard` | `PostToolUse` | When a `Read`/`Bash`/`Grep`/… returns a huge payload, nudges you to route the *next* heavy read through a sub-agent and keep only conclusions. (Handles the 50KB–1MB middle band the `preguard` gate lets through.) |
 | `ctxrot statusline` | `statusLine` | Always-on context-usage meter (`ctxrot 52% ▮▮▯▯ band1 ~104k/200k`), colored by band (green→yellow→red). Reads Claude's `context_window.used_percentage` from the status JSON (falls back to estimating from the transcript). `ctxrot install` sets it only when no status line exists yet, so a custom one is never clobbered. |
 
-Plus the **`/distill` skill** for on-demand, high-quality LLM distillation (the
-hooks are the cheap deterministic safety net; `/distill` is the smart one).
+Plus two skills:
+
+- **`/distill`** — on-demand, high-quality LLM distillation (the hooks are the
+  cheap deterministic safety net; `/distill` is the smart one).
+- **`/ctx`** — explicit, interactive control over what loads into context.
+  `/ctx load <path>` loads deliberately (routing huge files through a sub-agent
+  for a summary), `/ctx pin <path>` keeps a pointer re-surfacing each session,
+  `/ctx unload <path>` (alias `drop`) marks something to keep out (realized on
+  the next `/compact` / `/distill` / fresh session — hooks can't evict live
+  tokens), and `/ctx list` shows the project's loadset. State lives in `ctxrot
+  ctx` (a small per-project `pinned`/`dropped` set), surfaced at session start by
+  `restore`.
+
 Distilled notes are held to a **contract**: `ctxrot note write --require-sections`
 rejects (exit 1, writes nothing) any note missing the headings `restore` reads
 (`決定事項/Decisions`, `残課題/Open todos`), so a schema drift fails loudly at
@@ -38,8 +49,9 @@ write time instead of silently yielding an empty carryover.
 ## Install (recommended: as a Claude Code plugin)
 
 This repo is **both the Rust crate and a Claude Code plugin/marketplace**. The
-plugin bundles the five hooks, the `/distill` skill, the `ctxrot-distiller`
-subagent, and a prebuilt binary (`bin/ctxrot`) — so installs run entirely on your
+plugin bundles the five hooks, the `/distill` and `/ctx` skills, the
+`ctxrot-distiller` subagent, and a prebuilt binary (`bin/ctxrot`) — so installs
+run entirely on your
 Claude **subscription**, no API key and no separate `cargo install` needed.
 
 ```text
@@ -95,6 +107,7 @@ ctxrot init                 # config + store dirs
 ctxrot install --dry-run    # preview ~/.claude/settings.json changes
 ctxrot install              # apply (backs up settings.json first)
 cp -r skills/distill ~/.claude/skills/   # the /distill skill
+cp -r skills/ctx ~/.claude/skills/       # the /ctx skill
 ```
 
 `ctxrot install` is idempotent and **replaces** any prior ctxrot entries and the
@@ -142,6 +155,7 @@ check out non-executable and hooks would fail).
 hooks/hooks.json                  # the 5 hooks → ${CLAUDE_PLUGIN_ROOT}/bin/ctxrot
 agents/ctxrot-distiller.md        # distiller subagent (keeps heavy reads off main ctx)
 skills/distill/SKILL.md           # /distill skill (delegates to the subagent)
+skills/ctx/SKILL.md               # /ctx skill (pin/drop/load via `ctxrot ctx`)
 bin/ctxrot                        # POSIX launcher → ctxrot-<os>-<arch>
 bin/ctxrot-<os>-<arch>            # prebuilt binaries
 src/ … Cargo.toml                 # the Rust crate (reused unchanged)
@@ -170,7 +184,23 @@ keep_distill_min = 10           # …but always protects the newest N distill no
 rescue_coalesce_secs = 120      # skip a preemptive rescue within N s of the last (0 = off)
 guard_inject_max_chars = 1200   # cap the guard's own per-turn injection; over it, drop
                                 #   lowest-priority first (anchor → advice → safety). 0 = off
+
+# load gate rules (rule-based allow/deny in preguard):
+load_deny = []                  # globs ALWAYS denied (any size); e.g. ["**/*.log", "secrets/**"]
+load_allow = []                 # globs that BYPASS the size gate; e.g. ["docs/**/*.md"]
+load_deny_even_with_limit = true # a deny rule holds even for a bounded `limit` slice
+
+# auto-injection control (SessionStart carryover via restore):
+restore_enabled = true          # master switch for prior-session carryover
+inject_decisions = true         # include the Decisions section
+inject_todos = true             # include the Open-todos section
+inject_pinned = true            # append `/ctx pin`ned items (pointers) at session start
 ```
+
+Glob syntax for `load_deny`/`load_allow` is path-aware: `*`/`?` stay within a
+path segment, `**` crosses `/`, `**/x` makes the leading dirs optional, and a
+slash-less pattern (`*.log`) also matches the bare file name in any directory.
+Project-relative patterns (`secrets/**`) match absolute paths too.
 
 > **⚠️ `context_window` is the *effective cap you want to stay under* — the
 > target — not your model's real window.** ctxrot is a "keep it under 200K"
@@ -181,7 +211,8 @@ guard_inject_max_chars = 1200   # cap the guard's own per-turn injection; over i
 
 Env overrides (Python v1 compatibility): `GUARD_DISABLE` (any value → no-op),
 `CLAUDE_CONTEXT_WINDOW`, `GUARD_LARGE_FILE_BYTES`, `GUARD_GATE_FILE_BYTES`,
-`GUARD_GATE_BASH`, `GUARD_METRICS`.
+`GUARD_GATE_BASH`, `GUARD_METRICS`. Newer: `CTXROT_LOAD_DENY` / `CTXROT_LOAD_ALLOW`
+(comma-separated globs) and `CTXROT_RESTORE_DISABLE=1` (turn carryover off).
 
 > **CJK / token-estimate note.** The byte-based thresholds (`large_file_bytes`,
 > `huge_tool_output_bytes`, `gate_file_bytes`) and the `bytes/4` token estimate

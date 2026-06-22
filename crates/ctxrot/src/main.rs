@@ -6,8 +6,10 @@
 
 mod config;
 mod eval;
+mod glob;
 mod hooks;
 mod install;
+mod loadset;
 mod metrics;
 mod usage;
 
@@ -81,6 +83,58 @@ enum Command {
         /// Session id to resolve the transcript for (default: $CLAUDE_CODE_SESSION_ID).
         #[arg(long)]
         session: Option<String>,
+    },
+    /// Manage the per-project loadset: explicit control over what context to keep
+    /// around (`pin`) and keep out (`drop`). Backs the `/ctx` skill.
+    Ctx {
+        #[command(subcommand)]
+        action: CtxAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CtxAction {
+    /// Pin a path/label so `restore` re-surfaces it (as a pointer) each session.
+    Pin {
+        /// The path or label to pin.
+        item: String,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    /// Remove a path/label from the pinned set.
+    Unpin {
+        item: String,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    /// Mark a path/label to keep OUT of context (advisory: honored on the next
+    /// compaction / distill / fresh-session carryover — hooks can't evict live
+    /// tokens, so a manual `/compact` realizes it immediately).
+    Drop {
+        item: String,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    /// Remove a path/label from the dropped set.
+    Undrop {
+        item: String,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    /// Show the project's loadset (pinned + dropped) and its file path.
+    List {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    /// Print the pinned items, one per line (machine-readable, for the skill).
+    Pinned {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    /// Print the dropped items, one per line (machine-readable, for the skill).
+    Dropped {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
     },
 }
 
@@ -523,6 +577,83 @@ fn main() {
                 }
             }
         }
+        Command::Ctx { action } => {
+            let cfg = Config::load();
+            let resolve = |c: Option<PathBuf>| c.unwrap_or_else(|| std::env::current_dir().unwrap());
+            match action {
+                CtxAction::Pin { item, cwd } => {
+                    ctx_mutate(&cfg, resolve(cwd), "pinned", &item, |ls| ls.pin(&item))
+                }
+                CtxAction::Unpin { item, cwd } => {
+                    ctx_mutate(&cfg, resolve(cwd), "unpinned", &item, |ls| ls.unpin(&item))
+                }
+                CtxAction::Drop { item, cwd } => {
+                    ctx_mutate(&cfg, resolve(cwd), "dropped", &item, |ls| ls.drop_item(&item))
+                }
+                CtxAction::Undrop { item, cwd } => {
+                    ctx_mutate(&cfg, resolve(cwd), "undropped", &item, |ls| ls.undrop(&item))
+                }
+                CtxAction::List { cwd } => {
+                    let cwd = resolve(cwd);
+                    let ls = loadset::LoadSet::load(&cfg.state_dir, &cwd);
+                    println!("loadset: {}", loadset::path_for(&cfg.state_dir, &cwd).display());
+                    if ls.is_empty() {
+                        println!("(空: このプロジェクトの pin / drop はまだありません)");
+                        return;
+                    }
+                    println!("pinned ({}):", ls.pinned.len());
+                    for p in &ls.pinned {
+                        println!("  + {p}");
+                    }
+                    println!("dropped ({}):", ls.dropped.len());
+                    for d in &ls.dropped {
+                        println!("  - {d}");
+                    }
+                    if !ls.dropped.is_empty() {
+                        println!(
+                            "\n（dropped はライブ context からは即時に消えません。\
+                             `/compact` か新セッションで実効化されます）"
+                        );
+                    }
+                }
+                CtxAction::Pinned { cwd } => {
+                    let ls = loadset::LoadSet::load(&cfg.state_dir, &resolve(cwd));
+                    for p in &ls.pinned {
+                        println!("{p}");
+                    }
+                }
+                CtxAction::Dropped { cwd } => {
+                    let ls = loadset::LoadSet::load(&cfg.state_dir, &resolve(cwd));
+                    for d in &ls.dropped {
+                        println!("{d}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Load the project loadset, apply `f`, persist, and report. `f` returns whether
+/// it changed anything (so we can say "（変更なし）" for a no-op). A write error
+/// exits non-zero — these are user-invoked commands, not hooks.
+fn ctx_mutate<F>(cfg: &Config, cwd: PathBuf, label: &str, item: &str, f: F)
+where
+    F: FnOnce(&mut loadset::LoadSet) -> bool,
+{
+    let mut ls = loadset::LoadSet::load(&cfg.state_dir, &cwd);
+    let changed = f(&mut ls);
+    match ls.save(&cfg.state_dir, &cwd) {
+        Ok(_) => {
+            if changed {
+                println!("{label}: {item}");
+            } else {
+                println!("{label}: {item}（変更なし）");
+            }
+        }
+        Err(e) => {
+            eprintln!("loadset write failed: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -615,6 +746,37 @@ rescue_coalesce_secs = 120
 # a rot source itself. Over the cap, blocks drop lowest-priority first
 # (anchor → advice → safety). 0 disables the cap (inject every block in full).
 guard_inject_max_chars = 1200
+
+# --- load gate rules (rule-based allow/deny) ---------------------------------
+# Glob patterns whose matching `Read` targets are ALWAYS denied, regardless of
+# size — "never load these into main context". Wins over load_allow and the size
+# gate. Patterns are path-aware: `*`/`?` stay within a segment, `**` crosses `/`,
+# and a slash-less pattern (e.g. `*.log`) also matches the bare file name in any
+# directory. Project-relative patterns (e.g. `secrets/**`) match absolute paths.
+# env override: CTXROT_LOAD_DENY="**/*.log,secrets/**"
+load_deny = []
+# load_deny = ["**/*.log", "**/node_modules/**", "**/*.min.js", "secrets/**"]
+
+# Glob patterns whose matching `Read` targets BYPASS the size gate — "explicitly
+# trusted, load whole even if large". Applied only when load_deny didn't match.
+# env override: CTXROT_LOAD_ALLOW="docs/**/*.md"
+load_allow = []
+# load_allow = ["docs/**/*.md"]
+
+# Whether a load_deny match denies even when the Read carries an explicit `limit`
+# (a bounded slice). true = a deny rule means "keep this out entirely", so even a
+# slice is refused. false = let bounded slices of denied files through.
+load_deny_even_with_limit = true
+
+# --- auto-injection control (SessionStart carryover) -------------------------
+# Master switch for the prior-session carryover injection (`restore`).
+# env kill-switch: CTXROT_RESTORE_DISABLE=1
+restore_enabled = true
+# Which carryover sections to inject, and whether to surface pinned loadset items
+# (from `/ctx pin`) as pointers at session start.
+inject_decisions = true
+inject_todos = true
+inject_pinned = true
 "#;
 
 fn init() -> anyhow::Result<()> {
