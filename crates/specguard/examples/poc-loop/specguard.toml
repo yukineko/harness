@@ -1,0 +1,17 @@
+# specguard config for the PoC target (⑥ implementation↔canon drift audit).
+[project]
+name = "PoC"
+root = "."
+
+# No [agent] block: use the built-in read-only default.
+
+[output]
+report_dir = "reports"
+sentinel = ".specguard-pending"
+
+# The implementation area, audited against the clamp canon. A change under src/**
+# puts it in scope; the audit checks src/clamp.py vs canon/clamp.md.
+[[area]]
+name = "clamp"
+globs = ["src/**"]
+canon = ["canon/clamp.md"]

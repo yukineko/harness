@@ -1,0 +1,19 @@
+# specforge config for the PoC target (②normalize + rigor entry gate).
+[project]
+name = "PoC"
+root = "."
+
+# Read-only normalize agent (reads requirement + canon, emits the Spec IR draft;
+# the harness does the writing). Mirrors the specguard read-only allowlist.
+[agent]
+command = "claude"
+args = [
+  "--print",
+  "--allowedTools", "Read", "Glob", "Grep",
+  "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git status *)",
+  "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch",
+]
+
+[output]
+spec_dir = "specs"
+sentinel = ".specforge-pending"

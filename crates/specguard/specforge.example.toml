@@ -1,0 +1,42 @@
+# specforge — 生成側ハーネスの設定例 (DESIGN.md 参照)。
+# specguard と対をなす別バイナリ。read-only 強制は specguard 側に閉じ込めるため
+# 分離している。このツールは「入口ゲート」= ②normalize + §5.3 rigor pre-flight を担う。
+
+[project]
+name = "Demo"
+# リポジトリルート (config ファイルからの相対)。
+root = "."
+
+# normalize エージェント。既定は specguard と同じ read-only allowlist の Claude Code。
+# normalize は read-only (要望 + canon を読み、draft を stdout に出す)。書き込みは
+# ハーネスが行う。任意の CLI に差し替え可 (stdin でプロンプト、stdout に出力)。
+[agent]
+command = "claude"
+args = [
+  "--print",
+  "--allowedTools", "Read", "Glob", "Grep",
+  "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git status *)",
+  "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch",
+]
+
+[output]
+# Spec IR draft の出力先 (<spec_dir>/<id>.toml)。
+spec_dir = "specs"
+# rigor 未達 (不足/矛盾) で立てる sentinel。SessionStart hook で人間を pull する (HOTL)。
+sentinel = ".specforge-pending"
+
+[prompt]
+# カスタム normalize テンプレート (省略時は埋め込み既定)。
+normalize_template = ""
+
+# 使い方:
+#   specforge draft --id 2026-06-17-login-rate-limit \
+#     --title "ログイン試行のレート制限" \
+#     --req requirements/login.md \
+#     --canon docs/auth.md#rate-limit
+#   # → 厳格化できれば specs/<id>.toml(status=draft)。できなければ sentinel(escalation)。
+#
+#   specforge ratify --id 2026-06-17-login-rate-limit -m "受け入れ条件に合意"
+#   # → 人間の合意で draft -> ratified に昇格 (canon commit に pin)。
+#
+#   specforge ack    # escalation に対応したら sentinel をクリア

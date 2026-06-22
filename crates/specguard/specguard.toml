@@ -1,0 +1,35 @@
+# Dogfood config: specguard auditing its own repo.
+[project]
+name = "specguard"
+root = "."
+
+# No [agent] block: use the built-in read-only default (Read/Glob/Grep +
+# read-only git, all writes/network denied). See config.rs DEFAULT_AGENT_ARGS.
+
+[output]
+report_dir = "reports/spec-audit"
+sentinel = ".specguard-pending"
+
+[[area]]
+name = "core"
+globs = ["src/**"]
+# INSTALL.md included so its behavioral claims (flags, install, decisions/D3)
+# are audited against src — it is a live doc that can drift. DESIGN-VERIFY.md is
+# the canon for the verification gates (src/verify.rs).
+canon = ["README.md", "specguard.example.toml", "INSTALL.md", "DESIGN-VERIFY.md"]
+
+[[area]]
+name = "prompt"
+globs = ["templates/**"]
+canon = ["README.md"]
+
+[[invariant]]
+name = "marker contract"
+description = "all prompt templates' marker trailer matches parse::MARKER (audit, decisions, and the verify gates reuse the same <<<SPEC_AUDIT>>> trailer)"
+canon = [
+    "src/parse.rs",
+    "templates/audit-prompt.md",
+    "templates/decisions-prompt.md",
+    "templates/refute-prompt.md",
+    "templates/completeness-prompt.md",
+]

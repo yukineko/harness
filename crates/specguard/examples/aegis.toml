@@ -1,0 +1,88 @@
+# examples/aegis.toml — reproduces the original AEGIS spec-audit as specguard
+# config. This is what the AEGIS-specific bash harness + prompts collapse into
+# once the canon system is externalized. Drop this at the AEGIS repo root as
+# `specguard.toml` (adjust `root` or run from there).
+
+[project]
+name = "AEGIS"
+root = "."
+
+[agent]
+command = "claude"
+args = [
+    "--print",
+    "--allowedTools", "Read", "Glob", "Grep",
+    "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git status *)",
+    "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch",
+    "--model", "claude-sonnet-4-6",
+]
+
+[scope]
+baseline_ref = ""
+fallback_ref = "HEAD~20"
+
+[output]
+report_dir = "reports/spec-audit"
+sentinel = ".claude/.spec-drift-pending"   # same sentinel the SessionStart hook reads
+
+# --- Areas (mirror the AEGIS area split + per-area CLAUDE.md / docs canon) ---
+
+[[area]]
+name = "logging"
+globs = ["aegis_logging/**"]
+canon = [
+    "aegis_logging/CLAUDE.md",
+    "docs/architecture/logging_system.md",
+    "docs/glossary.md",
+]
+
+[[area]]
+name = "admin"
+globs = ["admin/**"]
+canon = [
+    "admin/CLAUDE.md",
+    "docs/architecture/api-namespace-split.md",
+    "docs/glossary.md",
+]
+
+[[area]]
+name = "web"
+globs = ["web/**"]
+canon = [
+    "web/CLAUDE.md",
+    "docs/architecture/api-namespace-split.md",
+]
+
+[[area]]
+name = "scripts"
+globs = ["scripts/**"]
+canon = [
+    "scripts/CLAUDE.md",
+    "docs/operations/deploy-canonical-reference.md",
+]
+
+[[area]]
+name = "docs"
+globs = ["docs/**"]
+canon = [
+    "docs/CLAUDE.md",
+    "docs/glossary.md",
+    "docs/SYMBOLS.md",
+]
+
+# --- Invariants (the absolute-rule subset checked every run) ---
+
+[[invariant]]
+name = "HMAC signing"
+description = "署名生成・検証が signature.py 経由か (HMAC 署名の絶対原則)"
+canon = ["aegis_logging/CLAUDE.md", "docs/architecture/logging_system.md"]
+
+[[invariant]]
+name = "API namespace split"
+description = "/cert/api/* /admin/api/* /tenant/api/* の分離が守られているか"
+canon = ["docs/architecture/api-namespace-split.md", "admin/CLAUDE.md", "web/CLAUDE.md"]
+
+[[invariant]]
+name = "env path"
+description = "環境変数が /etc/aegis/global.env / secrets.env 由来か"
+canon = ["CLAUDE.md", "scripts/CLAUDE.md"]
