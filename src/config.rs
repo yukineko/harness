@@ -37,6 +37,14 @@ pub struct Config {
     /// Re-anchor cadence: fire at most once per this many qualifying prompts, so
     /// the block never lands every turn (which would itself accrete rot).
     pub reanchor_every_prompts: u64,
+    /// GC (`ctxrot note prune`): keep at most this many newest notes per project.
+    pub keep_notes_per_project: usize,
+    /// GC: also protect the newest this-many `distill-*` notes even if they fall
+    /// outside `keep_notes_per_project` (distills are higher-value than rescues).
+    pub keep_distill_min: usize,
+    /// Coalescing: skip a *preemptive* (`band-NN%`) rescue write when this session
+    /// already has a rescue note newer than this many seconds. 0 disables.
+    pub rescue_coalesce_secs: u64,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -54,6 +62,9 @@ struct FileConfig {
     reanchor_enabled: Option<bool>,
     reanchor_min_band: Option<usize>,
     reanchor_every_prompts: Option<u64>,
+    keep_notes_per_project: Option<usize>,
+    keep_distill_min: Option<usize>,
+    rescue_coalesce_secs: Option<u64>,
 }
 
 fn home() -> PathBuf {
@@ -92,6 +103,9 @@ impl Default for Config {
             reanchor_enabled: true,
             reanchor_min_band: 2,
             reanchor_every_prompts: 8,
+            keep_notes_per_project: 30,
+            keep_distill_min: 10,
+            rescue_coalesce_secs: 120,
         }
     }
 }
@@ -145,6 +159,15 @@ impl Config {
                 }
                 if let Some(v) = fc.reanchor_every_prompts {
                     cfg.reanchor_every_prompts = v;
+                }
+                if let Some(v) = fc.keep_notes_per_project {
+                    cfg.keep_notes_per_project = v;
+                }
+                if let Some(v) = fc.keep_distill_min {
+                    cfg.keep_distill_min = v;
+                }
+                if let Some(v) = fc.rescue_coalesce_secs {
+                    cfg.rescue_coalesce_secs = v;
                 }
             }
         }

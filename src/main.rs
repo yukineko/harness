@@ -137,6 +137,15 @@ enum NoteAction {
         #[arg(long)]
         require_sections: bool,
     },
+    /// GC a project's note store: keep the newest N (config keep_notes_per_project)
+    /// plus the newest keep_distill_min distill notes; delete older ones.
+    Prune {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Show what would be deleted without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn read_stdin() -> String {
@@ -324,6 +333,27 @@ fn main() {
                             std::process::exit(1);
                         }
                     }
+                }
+                NoteAction::Prune { cwd, dry_run } => {
+                    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+                    let res = store.prune(
+                        &cwd,
+                        cfg.keep_notes_per_project,
+                        cfg.keep_distill_min,
+                        dry_run,
+                    );
+                    let verb = if dry_run { "would remove" } else { "removed" };
+                    for p in &res.removed {
+                        println!("{verb}: {}", p.display());
+                    }
+                    println!(
+                        "{} note(s) {}, {} kept (limit {}, distill floor {})",
+                        res.removed.len(),
+                        if dry_run { "would be removed" } else { "removed" },
+                        res.kept,
+                        cfg.keep_notes_per_project,
+                        cfg.keep_distill_min,
+                    );
                 }
             }
         }
@@ -524,6 +554,17 @@ bands = [0.50, 0.75, 0.90]
 reanchor_enabled = true
 reanchor_min_band = 2
 reanchor_every_prompts = 8
+
+# Note-store GC (`ctxrot note prune`): keep at most keep_notes_per_project newest
+# notes per project, but always protect the newest keep_distill_min distill notes
+# (higher value than rescues) even if they fall outside that window.
+keep_notes_per_project = 30
+keep_distill_min = 10
+
+# Coalescing: skip a *preemptive* (band-NN%) rescue write when this session
+# already has a rescue note newer than this many seconds (PreCompact is never
+# coalesced — it must always land before real loss). 0 disables coalescing.
+rescue_coalesce_secs = 120
 "#;
 
 fn init() -> anyhow::Result<()> {

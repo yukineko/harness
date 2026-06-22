@@ -41,12 +41,27 @@ pub fn write(input: &HookInput, cfg: &Config, trigger: &str) -> Option<PathBuf> 
     if input.transcript_path.is_empty() {
         return None;
     }
+
+    let cwd = input.cwd_or_current();
+    let store = Store::new(cfg);
+
+    // Coalescing (P3): a manual band 2→3 climb + `/compact` can spawn several
+    // near-identical rescues in minutes. Skip a *preemptive* (`band-NN%`) write
+    // when this session already has a fresh rescue. PreCompact/auto are NEVER
+    // coalesced — they fire right before real loss, so one must always land.
+    if trigger.starts_with("band-") && cfg.rescue_coalesce_secs > 0 {
+        if let Some(existing) =
+            store.recent_session_rescue(&cwd, &input.session_id, cfg.rescue_coalesce_secs)
+        {
+            return Some(existing);
+        }
+    }
+
     let turns = transcript::recent_turns(&input.transcript_path, MAX_TURNS, MAX_TURN_CHARS);
     if turns.is_empty() {
         return None;
     }
 
-    let cwd = input.cwd_or_current();
     let extracted = extract(&turns);
     let pct = transcript::estimate_tokens(&input.transcript_path)
         .map(|(t, _)| (t as f64 / cfg.context_window as f64 * 100.0) as i64);
@@ -62,7 +77,6 @@ pub fn write(input: &HookInput, cfg: &Config, trigger: &str) -> Option<PathBuf> 
     );
     let body = render_note(&cwd, input, trigger, &iso, pct, &extracted, &turns);
 
-    let store = Store::new(cfg);
     let path = store.write_note(&cwd, &slug, &body).ok();
     if let Some(p) = &path {
         crate::metrics::emit(
@@ -237,5 +251,40 @@ mod tests {
         assert!(ex.todos.iter().any(|t| t.contains("次に")));
         assert!(ex.files.iter().any(|f| f.contains("src/main.rs")));
         assert!(ex.links.iter().any(|l| l.contains("docs.rs")));
+    }
+
+    #[test]
+    fn preemptive_coalesces_precompact_does_not() {
+        let base = std::env::temp_dir().join(format!("ctxrot-coalesce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cwd = base.join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cfg = Config {
+            state_dir: base.join("state"),
+            store_dir: base.join("store"),
+            ..Config::default() // rescue_coalesce_secs = 120
+        };
+        let input = HookInput {
+            session_id: "sess-coalesce".into(),
+            transcript_path: "tests/fixtures/transcript.jsonl".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        };
+
+        let p1 = write(&input, &cfg, "band-80%").expect("first preemptive writes");
+        assert!(std::fs::read_to_string(&p1).unwrap().contains("trigger: band-80%"));
+
+        // Second preemptive within the window → coalesced: same path, no new file,
+        // original content untouched.
+        let p2 = write(&input, &cfg, "band-85%").expect("coalesced path returned");
+        assert_eq!(p1, p2);
+        assert!(std::fs::read_to_string(&p2).unwrap().contains("trigger: band-80%"));
+
+        // PreCompact is never coalesced — it writes a fresh note (here onto the
+        // same per-second slug, so content flips to the precompact trigger).
+        let p3 = write(&input, &cfg, "precompact").expect("precompact always writes");
+        assert!(std::fs::read_to_string(&p3).unwrap().contains("trigger: precompact"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
