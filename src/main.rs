@@ -501,6 +501,13 @@ huge_tool_output_bytes = 50000
 # These are almost always logs/dumps/minified blobs. Set 0 to disable the gate.
 gate_file_bytes = 1000000
 
+# PreToolUse Bash gate (opt-in, default false). When true, deny Bash commands
+# that are obviously unbounded dumps by their shape (`cat huge.log`, `journalctl`
+# with no -n/--since, recursive `grep` with no -m, full `tail -n +1`, …) UNLESS a
+# downstream bound (`| head`, `| wc`, `| sed -n`, `-m N`) caps the output. The
+# heuristic is conservative; turn it on for Bash-heavy / sysadmin workloads.
+gate_bash = false
+
 # append one JSONL metrics line per hook event to <state_dir>/metrics.jsonl
 # (budget trajectory, band crossings, note sizes, gate denies). Inspect with
 # `ctxrot metrics`. Local only; set false (or env GUARD_METRICS=0) to disable.

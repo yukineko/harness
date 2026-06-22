@@ -14,7 +14,7 @@ const EVENTS: &[(&str, &str, Option<&str>)] = &[
     ("UserPromptSubmit", "guard", None),
     ("PreCompact", "rescue", None),
     ("SessionStart", "restore", Some("startup|resume|clear")),
-    ("PreToolUse", "preguard", Some("Read")),
+    ("PreToolUse", "preguard", Some("Read|Bash")),
     (
         "PostToolUse",
         "toolguard",
