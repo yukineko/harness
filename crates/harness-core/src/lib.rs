@@ -14,5 +14,7 @@ pub mod config;
 pub mod hook;
 pub mod install;
 pub mod metrics;
+pub mod pricing;
 pub mod store;
 pub mod transcript;
+pub mod usage;

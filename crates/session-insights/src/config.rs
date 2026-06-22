@@ -23,6 +23,12 @@ pub struct Config {
     /// Vault root for the session note (subdir `sessions/` is used).
     pub obsidian_vault: PathBuf,
     pub state_dir: PathBuf,
+    /// Write/update an AEGIS-style record note on SessionEnd (opt-in).
+    pub record: bool,
+    /// Vault subdir for record notes (kept separate from terse `sessions/`).
+    pub record_dir: String,
+    /// Per-model price overrides for the cost block; empty → built-in rates.
+    pub price_overrides: Vec<harness_core::pricing::PriceOverride>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -33,6 +39,16 @@ struct FileConfig {
     obsidian_log: Option<bool>,
     obsidian_vault: Option<String>,
     state_dir: Option<String>,
+    record: Option<bool>,
+    record_dir: Option<String>,
+    price_overrides: Option<Vec<PriceOverrideEntry>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PriceOverrideEntry {
+    pattern: String,
+    input: f64,
+    output: f64,
 }
 
 /// The `~/.session-insights` base directory. Thin wrapper over the shared helper;
@@ -50,6 +66,9 @@ impl Default for Config {
             obsidian_log: false,
             obsidian_vault: home().join("Documents/vault/yukineko"),
             state_dir: base_dir().join("state"),
+            record: false,
+            record_dir: "records".to_string(),
+            price_overrides: Vec::new(),
         }
     }
 }
@@ -95,6 +114,22 @@ impl Config {
                     }
                     if let Some(v) = fc.state_dir {
                         cfg.state_dir = expand_tilde(&v);
+                    }
+                    if let Some(v) = fc.record {
+                        cfg.record = v;
+                    }
+                    if let Some(v) = fc.record_dir {
+                        cfg.record_dir = v;
+                    }
+                    if let Some(v) = fc.price_overrides {
+                        cfg.price_overrides = v
+                            .into_iter()
+                            .map(|e| harness_core::pricing::PriceOverride {
+                                pattern: e.pattern.to_lowercase(),
+                                input: e.input,
+                                output: e.output,
+                            })
+                            .collect();
                     }
                 }
             }

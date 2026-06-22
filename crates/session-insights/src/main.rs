@@ -12,6 +12,7 @@ mod install;
 mod metrics;
 mod model;
 mod obsidian;
+mod record;
 
 use std::path::Path;
 
@@ -39,6 +40,16 @@ enum Command {
     Record,
     /// Stop hook: count a turn, optionally write the Obsidian session note.
     Stop,
+    /// SessionEnd hook: optionally write/update the AEGIS-style record note.
+    Sessionend,
+    /// On-demand: (re)generate the record note for the current session and print
+    /// its path. Backs the model-driven `/record` command (writes even when the
+    /// automatic SessionEnd record is off; the vault must still exist).
+    RecordNow {
+        /// Session id (defaults to $CLAUDE_CODE_SESSION_ID).
+        #[arg(long)]
+        session: Option<String>,
+    },
     /// Print session insights (latest by default).
     Report {
         /// Session id prefix to report on.
@@ -69,6 +80,8 @@ fn main() {
     match cli.command {
         Command::Record => run_hook(record),
         Command::Stop => run_hook(stop),
+        Command::Sessionend => run_hook(sessionend),
+        Command::RecordNow { session } => record_now(session),
         Command::Report { session, all } => report(session, all),
         Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
@@ -123,6 +136,103 @@ fn stop() {
     s.record_turn();
     metrics::save(&cfg, &session, &s);
     obsidian::write_note(&cfg, &s);
+}
+
+/// SessionEnd hook: write/update the AEGIS-style record note. Uses the
+/// harness-core HookInput because it carries `transcript_path` (the local
+/// `model::HookInput` does not). No-op when disabled or no transcript/vault.
+fn sessionend() {
+    if Config::disabled_env() {
+        return;
+    }
+    let raw = read_stdin();
+    let Some(input) = harness_core::hook::HookInput::parse(&raw) else {
+        return;
+    };
+    let root = input.cwd_or_current();
+    let cfg = Config::load(&root);
+    if !cfg.record {
+        return;
+    }
+    let session = if input.session_id.is_empty() {
+        "_local".to_string()
+    } else {
+        input.session_id.clone()
+    };
+    // Pull the persisted rollup if present; fall back to transcript aggregation
+    // for the project/turn data when it is absent.
+    let mut s = metrics::load(&cfg, &session);
+    if s.session_id.is_empty() {
+        let project = root
+            .file_name()
+            .and_then(|p| p.to_str())
+            .unwrap_or("project")
+            .to_string();
+        s.ensure(&session, &project, &root.to_string_lossy());
+    }
+    let turns_fallback = harness_core::usage::aggregate(&input.transcript_path)
+        .map(|a| a.turns)
+        .unwrap_or(0);
+    record::write_from_session(&cfg, &s, &input.transcript_path, turns_fallback);
+}
+
+/// Best-effort transcript discovery for a manually-run command (no hook stdin):
+/// scan `~/.claude/projects/*/<session_id>.jsonl`. The cwd→project-key mapping
+/// is not reliable, but the session id names the file. Returns "" when absent.
+fn find_transcript(session_id: &str) -> String {
+    if session_id.is_empty() {
+        return String::new();
+    }
+    let projects = harness_core::config::home().join(".claude").join("projects");
+    let Ok(entries) = std::fs::read_dir(&projects) else {
+        return String::new();
+    };
+    let file = format!("{session_id}.jsonl");
+    for e in entries.flatten() {
+        let cand = e.path().join(&file);
+        if cand.is_file() {
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+    String::new()
+}
+
+/// On-demand record-note generation for the `/record` command. Resolves the
+/// session id, discovers the transcript, (re)writes the note, prints its path.
+/// Always exits 0 (the command layer handles the prose).
+fn record_now(session_arg: Option<String>) {
+    let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let mut cfg = Config::load(&root);
+    // An explicit invocation writes even when the automatic SessionEnd record is
+    // off; `write_record` still enforces that the vault directory exists.
+    cfg.record = true;
+
+    let session = session_arg
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "_local".to_string());
+
+    let mut s = metrics::load(&cfg, &session);
+    if s.session_id.is_empty() {
+        let project = root
+            .file_name()
+            .and_then(|p| p.to_str())
+            .unwrap_or("project")
+            .to_string();
+        s.ensure(&session, &project, &root.to_string_lossy());
+    }
+    let transcript = find_transcript(&session);
+    let turns_fallback = harness_core::usage::aggregate(&transcript)
+        .map(|a| a.turns)
+        .unwrap_or(0);
+    match record::write_from_session(&cfg, &s, &transcript, turns_fallback) {
+        Some(p) => println!("{}", p.display()),
+        None => eprintln!(
+            "no record note written (Obsidian vault not found: {})",
+            cfg.obsidian_vault.display()
+        ),
+    }
 }
 
 fn report(session: Option<String>, all: bool) {
@@ -190,6 +300,8 @@ fn status() {
     println!("size_thresholds: {:?} (S,M,L,XL)", cfg.size_thresholds);
     println!("obsidian_log:    {}", cfg.obsidian_log);
     println!("obsidian_vault:  {}", cfg.obsidian_vault.display());
+    println!("record:          {}", cfg.record);
+    println!("record_dir:      {}", cfg.record_dir);
     println!("state_dir:       {}", cfg.state_dir.display());
     println!("sessions:        {}", metrics::load_all(&cfg).len());
 }
