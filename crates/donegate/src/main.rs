@@ -1,0 +1,398 @@
+//! donegate — a completion-verification gate for Claude Code.
+//!
+//! One binary, one subcommand per job. The `gate` subcommand is the **Stop**
+//! hook: it runs the project's acceptance commands as subprocesses and, if any
+//! required check fails, blocks the stop and feeds the failure back so the agent
+//! keeps working. It is the dynamic, "does it actually run?" complement to the
+//! static (precommit) and spec-drift gates.
+//!
+//! Failure modes are split deliberately:
+//!   * a *harness* error (bad config, no checks, our own bug) → exit 0, allow the
+//!     stop. We must never trap a turn because donegate itself broke.
+//!   * a *check* failure → block on purpose, with an actionable reason.
+
+mod config;
+mod gate;
+mod git;
+mod install;
+mod model;
+mod runner;
+mod state;
+
+use std::io::Read;
+use std::path::Path;
+
+use clap::{Parser, Subcommand};
+use serde_json::json;
+
+use config::Config;
+use model::HookInput;
+
+#[derive(Parser)]
+#[command(
+    name = "donegate",
+    version,
+    about = "Completion-verification gate for Claude Code: run acceptance checks on Stop; block until green."
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Stop hook: run applicable checks; block the stop until they pass.
+    Gate,
+    /// Merge the donegate Stop hook into ~/.claude/settings.json.
+    Install {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove the donegate Stop hook from ~/.claude/settings.json.
+    Uninstall {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Write a starter ./donegate.toml (auto-detecting the project type).
+    Init {
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show the resolved config + which checks would run for the cwd.
+    Status,
+}
+
+fn read_stdin() -> String {
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_to_string(&mut buf);
+    buf
+}
+
+fn main() {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Gate => gate_command(),
+        Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
+        Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
+        Command::Init { force } => exit_on_err(init(force)),
+        Command::Status => status(),
+    }
+}
+
+fn exit_on_err(r: anyhow::Result<()>) {
+    if let Err(e) = r {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// The Stop hook. Always exits 0 toward Claude (the `decision` field, not the
+/// exit code, is what blocks a stop). Returns exit 1 only in manual CLI mode.
+fn gate_command() -> ! {
+    let raw = read_stdin();
+    let hook = HookInput::parse(&raw);
+    let interactive = hook.is_none();
+    let input = hook.unwrap_or_default();
+    let root = input.cwd_or_current();
+
+    if Config::disabled_env() {
+        if interactive {
+            eprintln!("donegate: disabled (DONEGATE_DISABLE)");
+        }
+        std::process::exit(0);
+    }
+
+    let cfg = Config::load(&root);
+    if !cfg.enabled || cfg.checks.is_empty() {
+        if interactive {
+            eprintln!(
+                "donegate: nothing to do — {}",
+                if !cfg.enabled {
+                    "disabled in config".to_string()
+                } else {
+                    format!(
+                        "no [[check]] configured (looked for {})",
+                        Config::project_path(&root).display()
+                    )
+                }
+            );
+        }
+        std::process::exit(0);
+    }
+
+    let session = input.session_key();
+
+    // one-shot escape hatch
+    if let Some(reason) = consume_skip(&root) {
+        state::reset(&cfg.state_dir, &session);
+        log_event(&cfg, &session, "skip", &[], 0);
+        eprintln!("donegate: .donegate-skip consumed — allowing stop ({reason})");
+        std::process::exit(0);
+    }
+
+    let verdict = gate::evaluate(&cfg, &root);
+
+    if verdict.all_green() {
+        state::reset(&cfg.state_dir, &session);
+        log_event(&cfg, &session, "green", &ran_names(&verdict), 0);
+        if interactive {
+            println!("{}", gate::human_report(&verdict));
+        }
+        std::process::exit(0);
+    }
+
+    // blocking failures present
+    let attempt = state::bump(&cfg.state_dir, &session, cfg.reset_after_secs);
+    let failing: Vec<String> = verdict.blocking().iter().map(|o| o.name.clone()).collect();
+
+    if attempt > cfg.max_attempts {
+        state::reset(&cfg.state_dir, &session);
+        log_event(&cfg, &session, "giveup", &failing, attempt);
+        eprintln!(
+            "donegate: {} required check(s) still failing after {} attempts ({}). \
+             Allowing stop — fix manually.",
+            failing.len(),
+            cfg.max_attempts,
+            failing.join(", ")
+        );
+        std::process::exit(0);
+    }
+
+    log_event(&cfg, &session, "blocked", &failing, attempt);
+    let reason = gate::block_reason(&verdict, attempt, cfg.max_attempts);
+
+    if interactive {
+        eprintln!("{}", gate::human_report(&verdict));
+        eprintln!("\n{reason}");
+        std::process::exit(1);
+    }
+    // Stop hook: JSON decision blocks the stop; exit 0.
+    println!("{}", json!({ "decision": "block", "reason": reason }));
+    std::process::exit(0);
+}
+
+fn ran_names(v: &gate::Verdict) -> Vec<String> {
+    v.ran.iter().map(|o| o.name.clone()).collect()
+}
+
+/// `.donegate-skip` in the project root: consumed once, returns its reason.
+fn consume_skip(root: &Path) -> Option<String> {
+    let p = root.join(".donegate-skip");
+    if !p.exists() {
+        return None;
+    }
+    let reason = std::fs::read_to_string(&p)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "(no reason given)".to_string());
+    let _ = std::fs::remove_file(&p);
+    Some(reason)
+}
+
+/// Append one JSONL line per gate decision. Best effort, local only.
+fn log_event(cfg: &Config, session: &str, verdict: &str, names: &[String], attempt: u32) {
+    let path = cfg.state_dir.join("log.jsonl");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let entry = json!({
+        "ts": chrono::Local::now().to_rfc3339(),
+        "session": session,
+        "verdict": verdict,
+        "checks": names,
+        "attempt": attempt,
+    });
+    if let (Ok(line), Ok(mut f)) = (
+        serde_json::to_string(&entry),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path),
+    ) {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+fn status() {
+    let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let cfg = Config::load(&root);
+    let src = if Config::project_path(&root).exists() {
+        Config::project_path(&root)
+    } else if Config::home_path().exists() {
+        Config::home_path()
+    } else {
+        Path::new("(defaults — no config file)").to_path_buf()
+    };
+    println!("config:        {}", src.display());
+    println!("enabled:       {}", cfg.enabled);
+    println!("max_attempts:  {}", cfg.max_attempts);
+    println!("state_dir:     {}", cfg.state_dir.display());
+    println!("checks:        {}", cfg.checks.len());
+    if cfg.checks.is_empty() {
+        println!("  (none — the gate will allow every stop; run `donegate init`)");
+        return;
+    }
+    let changed = git::changed_files(&root);
+    match &changed {
+        Some(f) => println!("changed files: {}", f.len()),
+        None => println!("changed files: (not a git repo — all checks unscoped)"),
+    }
+    for c in &cfg.checks {
+        let scope = match &c.when_changed {
+            Some(g) => format!("when {}", g.join(", ")),
+            None => "always".to_string(),
+        };
+        let opt = if c.optional { " [optional]" } else { "" };
+        println!("  - {:<10} {}{}\n      $ {}", c.name, scope, opt, c.cmd);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// init: write a starter donegate.toml, auto-detecting the project type.
+// ---------------------------------------------------------------------------
+
+fn init(force: bool) -> anyhow::Result<()> {
+    let root = std::env::current_dir()?;
+    std::fs::create_dir_all(Config::default().state_dir)?;
+    let path = Config::project_path(&root);
+    if path.exists() && !force {
+        anyhow::bail!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        );
+    }
+    let body = starter_config(&root);
+    std::fs::write(&path, body)?;
+    println!("wrote {}", path.display());
+    println!(
+        "Review the [[check]] commands, then run `donegate install` once to wire the Stop hook."
+    );
+    Ok(())
+}
+
+const HEADER: &str = r#"# donegate.toml — completion gate for Claude Code.
+#
+# On Stop, donegate runs every applicable [[check]] as a subprocess. The agent
+# can't finish its turn until all REQUIRED checks exit 0. A failing check feeds
+# its tail output back so the agent fixes it and continues.
+#
+# Per check:
+#   name          label shown in the block reason
+#   cmd           shell command line (sh -c / cmd /C)
+#   when_changed  globs (vs git HEAD + untracked); omit to always run
+#   timeout_secs  per-check timeout (default below)
+#   optional      true = warn on failure but don't block
+#   workdir       run in this subdir of the project root
+#
+# Global:
+enabled = true
+max_attempts = 3          # give up (allow stop) after N consecutive blocks
+default_timeout_secs = 300
+output_tail_lines = 40
+reset_after_secs = 600    # attempt counter resets after this idle gap
+"#;
+
+fn starter_config(root: &Path) -> String {
+    let mut s = String::from(HEADER);
+    s.push('\n');
+    if root.join("Cargo.toml").exists() {
+        s.push_str(RUST_CHECKS);
+    } else if root.join("package.json").exists() {
+        s.push_str(NODE_CHECKS);
+    } else if root.join("pyproject.toml").exists()
+        || root.join("setup.py").exists()
+        || root.join("requirements.txt").exists()
+    {
+        s.push_str(PY_CHECKS);
+    } else if root.join("go.mod").exists() {
+        s.push_str(GO_CHECKS);
+    } else {
+        s.push_str(GENERIC_CHECKS);
+    }
+    s
+}
+
+const RUST_CHECKS: &str = r#"[[check]]
+name = "build"
+cmd = "cargo build --quiet"
+when_changed = ["**/*.rs", "Cargo.toml", "Cargo.lock"]
+
+[[check]]
+name = "test"
+cmd = "cargo test --quiet"
+when_changed = ["**/*.rs"]
+
+[[check]]
+name = "clippy"
+cmd = "cargo clippy --quiet --all-targets -- -D warnings"
+when_changed = ["**/*.rs"]
+
+[[check]]
+name = "fmt"
+cmd = "cargo fmt --check"
+when_changed = ["**/*.rs"]
+optional = true
+"#;
+
+const NODE_CHECKS: &str = r#"[[check]]
+name = "typecheck"
+cmd = "npx tsc --noEmit"
+when_changed = ["**/*.ts", "**/*.tsx", "tsconfig.json"]
+
+[[check]]
+name = "test"
+cmd = "npm test --silent"
+when_changed = ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+
+[[check]]
+name = "lint"
+cmd = "npm run lint --silent"
+when_changed = ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+optional = true
+"#;
+
+const PY_CHECKS: &str = r#"[[check]]
+name = "test"
+cmd = "pytest -q"
+when_changed = ["**/*.py"]
+
+[[check]]
+name = "lint"
+cmd = "ruff check ."
+when_changed = ["**/*.py"]
+
+[[check]]
+name = "types"
+cmd = "mypy ."
+when_changed = ["**/*.py"]
+optional = true
+"#;
+
+const GO_CHECKS: &str = r#"[[check]]
+name = "build"
+cmd = "go build ./..."
+when_changed = ["**/*.go", "go.mod", "go.sum"]
+
+[[check]]
+name = "test"
+cmd = "go test ./..."
+when_changed = ["**/*.go"]
+
+[[check]]
+name = "vet"
+cmd = "go vet ./..."
+when_changed = ["**/*.go"]
+optional = true
+"#;
+
+const GENERIC_CHECKS: &str = r#"# No known build system detected — edit these to match your project.
+[[check]]
+name = "build"
+cmd = "make build"
+
+[[check]]
+name = "test"
+cmd = "make test"
+"#;
