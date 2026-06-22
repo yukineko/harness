@@ -168,6 +168,8 @@ reanchor_every_prompts = 8      # at most once per N qualifying prompts
 keep_notes_per_project = 30     # `ctxrot note prune` keeps the newest N
 keep_distill_min = 10           # …but always protects the newest N distill notes
 rescue_coalesce_secs = 120      # skip a preemptive rescue within N s of the last (0 = off)
+guard_inject_max_chars = 1200   # cap the guard's own per-turn injection; over it, drop
+                                #   lowest-priority first (anchor → advice → safety). 0 = off
 ```
 
 > **⚠️ `context_window` is the *effective cap you want to stay under* — the
