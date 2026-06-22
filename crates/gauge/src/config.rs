@@ -8,12 +8,10 @@ use serde::Deserialize;
 
 /// A per-model price override (USD per 1M input/output tokens). `pattern` is
 /// matched as a substring against the model id; the first match wins.
-#[derive(Debug, Clone)]
-pub struct PriceOverride {
-    pub pattern: String,
-    pub input: f64,
-    pub output: f64,
-}
+///
+/// Defined in `harness_core::pricing`; re-exported here so gauge's call sites
+/// (`config::PriceOverride`) are unchanged.
+pub use harness_core::pricing::PriceOverride;
 
 #[derive(Debug, Clone)]
 pub struct Config {

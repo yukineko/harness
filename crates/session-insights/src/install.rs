@@ -81,6 +81,13 @@ pub fn install(dry_run: bool) -> Result<()> {
             "hooks": [ { "type": "command", "command": format!("{bin} stop"), "timeout": TIMEOUT_SECS } ]
         }),
     );
+    upsert(
+        hooks,
+        "SessionEnd",
+        json!({
+            "hooks": [ { "type": "command", "command": format!("{bin} sessionend"), "timeout": TIMEOUT_SECS } ]
+        }),
+    );
 
     if dry_run {
         println!("--- dry run (settings.json would become) ---");
@@ -88,7 +95,7 @@ pub fn install(dry_run: bool) -> Result<()> {
         return Ok(());
     }
     harness_core::install::write_settings(&settings_path(), &settings)?;
-    println!("\nInstalled PostToolUse + Stop hooks → {bin} record / stop");
+    println!("\nInstalled PostToolUse + Stop + SessionEnd hooks → {bin} record / stop / sessionend");
     Ok(())
 }
 
@@ -100,7 +107,7 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     let root = settings.as_object_mut().unwrap();
     let mut removed = 0;
     if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
-        for event in ["PostToolUse", "Stop"] {
+        for event in ["PostToolUse", "Stop", "SessionEnd"] {
             if let Some(arr) = hooks.get(event).and_then(Value::as_array) {
                 let before = arr.len();
                 let cleaned = strip_ours(arr);

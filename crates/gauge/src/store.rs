@@ -10,33 +10,11 @@ use serde::{Deserialize, Serialize};
 
 /// Token counts for one model within a session. `input`/`output` are the
 /// uncached counts; cache writes/reads are tracked separately for pricing.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct Usage {
-    #[serde(default)]
-    pub input: u64,
-    #[serde(default)]
-    pub output: u64,
-    #[serde(default)]
-    pub cache_write_5m: u64,
-    #[serde(default)]
-    pub cache_write_1h: u64,
-    #[serde(default)]
-    pub cache_read: u64,
-}
-
-impl Usage {
-    pub fn total_tokens(&self) -> u64 {
-        self.input + self.output + self.cache_write_5m + self.cache_write_1h + self.cache_read
-    }
-
-    pub fn add(&mut self, other: &Usage) {
-        self.input += other.input;
-        self.output += other.output;
-        self.cache_write_5m += other.cache_write_5m;
-        self.cache_write_1h += other.cache_write_1h;
-        self.cache_read += other.cache_read;
-    }
-}
+///
+/// The type itself now lives in `harness_core::usage` (shared with other
+/// plugins); re-exported here as `Usage` so gauge's internal call sites are
+/// unchanged. The persisted JSON shape is identical.
+pub use harness_core::usage::ModelUsage as Usage;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
