@@ -225,12 +225,56 @@ The `/distill` skill calls it first to act on the reading: skip when usage is lo
 high (band ≥ 2).
 
 This is the substrate for measuring whether the guard actually holds N down.
-The A/B protocol: run a representative heavy task once normally (group A) and
-once under `GUARD_DISABLE=1` (group B), then `ctxrot metrics compare <A-id> <B-id>`.
-Each argument is a session-id prefix (paste the truncated id from the rollup);
-all matching sessions fold into one group, so a task spanning several sessions
-still compares cleanly. A negative `peak_tok`/`band` Δ means the guard lowered
-the context high-water mark.
+
+### A/B: does the guard lower occupancy?
+
+Run a representative heavy task twice — once guard-ON, once `GUARD_DISABLE=1` —
+then fold each into a group by session-id prefix and diff:
+
+```sh
+# Group A (guard ON):  run the task in sessions whose id you can prefix, e.g. on-…
+# Group B (guard OFF): GUARD_DISABLE=1, in sessions prefixed off-…
+ctxrot metrics compare on- off-
+```
+
+`compare` prints both groups, the signed Δ(A−B), and a **dwell** line — the
+prompts spent in each band (`b0 b1 b2 b3`). Occupancy quality is the shape, not
+just the peak: a guard that works spends fewer prompts in the high bands. A
+negative `peak_tok`/`band` Δ and lighter high-band dwell for A mean the guard
+lowered the context high-water mark.
+
+### Recall eval: is re-anchor worth its tokens?
+
+Re-anchor re-injects known decisions at the window tail — *added tokens*, the
+very thing ctxrot fights. It only pays off if the recall gain beats the cost, so
+measure it directly. The hook never calls an LLM; the eval runs out-of-process:
+
+```sh
+cargo build --release
+eval/run-recall.sh           # needs the `claude` CLI + `jq`; drives claude -p per case
+# or by hand:
+ctxrot eval gen --out cases --cases 9      # plants un-guessable decisions buried in filler
+#   …feed each cases/*.on.txt (decision re-surfaced) and *.off.txt (not) to a model…
+ctxrot eval score --manifest cases/manifest.json --results cases/results.jsonl
+```
+
+`score` prints accuracy for the OFF vs ON variants and the re-anchor added-token
+cost (Σ anchor bytes /4), so the net benefit is one table:
+
+```
+variant     cases  correct  accuracy
+off             9        4       44%
+on              9        8       89%
+re-anchor 追加注入: ~1.3k bytes (~330 tok) over 9 ON case(s)
+Δ accuracy (on − off): +45 pts
+```
+
+A large positive Δ for a small token cost justifies re-anchor; a Δ near zero (or
+negative) is the signal to raise `reanchor_min_band` or set `reanchor_enabled =
+false`. The defaults (`reanchor_min_band = 2 ≈ 75%`, `reanchor_every_prompts =
+8`) are deliberately conservative — re-anchor only fires deep into the window
+(where lost-in-the-middle bites) and at most once per 8 qualifying prompts, so
+its token cost stays bounded; tune them from your own eval Δ rather than priors.
 
 ## How memory survives a session
 
