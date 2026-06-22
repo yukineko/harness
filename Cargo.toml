@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members  = ["crates/*"]
+
+[workspace.package]
+rust-version = "1.82"     # is_none_or 使用のため（既存クレート）
+edition      = "2021"
+
+# 共通依存はここに集約し、各クレートは段階的に `workspace = true` へ移行する。
+# Phase A 時点では各クレートの [dependencies] はそのまま（移行は後続フェーズ）。
+[workspace.dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex      = "1"
