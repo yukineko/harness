@@ -15,9 +15,7 @@
 //! parallel sessions appending to one file don't interleave. Reading is a
 //! forward streaming pass (no whole-file load), per repo policy.
 
-use std::io::Write;
-
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::config::Config;
 
@@ -26,35 +24,15 @@ pub fn path(cfg: &Config) -> std::path::PathBuf {
     cfg.state_dir.join("metrics.jsonl")
 }
 
-fn now_iso() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
-}
-
-/// Append one event line `{ts, session, event, ...extra}`. No-op when metrics are
-/// disabled. `extra` must be a JSON object; non-object values are ignored.
+/// Append one event line `{ts, session, event, ...extra}` via the shared
+/// `harness_core` sink. No-op when metrics are disabled. `extra` must be a JSON
+/// object; non-object values are ignored. ctxrot keeps its own `SessionStat`
+/// rollup below; only the append/row-schema is shared.
 pub fn emit(cfg: &Config, session: &str, event: &str, extra: Value) {
     if !cfg.metrics {
         return;
     }
-    let mut obj = serde_json::Map::new();
-    obj.insert("ts".into(), json!(now_iso()));
-    obj.insert("session".into(), json!(session));
-    obj.insert("event".into(), json!(event));
-    if let Value::Object(m) = extra {
-        for (k, v) in m {
-            obj.insert(k, v);
-        }
-    }
-    let line = Value::Object(obj).to_string();
-
-    let _ = std::fs::create_dir_all(&cfg.state_dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path(cfg))
-    {
-        let _ = writeln!(f, "{line}");
-    }
+    harness_core::metrics::emit(&path(cfg), session, event, extra);
 }
 
 /// Per-session rollup for `ctxrot metrics`.
@@ -232,6 +210,7 @@ pub fn group_by_prefix(stats: &[SessionStat], prefix: &str) -> Option<(SessionSt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn temp_cfg(name: &str) -> Config {
         let dir = std::env::temp_dir().join(format!("ctxrot-metrics-{}-{}", name, std::process::id()));

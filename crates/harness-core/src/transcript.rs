@@ -206,4 +206,16 @@ mod tests {
         assert!(turns.len() >= 2);
         assert_eq!(turns[0].role, "user");
     }
+
+    #[test]
+    fn truncate_chars_is_cjk_safe() {
+        // Counts CHARS not bytes (each kana is 3 bytes in UTF-8) and never splits
+        // a multi-byte char — the harness CJK invariant.
+        assert_eq!(truncate_chars("あいう", 5), "あいう"); // under the cap → unchanged
+        let t = truncate_chars("あいうえお", 3);
+        assert!(t.starts_with("あいう"), "{t}");
+        assert!(t.ends_with("[truncated]"), "{t}");
+        // Exactly at the cap keeps the whole string (boundary, no ellipsis).
+        assert_eq!(truncate_chars("あいうえお", 5), "あいうえお");
+    }
 }

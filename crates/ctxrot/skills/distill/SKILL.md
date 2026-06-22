@@ -1,7 +1,7 @@
 ---
 name: distill
 description: context-rot 対策の能動蒸留。現在の会話を蒸留して ctxrot ストアへ退避し、main context を「要約＋リンク」に置換する。context 使用率が高い時、長い会話を畳みたい時、/compact の前に使う。
-argument-hint: [蒸留のフォーカス（任意。例: "認証まわりだけ"）]
+argument-hint: '[蒸留のフォーカス（任意。例: "認証まわりだけ"）]'
 allowed-tools: Task, Bash(ctxrot:*), Bash(echo:*), Read, Write
 ---
 

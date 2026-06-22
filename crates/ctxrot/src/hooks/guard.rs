@@ -14,9 +14,9 @@ use std::path::Path;
 use regex::Regex;
 
 use crate::config::Config;
-use crate::model::HookInput;
-use crate::store::Store;
-use crate::transcript;
+use harness_core::hook::HookInput;
+use harness_core::store::Store;
+use harness_core::transcript;
 
 /// Drop-priority for the per-turn injection cap (`guard_inject_max_chars`). When
 /// the assembled blocks exceed the cap, the *lowest* priority is dropped first.
@@ -379,7 +379,7 @@ fn check_reanchor(input: &HookInput, cfg: &Config) -> Option<String> {
     // Only re-surface what THIS session already committed to its own note; never
     // a sibling/fallback note (that's restore's job at SessionStart).
     let cwd = input.cwd_or_current();
-    let note = Store::new(cfg).latest_note_for_session(&cwd, &input.session_id)?;
+    let note = Store::new(cfg.store_dir.clone()).latest_note_for_session(&cwd, &input.session_id)?;
     let text = std::fs::read_to_string(&note).ok()?;
 
     let decisions = crate::hooks::restore::extract_section(&text, &["決定事項", "Decisions"])
@@ -490,7 +490,7 @@ mod tests {
             "should confirm preemptive rescue: {out}"
         );
 
-        let store = crate::store::Store::new(&cfg);
+        let store = harness_core::store::Store::new(cfg.store_dir.clone());
         let notes = store.list_notes(&cwd);
         assert!(
             notes.iter().any(|p| p
@@ -528,8 +528,8 @@ mod tests {
             "---\ntype: ctxrot-rescue\ncreated: 2026-01-01T00:00:00+09:00\n---\n\n\
              ## 決定事項 / Decisions\n\n{decisions}\n\n## 残課題 / Open todos\n\n{todos}\n"
         );
-        let slug = format!("rescue-{}-20260101-000000", crate::store::session_tag(session));
-        crate::store::Store::new(&cfg).write_note(&cwd, &slug, &body).unwrap();
+        let slug = format!("rescue-{}-20260101-000000", harness_core::store::session_tag(session));
+        harness_core::store::Store::new(cfg.store_dir.clone()).write_note(&cwd, &slug, &body).unwrap();
         let input = HookInput {
             session_id: session.into(),
             // Fixture usage ≈ 92% → band 3 (≥ reanchor_min_band 2).
@@ -638,8 +638,8 @@ mod tests {
         // first casualty. Each section is truncated to ANCHOR_SECTION_CAP_CHARS.
         let big = format!("- {}", "決定".repeat(400));
         let body = format!("## 決定事項 / Decisions\n\n{big}\n\n## 残課題 / Open todos\n\n{big}\n");
-        let slug = format!("rescue-{}-20260101-000000", crate::store::session_tag("sess-cap"));
-        crate::store::Store::new(&cfg).write_note(&cwd, &slug, &body).unwrap();
+        let slug = format!("rescue-{}-20260101-000000", harness_core::store::session_tag("sess-cap"));
+        harness_core::store::Store::new(cfg.store_dir.clone()).write_note(&cwd, &slug, &body).unwrap();
         let input = HookInput {
             session_id: "sess-cap".into(),
             prompt: "このログを全文ください".into(), // heavy keyword → large-ref block

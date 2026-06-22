@@ -9,19 +9,15 @@ mod eval;
 mod hooks;
 mod install;
 mod metrics;
-mod model;
-mod store;
-mod transcript;
 mod usage;
 
-use std::io::Read;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
 use config::Config;
-use model::HookInput;
-use store::Store;
+use harness_core::hook::{read_stdin, run_hook, HookInput};
+use harness_core::store::Store;
 
 #[derive(Parser)]
 #[command(
@@ -179,18 +175,6 @@ enum NoteAction {
     },
 }
 
-fn read_stdin() -> String {
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
-    buf
-}
-
-/// Run a hook handler with all errors swallowed; always exits 0.
-fn run_hook<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> ! {
-    let _ = std::panic::catch_unwind(f);
-    std::process::exit(0);
-}
-
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -294,7 +278,7 @@ fn main() {
         }
         Command::Note { action } => {
             let cfg = Config::load();
-            let store = Store::new(&cfg);
+            let store = Store::new(cfg.store_dir.clone());
             match action {
                 NoteAction::List { cwd } => {
                     let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
@@ -356,7 +340,7 @@ fn main() {
                     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
                     // Tag with the session so restore can route this session back
                     // to its own note even with parallel sessions in one project.
-                    let tag = store::session_tag(session.as_deref().unwrap_or(""));
+                    let tag = harness_core::store::session_tag(session.as_deref().unwrap_or(""));
                     match store.write_note(&cwd, &format!("{safe}-{tag}-{stamp}"), &body) {
                         Ok(p) => println!("{}", p.display()),
                         Err(e) => {
@@ -528,7 +512,7 @@ fn main() {
                     .unwrap_or_default();
                 usage::find_transcript_for_session(&sid).map(|p| p.to_string_lossy().into_owned())
             });
-            match path.as_deref().and_then(transcript::estimate_tokens) {
+            match path.as_deref().and_then(harness_core::transcript::estimate_tokens) {
                 Some((tokens, _src)) => {
                     let pct = usage::pct_from_tokens(&cfg, tokens);
                     println!("{}", usage::line(&cfg, pct, Some(tokens)));
@@ -564,7 +548,7 @@ fn statusline_from(cfg: &Config, raw: &str) -> Option<String> {
     }
     // Fallback: estimate from the transcript when Claude didn't supply a %.
     let path = v.get("transcript_path").and_then(serde_json::Value::as_str)?;
-    let (t, _src) = transcript::estimate_tokens(path)?;
+    let (t, _src) = harness_core::transcript::estimate_tokens(path)?;
     Some(usage::line(cfg, usage::pct_from_tokens(cfg, t), Some(t)))
 }
 
