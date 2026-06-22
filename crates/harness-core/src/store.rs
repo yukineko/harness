@@ -1,12 +1,15 @@
 //! Durable note store. Notes are Obsidian-compatible markdown, grouped per
 //! project (keyed by cwd). The store dir can point at a real Obsidian vault.
+//!
+//! The parallel-session-safe fallback logic (`latest_fallback_note` /
+//! `latest_note_for_session` / `recent_session_rescue`) is a harness invariant:
+//! it MUST be identical in every plugin, which is why it lives here and is never
+//! copied into a plugin crate.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
-
-use crate::config::Config;
 
 /// Stable, human-readable project key from a cwd: basename + short hash of the
 /// full path (so two different `src/` dirs don't collide).
@@ -23,8 +26,9 @@ pub fn project_key(cwd: &Path) -> String {
     format!("{safe}-{h}")
 }
 
-/// FNV-1a 32-bit, hex. Small, dependency-free, stable across runs.
-fn short_hash(s: &str) -> String {
+/// FNV-1a 32-bit, hex. Small, dependency-free, stable across runs. Shared so
+/// every plugin derives the same project keys and session tags.
+pub fn short_hash(s: &str) -> String {
     let mut hash: u32 = 0x811c9dc5;
     for b in s.bytes() {
         hash ^= b as u32;
@@ -81,10 +85,9 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(cfg: &Config) -> Self {
-        Store {
-            root: cfg.store_dir.clone(),
-        }
+    /// Build a store rooted at `root` (a plugin passes its configured `store_dir`).
+    pub fn new(root: PathBuf) -> Self {
+        Store { root }
     }
 
     /// Directory holding a project's notes (created on demand by `write`).
@@ -126,7 +129,7 @@ impl Store {
         self.list_notes(cwd).into_iter().next()
     }
 
-    #[cfg(test)]
+    /// Write a note under an exact filename (no slug sanitizing). Test/utility helper.
     pub fn write_note_named(&self, cwd: &Path, name: &str, body: &str) -> std::io::Result<PathBuf> {
         let dir = self.project_dir(cwd);
         std::fs::create_dir_all(&dir)?;
@@ -192,10 +195,10 @@ impl Store {
         None
     }
 
-    /// GC (`ctxrot note prune`): keep the newest `keep` notes overall, plus the
-    /// newest `keep_distill_min` `distill-*` notes (higher value than rescues)
-    /// even if they fall outside that window; delete the rest. `dry_run` computes
-    /// the removal set without touching disk. Deletes are best-effort.
+    /// GC: keep the newest `keep` notes overall, plus the newest `keep_distill_min`
+    /// `distill-*` notes (higher value than rescues) even if they fall outside that
+    /// window; delete the rest. `dry_run` computes the removal set without touching
+    /// disk. Deletes are best-effort.
     pub fn prune(
         &self,
         cwd: &Path,
@@ -244,16 +247,12 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
 
-    fn temp_store(name: &str) -> (Config, PathBuf) {
-        let root = std::env::temp_dir().join(format!("ctxrot-test-{}-{}", name, std::process::id()));
+    /// A throwaway store rooted under the temp dir, isolated per test name + pid.
+    fn temp_store(name: &str) -> (Store, PathBuf) {
+        let root = std::env::temp_dir().join(format!("harness-store-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let cfg = Config {
-            store_dir: root.clone(),
-            ..Config::default()
-        };
-        (cfg, root)
+        (Store::new(root.clone()), root)
     }
 
     #[test]
@@ -265,8 +264,7 @@ mod tests {
 
     #[test]
     fn session_routing_picks_own_note() {
-        let (cfg, root) = temp_store("routing");
-        let store = Store::new(&cfg);
+        let (store, root) = temp_store("routing");
         let cwd = Path::new("/some/project");
         let a = session_tag("session-A");
         let b = session_tag("session-B");
@@ -304,8 +302,7 @@ mod tests {
 
     #[test]
     fn fallback_single_stream_keeps_continuity() {
-        let (cfg, root) = temp_store("fb-single");
-        let store = Store::new(&cfg);
+        let (store, root) = temp_store("fb-single");
         let cwd = Path::new("/some/project");
         let a = session_tag("prev-session");
 
@@ -331,8 +328,7 @@ mod tests {
 
     #[test]
     fn prune_dry_run_removes_nothing() {
-        let (cfg, root) = temp_store("prune-dry");
-        let store = Store::new(&cfg);
+        let (store, root) = temp_store("prune-dry");
         let cwd = Path::new("/some/project");
         write_series(&store, cwd, "rescue-aaaaaaaa-2026010", 5);
 
@@ -345,8 +341,7 @@ mod tests {
 
     #[test]
     fn prune_keeps_newest_n() {
-        let (cfg, root) = temp_store("prune-n");
-        let store = Store::new(&cfg);
+        let (store, root) = temp_store("prune-n");
         let cwd = Path::new("/some/project");
         write_series(&store, cwd, "rescue-aaaaaaaa-2026010", 5);
 
@@ -358,8 +353,7 @@ mod tests {
 
     #[test]
     fn prune_protects_distill_floor() {
-        let (cfg, root) = temp_store("prune-distill");
-        let store = Store::new(&cfg);
+        let (store, root) = temp_store("prune-distill");
         let cwd = Path::new("/some/project");
         // Oldest = one distill, then 4 rescues on top.
         store.write_note_named(cwd, "distill-aaaaaaaa-20260101-000000", "d").unwrap();
@@ -380,8 +374,7 @@ mod tests {
 
     #[test]
     fn fallback_parallel_avoids_sibling_tagged_note() {
-        let (cfg, root) = temp_store("fb-parallel");
-        let store = Store::new(&cfg);
+        let (store, root) = temp_store("fb-parallel");
         let cwd = Path::new("/some/project");
         let a = session_tag("sib-A");
         let b = session_tag("sib-B");

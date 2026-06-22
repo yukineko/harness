@@ -8,8 +8,8 @@
 use std::path::Path;
 
 use crate::config::Config;
-use crate::model::HookInput;
-use crate::store::Store;
+use harness_core::hook::HookInput;
+use harness_core::store::Store;
 
 const READ_CAP: u64 = 256 * 1024;
 const SECTION_CAP_CHARS: usize = 1500;
@@ -23,7 +23,7 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     }
 
     let cwd = input.cwd_or_current();
-    let store = Store::new(cfg);
+    let store = Store::new(cfg.store_dir.clone());
     // Prefer this session's own note (resume/compact keep the same session_id),
     // so parallel sessions don't grab each other's carryover. Else fall back to a
     // SAFE cross-session note: the latest when the stream is unambiguous, but
@@ -66,7 +66,7 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     // note (no `/distill` was run last session), its Decisions/todos are just
     // regex-extracted and may be thin/empty. One line nudging /distill now —
     // kept to a single line so the injection itself doesn't bloat.
-    if !crate::store::is_distill(&latest) {
+    if !harness_core::store::is_distill(&latest) {
         out.push_str(
             "\n（前回 /distill 未実行。重要な結論は今のうちに /distill で蒸留推奨）",
         );
@@ -196,7 +196,7 @@ pub fn extract_section(text: &str, titles: &[&str]) -> Option<String> {
 }
 
 fn clip_section(s: &str) -> String {
-    crate::transcript::truncate_chars(s, SECTION_CAP_CHARS)
+    harness_core::transcript::truncate_chars(s, SECTION_CAP_CHARS)
 }
 
 // Keep `Path` import used even if helpers are trimmed later.
@@ -258,8 +258,8 @@ mod tests {
         };
         let session = "sess-restore";
         let body = "## 決定事項 / Decisions\n\n- A を採用\n\n## 残課題 / Open todos\n\n- B\n";
-        let slug = format!("{slug_prefix}-{}-20260101-000000", crate::store::session_tag(session));
-        crate::store::Store::new(&cfg).write_note(&cwd, &slug, body).unwrap();
+        let slug = format!("{slug_prefix}-{}-20260101-000000", harness_core::store::session_tag(session));
+        harness_core::store::Store::new(cfg.store_dir.clone()).write_note(&cwd, &slug, body).unwrap();
         let input = HookInput {
             session_id: session.into(),
             source: "startup".into(),

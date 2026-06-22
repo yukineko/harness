@@ -11,7 +11,7 @@
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::model::HookInput;
+use harness_core::hook::HookInput;
 
 /// Tools whose output is the usual rot vector. Others (Edit, Write, TodoWrite…)
 /// are skipped even if their echoed response is large.

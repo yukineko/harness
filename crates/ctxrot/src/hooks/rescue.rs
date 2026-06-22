@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 
 use crate::config::Config;
-use crate::model::HookInput;
-use crate::store::{project_key, session_tag, Store};
-use crate::transcript::{self, Turn};
+use harness_core::hook::HookInput;
+use harness_core::store::{project_key, session_tag, Store};
+use harness_core::transcript::{self, Turn};
 
 const MAX_TURNS: usize = 60;
 const MAX_TURN_CHARS: usize = 1200;
@@ -43,7 +43,7 @@ pub fn write(input: &HookInput, cfg: &Config, trigger: &str) -> Option<PathBuf> 
     }
 
     let cwd = input.cwd_or_current();
-    let store = Store::new(cfg);
+    let store = Store::new(cfg.store_dir.clone());
 
     // Coalescing (P3): a manual band 2→3 climb + `/compact` can spawn several
     // near-identical rescues in minutes. Skip a *preemptive* (`band-NN%`) write

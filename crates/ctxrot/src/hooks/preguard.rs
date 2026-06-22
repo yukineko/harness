@@ -27,7 +27,7 @@
 use regex::Regex;
 
 use crate::config::Config;
-use crate::model::HookInput;
+use harness_core::hook::HookInput;
 
 /// Returns a deny reason (the model is told to reroute), or None to stay silent
 /// and let the normal permission flow proceed.
@@ -172,7 +172,7 @@ fn check_bash(input: &HookInput, cfg: &Config) -> Option<String> {
     let kind = unbounded_dump_kind(cmd)?;
 
     // Log only a short excerpt — never the full command.
-    let excerpt = crate::transcript::truncate_chars(cmd, 120);
+    let excerpt = harness_core::transcript::truncate_chars(cmd, 120);
     crate::metrics::emit(
         cfg,
         &input.session_id,

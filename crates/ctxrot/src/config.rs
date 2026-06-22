@@ -7,6 +7,10 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use harness_core::config::{env_bool, env_u64};
+// Re-exported so existing `crate::config::expand_tilde` call sites keep working.
+pub use harness_core::config::expand_tilde;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub store_dir: PathBuf,
@@ -75,24 +79,9 @@ struct FileConfig {
     guard_inject_max_chars: Option<usize>,
 }
 
-fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-}
-
 /// The `~/.ctxrot` base directory.
-pub fn base_dir() -> PathBuf {
-    home().join(".ctxrot")
-}
-
-/// Expand a leading `~` to the home directory.
-pub fn expand_tilde(s: &str) -> PathBuf {
-    if let Some(rest) = s.strip_prefix("~/") {
-        home().join(rest)
-    } else if s == "~" {
-        home()
-    } else {
-        PathBuf::from(s)
-    }
+fn base_dir() -> PathBuf {
+    harness_core::config::base_dir("ctxrot")
 }
 
 impl Default for Config {
@@ -242,15 +231,4 @@ impl Config {
         }
         band
     }
-}
-
-fn env_u64(key: &str) -> Option<u64> {
-    std::env::var(key).ok()?.trim().parse::<u64>().ok()
-}
-
-/// Parse a boolean-ish env var: `0`/`false`/`no`/`off`/empty → false, else true.
-fn env_bool(key: &str) -> Option<bool> {
-    let v = std::env::var(key).ok()?;
-    let v = v.trim().to_ascii_lowercase();
-    Some(!matches!(v.as_str(), "" | "0" | "false" | "no" | "off"))
 }

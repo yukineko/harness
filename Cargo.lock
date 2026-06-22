@@ -246,6 +246,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "harness-core",
  "regex",
  "serde",
  "serde_json",
@@ -418,6 +419,18 @@ dependencies = [
  "log",
  "regex-automata",
  "regex-syntax",
+]
+
+[[package]]
+name = "harness-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
