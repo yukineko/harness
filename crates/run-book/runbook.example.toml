@@ -1,0 +1,24 @@
+# runbook.toml — reusable procedure includes for Claude Code.
+#
+# Copy to ./runbook.toml (project) or ~/.runbook/config.toml (global). The first
+# file that exists wins; the layers are not merged. The hook only ever injects
+# the procedures a prompt explicitly asked for (via `!name`) — it never blocks a
+# turn. Set RUNBOOK_DISABLE=1 to turn it off.
+
+enabled = true
+
+# Where project procedures live (relative to the repo root). Committed with the
+# repo so the whole team gets the same `!name` macros.
+project_dir = ".runbook"
+
+# Shared, cross-project procedures.
+global_dir = "~/.runbook/runbooks"
+include_global = true
+
+# The macro prefix and the meta-macro that injects the list of runbooks.
+prefix = "!"
+index_token = "runbooks"   # typing `!runbooks` injects the index
+
+# Injection budget.
+max_chars = 12000          # total across all expanded macros in one prompt
+per_runbook_chars = 4000   # truncate a single procedure to this many chars
