@@ -449,6 +449,12 @@ fn main() {
                             // should dwell less in the high bands than guard-OFF.
                             println!("dwell A:{a:>10}  {}", metrics::fmt_dwell(&ga.band_prompts));
                             println!("dwell B:{b:>10}  {}", metrics::fmt_dwell(&gb.band_prompts));
+                            // ctxrot's own injection load (post-cap), the seed for
+                            // a cross-harness injection budget (ADR 0001).
+                            println!(
+                                "inject  A:{a:>10}  {} chars   B:{b:>10}  {} chars",
+                                ga.inject_chars, gb.inject_chars
+                            );
                             // Δ(A−B): signed gaps on the figures the guard targets.
                             let d = |x: u64, y: u64| x as i64 - y as i64;
                             println!(
