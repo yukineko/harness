@@ -5,6 +5,7 @@
 //! NEVER break the user's turn — on any error we exit 0 and stay silent.
 
 mod config;
+mod eval;
 mod hooks;
 mod install;
 mod metrics;
@@ -67,6 +68,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<MetricsAction>,
     },
+    /// Offline recall eval: does re-anchor improve recall, at what token cost?
+    Eval {
+        #[command(subcommand)]
+        action: EvalAction,
+    },
     /// statusLine command: read the status JSON on stdin, print a one-line
     /// context-usage meter (`ctxrot 52% ▮▮▯▯▯ band1 ~104k/200k`).
     Statusline,
@@ -101,6 +107,31 @@ enum MetricsAction {
     Peak {
         /// Session-id prefix (pass $CLAUDE_CODE_SESSION_ID for the current one).
         session: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvalAction {
+    /// Generate recall cases + both prompt variants + a manifest into a dir.
+    /// Feed each `*.on.txt`/`*.off.txt` to a model (see eval/run-recall.sh).
+    Gen {
+        /// Output directory for the cases + manifest.
+        #[arg(long, default_value = "eval-cases")]
+        out: PathBuf,
+        /// Number of recall cases.
+        #[arg(long, default_value_t = 9)]
+        cases: usize,
+        /// Chars of filler burying the planted decision (lost-in-the-middle).
+        #[arg(long, default_value_t = 8000)]
+        filler_chars: usize,
+    },
+    /// Score a results.jsonl (lines: {id, variant, answer}) against a manifest;
+    /// prints accuracy per variant and the re-anchor added-token cost.
+    Score {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        results: PathBuf,
     },
 }
 
@@ -414,6 +445,10 @@ fn main() {
                             );
                             row(&format!("A:{a} ({na})"), &ga);
                             row(&format!("B:{b} ({nb})"), &gb);
+                            // Occupancy shape (prompts spent per band): guard-ON
+                            // should dwell less in the high bands than guard-OFF.
+                            println!("dwell A:{a:>10}  {}", metrics::fmt_dwell(&ga.band_prompts));
+                            println!("dwell B:{b:>10}  {}", metrics::fmt_dwell(&gb.band_prompts));
                             // Δ(A−B): signed gaps on the figures the guard targets.
                             let d = |x: u64, y: u64| x as i64 - y as i64;
                             println!(
@@ -452,6 +487,25 @@ fn main() {
                 }
             }
         }
+        Command::Eval { action } => match action {
+            EvalAction::Gen { out, cases, filler_chars } => match eval::run_gen(&out, cases, filler_chars) {
+                Ok(n) => {
+                    println!("wrote {n} case(s) ×2 variants + manifest.json to {}", out.display());
+                    println!("next: feed each *.on.txt / *.off.txt to a model, then `ctxrot eval score`");
+                    println!("(or run eval/run-recall.sh, which drives `claude -p` end-to-end)");
+                }
+                Err(e) => {
+                    eprintln!("eval gen failed: {e}");
+                    std::process::exit(1);
+                }
+            },
+            EvalAction::Score { manifest, results } => {
+                if let Err(e) = eval::run_score(&manifest, &results) {
+                    eprintln!("eval score failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
         Command::Statusline => {
             // Never break the status bar: any failure prints nothing, exits 0.
             let cfg = Config::load();
@@ -565,6 +619,12 @@ keep_distill_min = 10
 # already has a rescue note newer than this many seconds (PreCompact is never
 # coalesced — it must always land before real loss). 0 disables coalescing.
 rescue_coalesce_secs = 120
+
+# Cap the guard's OWN per-turn injection (CJK-safe char count). At high band the
+# large-ref + budget + anchor blocks can stack; left unbounded the guard becomes
+# a rot source itself. Over the cap, blocks drop lowest-priority first
+# (anchor → advice → safety). 0 disables the cap (inject every block in full).
+guard_inject_max_chars = 1200
 "#;
 
 fn init() -> anyhow::Result<()> {
