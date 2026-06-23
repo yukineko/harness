@@ -2,3 +2,6 @@
 **/*.rs.bk
 Cargo.lock.bak
 .DS_Store
+
+# precommit-audit runtime telemetry (append-only, machine-local)
+.claude/audit-log.jsonl
