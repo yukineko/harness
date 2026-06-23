@@ -37,7 +37,7 @@ env:
   PLUGINS: >-
     beacon budgetguard compass condukt ctxrot deepwiki difflog donegate fugu-router
     gauge harness-status playbook precommit-audit reviewgate run-book
-    session-insights stuckguard taskprog
+    session-insights stuckguard taskprog tdd
 
 jobs:
   smoke:
