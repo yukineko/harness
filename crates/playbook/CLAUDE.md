@@ -15,13 +15,13 @@ cargo test budget_caps_selection # run one test by name
 cargo clippy --all-targets
 ```
 
-The `[profile.release]` is tuned for a tiny binary (`opt-level = "z"`, `lto`, `strip`). The committed `bin/playbook` and `bin/playbook-linux-x86_64` are the artifacts the plugin hook actually invokes (`hooks/hooks.json` runs `${CLAUDE_PLUGIN_ROOT}/bin/playbook inject`) — **rebuild and refresh those binaries when you change behavior the plugin relies on**, otherwise the installed hook runs stale code.
+The `[profile.release]` is tuned for a tiny binary (`opt-level = "z"`, `lto`, `strip`). `hooks/hooks.json` runs `${CLAUDE_PLUGIN_ROOT}/bin/playbook inject`, where **`bin/playbook` is a committed POSIX shell dispatcher** (like every other plugin in this workspace): it `uname`-selects and execs the matching `bin/playbook-<os>-<arch>` build, exiting 0 silently if none exists so the hook never breaks a turn. The per-platform binaries (`bin/playbook-darwin-arm64`, `bin/playbook-darwin-x86_64`, `bin/playbook-linux-x86_64`) are the real artifacts — **rebuild and refresh those when you change plugin-relevant behavior**, otherwise the installed hook runs stale code. **Never overwrite `bin/playbook` itself with a raw binary** — that ships a host-only build to all platforms and triggers `Exec format error` on others.
 
 ### Refreshing the bundled binaries
 
 ```sh
-make bins     # refresh both bin/playbook (host) and bin/playbook-linux-x86_64
-make mac      # just the native macOS binary
+make bins     # refresh bin/playbook-darwin-<arch> and bin/playbook-linux-x86_64
+make mac      # just the native macOS binary (bin/playbook-darwin-<arch>)
 make linux    # just the Linux x86_64 cross-build
 ```
 
