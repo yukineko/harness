@@ -24,19 +24,44 @@ args = [
 spec_dir = "specs"
 # rigor 未達 (不足/矛盾) で立てる sentinel。SessionStart hook で人間を pull する (HOTL)。
 sentinel = ".specforge-pending"
+# ④ prompt-build: requirement ごとの impl prompt の出力先。
+impl_prompt_dir = "specs/prompts"
+# ⑤/⑥ impl 結果と evidence gate の JSON 出力先。
+impl_dir = "specs/impl"
+# ⑤ parallel-impl が requirement ごとに作る git worktree の置き場。
+worktree_base = ".specforge-worktrees"
 
 [prompt]
 # カスタム normalize テンプレート (省略時は埋め込み既定)。
 normalize_template = ""
+# カスタム impl prompt テンプレート (省略時は埋め込み既定)。
+impl_template = ""
 
-# 使い方:
+# 使い方 (パイプライン全体):
+#
+#   # ② draft + §5.3 rigor pre-flight
 #   specforge draft --id 2026-06-17-login-rate-limit \
 #     --title "ログイン試行のレート制限" \
 #     --req requirements/login.md \
 #     --canon docs/auth.md#rate-limit
 #   # → 厳格化できれば specs/<id>.toml(status=draft)。できなければ sentinel(escalation)。
 #
+#   # ③ (specguard D2 で機械監査) → 人間レビュー
 #   specforge ratify --id 2026-06-17-login-rate-limit -m "受け入れ条件に合意"
 #   # → 人間の合意で draft -> ratified に昇格 (canon commit に pin)。
+#
+#   # ④ prompt-build: ratified spec から requirement ごとの impl prompt を生成
+#   specforge impl-prompt --id 2026-06-17-login-rate-limit
+#
+#   # ⑤ parallel-impl: requirement ごとに git worktree を切り、並列で実装エージェント起動
+#   specforge implement --id 2026-06-17-login-rate-limit
+#   # → specs/impl/<id>-impl.json と <id>-evidence.json を書き、証拠ゲートを表示。
+#
+#   # ⑥ evidence+agreement gate: 証拠を確認して人間が合意
+#   specforge evidence --id 2026-06-17-login-rate-limit   # 証拠を再表示
+#   specforge agree    --id 2026-06-17-login-rate-limit -m "テスト pass を確認"
+#
+#   # ⑦ merge: 合意済みなら done の worktree を main に統合
+#   specforge merge --id 2026-06-17-login-rate-limit
 #
 #   specforge ack    # escalation に対応したら sentinel をクリア

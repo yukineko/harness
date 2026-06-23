@@ -35,8 +35,9 @@ env:
   # Distributable plugins, by crate directory (the script reads the package name
   # from each Cargo.toml, so run-book → package runbook is handled).
   PLUGINS: >-
-    beacon condukt ctxrot deepwiki donegate gauge playbook
-    precommit-audit reviewgate run-book session-insights stuckguard
+    beacon budgetguard condukt ctxrot deepwiki difflog donegate fugu-router
+    gauge harness-status playbook precommit-audit reviewgate run-book
+    session-insights stuckguard taskprog
 
 jobs:
   smoke:

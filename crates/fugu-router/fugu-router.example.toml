@@ -1,0 +1,30 @@
+# fugu-router configuration (place at ~/.fugu-router/config.toml).
+# All values shown are defaults; delete any line to keep the default.
+
+# Master switch. Set false (or env FUGU_ROUTER_DISABLED=1) to no-op everything.
+enabled = true
+
+# Episode store (the learning signal). One JSON object per line.
+# store_file = "~/.fugu-router/episodes.jsonl"
+
+# How many nearest past tasks to consider when routing.
+k = 6
+
+# Minimum lexical similarity for a past task to count as a neighbour (0..1).
+sim_threshold = 0.15
+
+# A model is eligible only if its neighbours passed at least this rate (0..1).
+pass_threshold = 0.7
+
+# ...and only if there are at least this many neighbour samples for that model.
+# Below this, fugu-router falls back to the keyword prior (cold start).
+min_samples = 2
+
+# Exploration. true = Thompson sampling (occasionally tries an unproven cheaper
+# tier and learns from the result); false = deterministic "cheapest that clears
+# the threshold" with no exploration.
+explore = true
+
+# Max bytes of the routing-memory summary injected at UserPromptSubmit
+# (0 = no limit).
+inject_limit = 1500

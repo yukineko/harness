@@ -1,0 +1,20 @@
+[package]
+name = "difflog"
+version = "0.1.0"
+edition = "2021"
+description = "Session diff-log for Claude Code: on SessionEnd, record a structured git diff summary (files changed, net insertions/deletions, changed symbols) and link it to the session's cost record. A /difflog skill can then generate a human-readable narrative from that summary."
+license = "MIT"
+
+[[bin]]
+name = "difflog"
+path = "src/main.rs"
+
+[dependencies]
+harness-core = { path = "../harness-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["clock"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+anyhow = "1"
