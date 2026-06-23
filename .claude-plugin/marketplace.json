@@ -1,0 +1,101 @@
+{
+  "name": "yukineko",
+  "owner": {
+    "name": "yukineko"
+  },
+  "metadata": {
+    "description": "yukineko's subscription-native Claude Code harness — condukt orchestration, fugu-router model routing, spec/verify gates, and HOTL tooling. No API key; bundled per-platform binaries."
+  },
+  "plugins": [
+    {
+      "name": "beacon",
+      "source": "crates/beacon",
+      "description": "Desktop & webhook notifications for Claude Code: Stop and Notification hooks that ping you (macOS/Linux desktop, Slack, generic webhook, or a custom command) when a turn finishes or Claude needs your input — so you can step away from long sessions. Subscription-native (two hooks + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "budgetguard",
+      "source": "crates/budgetguard",
+      "description": "Real-time cost budget gate for Claude Code: on Stop, read the session transcript, compute USD cost, and block the turn when session or daily limits are exceeded — feeding the overage back so the agent winds down gracefully. Subscription-native (one Stop hook + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "condukt",
+      "source": "crates/condukt",
+      "description": "Deterministic orchestration engine for Claude Code: an interpreter/worker/verifier skill plus a Rust binary that schedules tasks into parallel/serial batches by file-conflict analysis, manages the git-worktree lifecycle, tracks run state, and gates completion. Subscription-native (skill + agents + hook, no API key)."
+    },
+    {
+      "name": "ctxrot",
+      "source": "crates/ctxrot",
+      "description": "Context-rot guard for Claude Code: detect, rescue, restore, distill, and CONTROL what loads into context (rule-based allow/deny gate + /ctx pin/drop/load + switchable carryover). Subscription-native (hooks + subagent + skill, no API key)."
+    },
+    {
+      "name": "deepwiki",
+      "source": "crates/deepwiki",
+      "description": "Repository architecture wiki for Claude Code: a /deepwiki command that maps the repo with a bundled Rust scanner, has a subagent write & refresh hierarchical wiki pages (.deepwiki/*.md) with source links, and tracks freshness against git. Inspired by Devin Wiki. Subscription-native (binary + subagent + command, no API key)."
+    },
+    {
+      "name": "difflog",
+      "source": "crates/difflog",
+      "description": "Session diff-log for Claude Code: snapshot HEAD at SessionStart, write a structured git diff summary (commits, stat, files changed, bounded diff body) at SessionEnd. A /difflog skill can generate a human-readable narrative from the log. Subscription-native (no API key)."
+    },
+    {
+      "name": "donegate",
+      "source": "crates/donegate",
+      "description": "Completion-verification gate for Claude Code: on Stop, run your acceptance commands as subprocesses and block the stop until every required check is green, feeding failures back for an auto-fix loop. Subscription-native (one hook + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "fugu-router",
+      "source": "crates/fugu-router",
+      "description": "fugu-style per-model routing for Claude Code orchestration. Learns from past task outcomes (which model passed verification, at what cost) and picks the cheapest Claude tier that historically clears similar work. Feeds condukt's suggested_model deterministically; records outcomes back to a local episode store. No API key, no embedding service — lexical k-NN over a JSONL store."
+    },
+    {
+      "name": "gauge",
+      "source": "crates/gauge",
+      "description": "Local LLMOps telemetry for Claude Code: a Stop hook that reads each session's transcript and records token usage, cache hits, tool calls, latency, and estimated cost to a local store — then `gauge report` rolls it up by project, model, and day. Observability for your own agent runs, subscription-native (one hook + bundled Rust binary, no API key, nothing leaves the machine)."
+    },
+    {
+      "name": "harness-status",
+      "source": "crates/harness-status",
+      "description": "Unified HOTL status dashboard for Claude Code. A /status command runs a bundled Rust binary that aggregates budgetguard's spend ledger, gauge's session records (recent sessions + cost), and taskprog's progress file into one human-on-the-loop view. Subscription-native (binary + command, no API key, no hooks)."
+    },
+    {
+      "name": "playbook",
+      "source": "crates/playbook",
+      "description": "Project knowledge retrieval + injection for Claude Code: a UserPromptSubmit hook that pulls the curated atomic notes relevant to your prompt and injects them under a strict char budget, so conventions and gotchas resurface without re-typing. Subscription-native (one hook + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "precommit-audit",
+      "source": "crates/precommit-audit",
+      "description": "Config-driven pre-commit static audit for Claude Code: a Stop hook that runs generic checks plus your project rules (from a TOML file) over the pending diff — shelling out to git and optional linters — and blocks the stop, feeding findings back to the agent until they're clean. Subscription-native (one hook + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "reviewgate",
+      "source": "crates/reviewgate",
+      "description": "Code-review gate for Claude Code: on Stop, review the diff before the agent can declare done. In inject mode it blocks the stop and injects a review rubric so the running agent self-reviews (no API key); in subprocess mode it runs an independent reviewer and surfaces only its findings. Subscription-native, bundled Rust binary."
+    },
+    {
+      "name": "runbook",
+      "source": "crates/run-book",
+      "description": "Reusable procedure includes for Claude Code: a UserPromptSubmit hook that expands `!name` macros in your prompt into the matching repo-committed procedure (.runbook/<name>.md), so recurring workflows run the same way every time. Inspired by Devin Playbooks; distinct from knowledge injection. Subscription-native (one hook + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "session-insights",
+      "source": "crates/session-insights",
+      "description": "Per-session work metrics for Claude Code: PostToolUse + Stop hooks roll up tool calls, turns, files touched, a size class (XS–XL) and a work category per session, viewable with `session-insights report` and optionally logged as a dated note to an Obsidian vault. Inspired by Devin Session Insights. Subscription-native (two hooks + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "specguard",
+      "source": "crates/specguard",
+      "description": "仕様↔実装 整合監査ハーネスを Claude Code から subscription-native に実行する。各 shard を read-only な in-session subagent で監査し (nested claude --print なし)、決定的ハーネス (scope/render/parse/report) は specguard バイナリに委譲する。"
+    },
+    {
+      "name": "stuckguard",
+      "source": "crates/stuckguard",
+      "description": "Stuck-loop detector + escalation for Claude Code: a PostToolUse hook that spots repeated identical actions and edit thrash, then injects an escalating nudge to change approach or ask the user for help. Subscription-native (one hook + bundled Rust binary, no API key)."
+    },
+    {
+      "name": "taskprog",
+      "source": "crates/taskprog",
+      "description": "Multi-session progress file for Claude Code. Injects .claude/progress.md at SessionStart so the agent knows what is pending; at Stop it prompts the agent to keep the file current. Enables seamless HOTL handoff across sessions."
+    }
+  ]
+}
