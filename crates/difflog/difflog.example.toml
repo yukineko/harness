@@ -1,0 +1,20 @@
+# difflog.toml — session diff-log for Claude Code
+#
+# Place in the project root or home (~/.difflog/config.toml).
+
+enabled = true
+
+# Where to write session diff-log markdown files.
+# log_dir = "~/.difflog/logs"
+
+# Max bytes of verbatim `git diff` to include. 0 = stat only (fastest).
+diff_body_limit = 4096
+
+# Globs of files to exclude from the diff (lockfiles, minified assets, etc.).
+exclude_globs = [
+  "Cargo.lock",
+  "package-lock.json",
+  "*.min.js",
+  "*.min.css",
+  "*.snap",
+]

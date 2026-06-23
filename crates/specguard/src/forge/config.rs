@@ -78,6 +78,15 @@ pub struct OutputConfig {
     /// so a SessionStart hook can pull the human in (HOTL).
     #[serde(default = "default_sentinel")]
     pub sentinel: String,
+    /// Directory for rendered impl prompts (`<spec_id>-<req_id>.prompt.md`).
+    #[serde(default = "default_impl_prompt_dir")]
+    pub impl_prompt_dir: String,
+    /// Directory for impl results (`<spec_id>-impl.json`) and evidence gate.
+    #[serde(default = "default_impl_dir")]
+    pub impl_dir: String,
+    /// Base directory for git worktrees created during ⑤ parallel-impl.
+    #[serde(default = "default_worktree_base")]
+    pub worktree_base: String,
 }
 
 impl Default for OutputConfig {
@@ -85,6 +94,9 @@ impl Default for OutputConfig {
         OutputConfig {
             spec_dir: default_spec_dir(),
             sentinel: default_sentinel(),
+            impl_prompt_dir: default_impl_prompt_dir(),
+            impl_dir: default_impl_dir(),
+            worktree_base: default_worktree_base(),
         }
     }
 }
@@ -96,10 +108,23 @@ pub struct PromptConfig {
     /// Empty → embedded default.
     #[serde(default)]
     pub normalize_template: String,
+    /// Path (relative to the config file) to a custom impl prompt template.
+    /// Empty → embedded default.
+    #[serde(default)]
+    pub impl_template: String,
 }
 
 fn default_dot() -> String {
     ".".to_string()
+}
+fn default_impl_prompt_dir() -> String {
+    "specs/prompts".to_string()
+}
+fn default_impl_dir() -> String {
+    "specs/impl".to_string()
+}
+fn default_worktree_base() -> String {
+    ".specforge-worktrees".to_string()
 }
 fn default_spec_dir() -> String {
     "specs".to_string()

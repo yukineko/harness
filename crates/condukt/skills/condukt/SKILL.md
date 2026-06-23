@@ -2,7 +2,7 @@
 name: condukt
 description: 課題を解釈→タスク分割→合意→並列/直列スケジュール(決定論)→worktree並列実装→検証→完了ゲートまで回す合意駆動オーケストレーター。複数ステップ・複数ファイルにまたがる大きめの課題に使う。分割の衝突解析・worktree・状態管理・ゲートは condukt バイナリが決定論的に担い、LLM は解釈・実装・検証に集中する。
 argument-hint: [課題文]
-allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(git:*), Read, Write, Edit
+allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash(git:*), Read, Write, Edit
 ---
 
 # /condukt — 決定論エンジン駆動オーケストレーター
@@ -43,13 +43,24 @@ allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(git:*), Read, Write,
 ```
 `open_questions` 相当が出たら、この時点で `AskUserQuestion` を 1 回使って解消する。
 
-### Phase 2 — 検証 + スケジュール (決定論)
+### Phase 2 — 検証 + ルーティング + スケジュール (決定論)
 Decomposition JSON を一時ファイルに書き:
 ```
 condukt validate --file <json>        # 不正なら理由を提示しユーザーに差し戻し
-condukt schedule  --file <json>       # → {batches, serial, gated, warnings}
+
+# (任意) fugu-router があれば、学習済み方策で各タスクの suggested_model を上書きする。
+# 無ければ interpreter の suggested_model のまま続行 (soft 依存・壊さない)。
+if command -v fugu-router >/dev/null 2>&1; then
+  fugu-router route --file <json> --report <route.json> > <json.routed>
+else
+  cp <json> <json.routed>
+fi
+
+condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 ```
-`warnings` (shared_glob により serial 降格 等) はユーザーに見せる。
+- `fugu-router route` は「似た過去タスクで検証を通った最安ティア」を選び `suggested_model` を決定論的に確定する (fugu のコーディネータ相当を実績検索で近似)。
+- `<route.json>` にはタスク id ごとの `verifier_model`(独立検証モデル)・`basis`・`rationale` が入る。Phase 6 の検証モデル選択に使う。
+- `warnings` (shared_glob により serial 降格 等) はユーザーに見せる。以降 `<json.routed>` を正とする。
 
 ### Phase 3 — 合意 (main loop / AskUserQuestion)
 `schedule` 結果 (並列バッチ / serial / gated) を `AskUserQuestion` で提示し合意を取る。割り直しが
@@ -72,10 +83,18 @@ RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、ru
 - バッチ内は 1 メッセージで複数 `Task` を同時発行して並列化する。
 - `serial` タスクは worktree に出さず main で順に実装し commit。
 
-### Phase 6 — 検証 (verifier agent)
-done の各タスクを `condukt-verifier` 相当で done_criteria 照合。pass なら
-`condukt state set --run $RID --task <id> --status verified`、fail なら `--status failed` にし
-理由を控える。
+### Phase 6 — 検証 (verifier agent) + 実績の記録
+done の各タスクを `condukt-verifier` 相当で done_criteria 照合する。検証する子の **model は
+`<route.json>` の `verifier_model`**(worker と別ティアの独立検証。無ければ既定 sonnet)を使う。
+pass なら `condukt state set --run $RID --task <id> --status verified`、fail なら `--status failed`
+にし理由を控える。
+
+検証後、**結果を fugu-router に記録**して次回のルーティングを賢くする (soft 依存):
+```
+fugu-router record --title "<task.title>" --files "<task.touched_files をカンマ区切り>" \
+  --class <task.class> --model <worker に使ったモデル> \
+  --status verified|failed --cost <gauge から取れれば>
+```
 
 ### Phase 7 — 完了ゲート + 統合
 ```

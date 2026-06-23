@@ -1,0 +1,24 @@
+# budgetguard.toml — cost budget gate for Claude Code
+#
+# Place in the project root (budgetguard.toml) or home (~/.budgetguard/config.toml).
+# All limits default to 0 = disabled. The gate only activates for the levels you set.
+
+enabled = true
+
+# state_dir = "~/.budgetguard/state"   # where the daily ledger lives
+
+# Per-session limits (USD). Applies to the current session's transcript.
+[session]
+warn_usd  = 0.50   # emit an advisory warning (no block)
+block_usd = 2.00   # block the stop and ask Claude to wind down
+
+# Per-calendar-day limits (USD). Aggregates all sessions on the same date.
+[daily]
+warn_usd  = 5.00
+block_usd = 20.00
+
+# Override built-in pricing for specific models (substring match on model id).
+# [[price]]
+# pattern = "opus"
+# input   = 5.0    # USD per 1M input tokens
+# output  = 25.0   # USD per 1M output tokens

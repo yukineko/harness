@@ -41,7 +41,8 @@ model: opus
 - `touched_files` は**正直に広めに**。衝突解析はこのリストに依存する。触る可能性があるなら挙げる。
   迷うなら glob で広く取る (`src/auth/**`) — 過剰直列化は安全側、取りこぼしは事故。
 - `deps` は本当に順序が要るものだけ。過剰な依存は並列度を下げる。
-- `suggested_model`: 機械的作業=sonnet、設計判断を含む=opus、軽量整形=haiku。
+- `suggested_model`: 機械的作業=sonnet、設計判断を含む=opus、軽量整形=haiku。これは**初期の当て**で
+  よい — `fugu-router` がある環境では Phase 2 で過去実績から学習した方策に上書きされる(無ければこの値を使う)。
 - `done_criteria` は「テストが通る」「エンドポイントが 204 を返す」など**観測可能**に。
 
 スキーマに無いキーは足さない。`condukt validate` が通る JSON を返すこと。

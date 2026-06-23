@@ -1,17 +1,25 @@
 //! specforge — the generation-side harness (sibling to specguard, DESIGN.md).
 //!
-//! This binary implements the *entry gate* of the generation pipeline: ②normalize
-//! a (possibly coarse) requirement into an Agent-executable Spec IR, gated by the
-//! §5.3 rigor pre-flight (G1 接地 / G2 沈黙ゼロ / G3 矛盾ゼロ / G4 反証可能).
+//! This binary drives the generation pipeline end to end:
+//!   ②normalize  → `draft`        (rigor pre-flight G1–G4; sentinel on shortfall)
+//!   ③ratify     → `ratify`       (human consent ceremony, pins canon commit)
+//!   ④prompt     → `impl-prompt`  (render one impl prompt per requirement)
+//!   ⑤impl       → `implement`    (parallel impl agents, one git worktree each)
+//!   ⑥evidence   → `evidence`/`agree`  (typed evidence gate + human agreement)
+//!   ⑦merge      → `merge`        (merge passing worktrees after agreement)
 //!
-//! HOTL: the judgment (can this be rigorously specified? quote the canon) lives
-//! in the agent; this binary is the deterministic harness. When the rigor gate
-//! is not met the harness does NOT fabricate a draft — it raises a sentinel and
-//! pulls the human in (escalation). A draft becomes canon only via `ratify`
-//! (human consent). The human sits at the boundaries; the middle is mechanical.
+//! HOTL: the judgment (can this be rigorously specified? does the impl satisfy
+//! the acceptance criteria?) lives in the agent; this binary is the deterministic
+//! harness (scope, render, spawn, parse, gate). When the rigor gate is not met the
+//! harness does NOT fabricate a draft — it raises a sentinel and pulls the human
+//! in. A draft becomes canon only via `ratify`, and worktrees merge only after
+//! `agree` — human consent at both boundaries; the middle is mechanical.
 
 mod agent;
 mod config;
+mod evidence;
+mod impl_prompt;
+mod implement;
 mod ir;
 mod parse;
 mod prompt;
@@ -83,6 +91,40 @@ enum Command {
     },
     /// Clear the sentinel after a human has handled the escalation.
     Ack,
+    /// ④ Render per-requirement impl prompts for a ratified spec (no agent call).
+    ImplPrompt {
+        /// Spec id to render prompts for.
+        #[arg(long)]
+        id: String,
+    },
+    /// ⑤ Spawn parallel impl agents (one git worktree per requirement).
+    Implement {
+        /// Spec id (must be ratified; exits 6 if not).
+        #[arg(long)]
+        id: String,
+    },
+    /// ⑥ Show the evidence gate for a completed implementation run.
+    Evidence {
+        /// Spec id to show evidence for.
+        #[arg(long)]
+        id: String,
+    },
+    /// ⑥ Record human agreement with the evidence gate so merges can proceed.
+    Agree {
+        #[arg(long)]
+        id: String,
+        /// Why this implementation is accepted.
+        #[arg(short = 'm', long = "reason")]
+        reason: String,
+    },
+    /// ⑦ Merge passing worktrees into main after agreement.
+    Merge {
+        #[arg(long)]
+        id: String,
+        /// Merge only a specific requirement (default: all passing).
+        #[arg(long)]
+        req: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -146,6 +188,11 @@ fn run(cli: &Cli) -> Result<u8> {
         }
         Command::Ratify { id, reason } => ratify(&l, id, reason),
         Command::Ack => ack(&l),
+        Command::ImplPrompt { id } => cmd_impl_prompt(&l, id),
+        Command::Implement { id } => cmd_implement(&l, id),
+        Command::Evidence { id } => cmd_evidence(&l, id),
+        Command::Agree { id, reason } => cmd_agree(&l, id, reason),
+        Command::Merge { id, req } => cmd_merge(&l, id, req.as_deref()),
     }
 }
 
@@ -402,4 +449,221 @@ fn resolve_date(cli_date: Option<String>) -> String {
 
 fn canonicalize(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p).or_else(|_| Ok(p.to_path_buf()))
+}
+
+// ── ④ impl-prompt ────────────────────────────────────────────────────────────
+
+fn load_impl_template(l: &Loaded) -> Result<String> {
+    if l.cfg.prompt.impl_template.trim().is_empty() {
+        return Ok(impl_prompt::DEFAULT_TEMPLATE.to_string());
+    }
+    let p = l.config_dir.join(&l.cfg.prompt.impl_template);
+    let template = std::fs::read_to_string(&p)
+        .with_context(|| format!("reading impl template {}", p.display()))?;
+    let missing = impl_prompt::missing_placeholders(&template);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "impl template {} は必須 placeholder を欠く: {}",
+            p.display(),
+            missing.join(", ")
+        );
+    }
+    Ok(template)
+}
+
+fn impl_prompt_dir(l: &Loaded) -> PathBuf {
+    l.repo_root.join(&l.cfg.output.impl_prompt_dir)
+}
+
+fn impl_dir(l: &Loaded) -> PathBuf {
+    l.repo_root.join(&l.cfg.output.impl_dir)
+}
+
+fn worktree_base(l: &Loaded) -> PathBuf {
+    l.repo_root.join(&l.cfg.output.worktree_base)
+}
+
+/// ④ Render per-requirement impl prompts for a ratified spec (no agent call).
+fn cmd_impl_prompt(l: &Loaded, id: &str) -> Result<u8> {
+    let spec = ir::Spec::load(&spec_path(l, id))?;
+    if spec.spec.status != "ratified" {
+        anyhow::bail!(
+            "spec '{}' は ratified ではない (status: {}) — 先に `specforge ratify --id {id}` を実行。",
+            id,
+            spec.spec.status
+        );
+    }
+    let template = load_impl_template(l)?;
+    let prompts = impl_prompt::render_all(&template, &l.cfg.project.name, &spec, &l.date);
+    let dir = impl_prompt_dir(l);
+    let paths = impl_prompt::write_prompts(&dir, id, &prompts)?;
+    println!("specforge: {} 件の impl prompt を書いた:", paths.len());
+    for p in &paths {
+        println!("  {}", p.display());
+    }
+    println!("次: `specforge implement --id {id}` で並列実装を起動する。");
+    Ok(EXIT_OK)
+}
+
+// ── ⑤ implement ──────────────────────────────────────────────────────────────
+
+/// ⑤ Spawn parallel impl agents (one git worktree per requirement).
+fn cmd_implement(l: &Loaded, id: &str) -> Result<u8> {
+    let spec = ir::Spec::load(&spec_path(l, id))?;
+    if spec.spec.status != "ratified" {
+        eprintln!(
+            "specforge: spec '{}' は ratified ではない — 実装を拒否 (EXIT_UNRATIFIED_SPEC)。",
+            id
+        );
+        return Ok(EXIT_UNRATIFIED_SPEC);
+    }
+
+    // Verify fingerprint hasn't changed since ratification.
+    if let Some(ref rat) = spec.spec.ratification {
+        let current_fp = spec.fingerprint();
+        if current_fp != rat.fingerprint {
+            anyhow::bail!(
+                "spec '{}' は批准後に変更された (fingerprint 不一致)。再批准してください。",
+                id
+            );
+        }
+    }
+
+    let template = load_impl_template(l)?;
+    let prompts = impl_prompt::render_all(&template, &l.cfg.project.name, &spec, &l.date);
+    if prompts.is_empty() {
+        anyhow::bail!("spec '{}' に requirement が無い", id);
+    }
+
+    let wb = worktree_base(l);
+    println!(
+        "specforge: {} requirements を並列実装 (cap {})...",
+        prompts.len(),
+        implement::MAX_PARALLEL
+    );
+
+    let tasks: Vec<implement::TaskInput> = prompts
+        .into_iter()
+        .map(|(req_id, prompt)| implement::TaskInput {
+            spec_id: id.to_string(),
+            req_id,
+            prompt,
+        })
+        .collect();
+
+    let results = implement::run_parallel(&l.repo_root, tasks, &wb, &l.cfg.agent);
+
+    // Persist results and build evidence.
+    let idir = impl_dir(l);
+    let results_path = implement::write_results(&idir, id, &results)?;
+    let report = evidence::build(id, &l.date, &results);
+    let ev_path = evidence::write(&idir, &report)?;
+
+    println!();
+    evidence::print_summary(&report);
+    println!();
+    println!("結果: {}  証拠: {}", results_path.display(), ev_path.display());
+    Ok(EXIT_OK)
+}
+
+// ── ⑥ evidence / agree ───────────────────────────────────────────────────────
+
+/// Load the persisted evidence report, or regenerate a fresh (pending) one from
+/// the raw impl results if the evidence file is missing. A persisted report wins
+/// because it carries the human's gate decision; the fallback keeps the gate
+/// usable if the evidence file was deleted but impl results survive.
+fn load_or_build_evidence(l: &Loaded, id: &str) -> Result<evidence::EvidenceReport> {
+    let dir = impl_dir(l);
+    match evidence::load(&dir, id) {
+        Ok(r) => Ok(r),
+        Err(_) => {
+            let results = implement::load_results(&dir, id).with_context(|| {
+                format!("no evidence or impl results for spec '{id}' — run `specforge implement --id {id}` first")
+            })?;
+            Ok(evidence::build(id, &l.date, &results))
+        }
+    }
+}
+
+fn cmd_evidence(l: &Loaded, id: &str) -> Result<u8> {
+    let report = load_or_build_evidence(l, id)?;
+    evidence::print_summary(&report);
+    Ok(EXIT_OK)
+}
+
+fn cmd_agree(l: &Loaded, id: &str, reason: &str) -> Result<u8> {
+    if reason.trim().is_empty() {
+        anyhow::bail!("合意には理由が必要です (-m \"...\")");
+    }
+    // Ensure an evidence report exists on disk (regenerate from impl results if
+    // needed) before recording agreement, so `agree` works even if only the raw
+    // impl results survived.
+    let report = load_or_build_evidence(l, id)?;
+    evidence::write(&impl_dir(l), &report)?;
+    let report = evidence::record_agreement(&impl_dir(l), id, reason)?;
+    println!("specforge: 合意を記録した (gate: agreed) — {} requirements", report.total);
+    println!("  次: `specforge merge --id {id}` で passing worktrees を統合できます。");
+    Ok(EXIT_OK)
+}
+
+// ── ⑦ merge ──────────────────────────────────────────────────────────────────
+
+fn cmd_merge(l: &Loaded, id: &str, req_filter: Option<&str>) -> Result<u8> {
+    let report = load_or_build_evidence(l, id)?;
+    if !report.is_gate_open() {
+        anyhow::bail!(
+            "evidence gate が closed (status: {}) — 先に `specforge agree --id {id} -m \"理由\"` を実行。",
+            report.gate_status
+        );
+    }
+
+    let items_to_merge: Vec<_> = report
+        .items
+        .iter()
+        .filter(|item| item.is_done())
+        .filter(|item| req_filter.map_or(true, |f| item.req_id == f))
+        .collect();
+
+    if items_to_merge.is_empty() {
+        println!("specforge: merge 対象の done requirement が無い。");
+        return Ok(EXIT_OK);
+    }
+
+    println!("specforge: {} worktrees を merge...", items_to_merge.len());
+    let mut merged = 0usize;
+    for item in &items_to_merge {
+        let wt_path = match &item.worktree {
+            Some(p) => std::path::PathBuf::from(p),
+            None => {
+                eprintln!("  skip {} — worktree path が記録されていない", item.req_id);
+                continue;
+            }
+        };
+        let branch = format!("specforge/{id}/{}", item.req_id);
+        // git merge --no-ff the worktree branch into HEAD.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&l.repo_root)
+            .args(["merge", "--no-ff", "-m"])
+            .arg(format!("specforge: merge {id}/{} (evidence agreed)", item.req_id))
+            .arg(&branch)
+            .output()
+            .context("git merge")?;
+        if out.status.success() {
+            println!("  ✔ merged {}", item.req_id);
+            // Clean up the worktree.
+            let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&l.repo_root)
+                .args(["worktree", "remove", "--force"])
+                .arg(&wt_path)
+                .output();
+            merged += 1;
+        } else {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("  ✗ merge {} failed: {}", item.req_id, stderr.trim());
+        }
+    }
+    println!("specforge: {merged}/{} worktrees をマージした。", items_to_merge.len());
+    Ok(EXIT_OK)
 }
