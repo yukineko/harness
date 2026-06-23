@@ -33,6 +33,19 @@
       }
     },
     {
+      "name": "compass",
+      "description": "Goal re-grounding + next-move derivation upstream of condukt for Claude Code: when the goal goes fuzzy or you stall after finishing a chunk, it carves the project charter (north star + definition of done + current gap) through an interrogate loop, then routes only the right-sized next move into condukt while parking side-quests to taskprog. Subscription-native (SessionStart nudge + Stop breadcrumb hooks + /compass skill + bundled Rust binary, no API key).",
+      "author": {
+        "name": "yukineko"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/yukineko/harness.git",
+        "path": "crates/compass",
+        "ref": "main"
+      }
+    },
+    {
       "name": "condukt",
       "description": "Deterministic orchestration engine for Claude Code: an interpreter/worker/verifier skill plus a Rust binary that schedules tasks into parallel/serial batches by file-conflict analysis, manages the git-worktree lifecycle, tracks run state, and gates completion. Subscription-native (skill + agents + hook, no API key).",
       "author": {
