@@ -1,0 +1,18 @@
+# tdd.toml — test-first gate for Claude Code. Copy to your project root.
+#
+# On Stop, `tdd gate` blocks the turn when implementation code was ADDED without
+# an accompanying test. `tdd red`/`green`/`verify` (driven by the /tdd skill)
+# make test-first verifiable.
+
+enabled = true
+max_attempts = 3            # give up (allow stop) after N consecutive blocks
+reset_after_secs = 600      # attempt counter resets after this idle gap
+min_added_impl_lines = 1    # need a test once this many impl lines are added
+
+test_cmd = "cargo test"     # default for `tdd red` / `tdd green`
+proof_dir = ".tdd"          # where RED/GREEN proofs are written
+
+# Override the language-aware defaults if needed:
+# impl_globs = ["**/*.rs", "**/*.py", "**/*.ts", "**/*.go"]
+# test_path_globs = ["**/tests/**", "**/test_*.py", "**/*.spec.*", "**/*_test.go"]
+# test_markers = ['#\[\s*test', '\bdef\s+test_', '\bfunc\s+Test\w', '\b(it|test|describe)\s*\(']
