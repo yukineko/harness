@@ -17,14 +17,20 @@ cd "$(dirname "$0")/.."
 
 target="${1:-}"
 
+# In a cargo workspace, artifacts land in the workspace-root target/, not the
+# member crate's — resolve it instead of assuming ./target.
+target_dir="$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
+  | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+target_dir="${target_dir:-../../target}"
+
 if [ -n "$target" ]; then
   rustc_triple="$target"
   cargo build --release --target "$target"
-  src="target/$target/release/ctxrot"
+  src="$target_dir/$target/release/ctxrot"
 else
   rustc_triple="$(rustc -vV | sed -n 's/^host: //p')"
   cargo build --release
-  src="target/release/ctxrot"
+  src="$target_dir/release/ctxrot"
 fi
 
 # normalize <triple> -> <os>-<arch>
