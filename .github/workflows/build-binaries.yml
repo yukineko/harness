@@ -1,6 +1,6 @@
 name: build & commit plugin binaries
 
-# Phase F: build the per-plugin bundled binaries on real runners and commit them
+# Build the per-plugin bundled binaries on real runners and commit them
 # back into crates/<plugin>/bin/. The committed per-platform binaries are what
 # `/plugin install` ships, so end users need neither cargo nor an API key.
 #
