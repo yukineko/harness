@@ -13,6 +13,7 @@
 pub mod config;
 pub mod hook;
 pub mod install;
+pub mod interrogate;
 pub mod metrics;
 pub mod pricing;
 pub mod store;
