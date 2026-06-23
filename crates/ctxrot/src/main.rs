@@ -90,6 +90,19 @@ enum Command {
         #[command(subcommand)]
         action: CtxAction,
     },
+    /// Internal: the DETACHED async-distill worker spawned by the PreCompact
+    /// rescue when `distill_on_compact` is on. Runs `claude -p` on the
+    /// pre-compaction transcript and writes a high-quality `distill-*` note. Not a
+    /// hook — invoked by ctxrot itself; not for direct use.
+    #[command(hide = true)]
+    DistillBg {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        transcript: String,
+        #[arg(long)]
+        cwd: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -255,6 +268,10 @@ fn main() {
                     // PreCompact does not inject context; report to stderr only.
                     eprintln!("[ctxrot] rescue note saved: {}", path.display());
                 }
+                // Opt-in (distill_on_compact): kick off a detached, high-quality
+                // `claude -p` distill of the pre-compaction transcript. Fire-and-
+                // forget — never blocks this 10s hook; the next guard re-injects it.
+                hooks::distill::spawn_detached(&input, &cfg);
             }
         }),
         Command::Restore => run_hook(|| {
@@ -630,6 +647,15 @@ fn main() {
                 }
             }
         }
+        Command::DistillBg { session, transcript, cwd } => run_hook(move || {
+            // Detached worker: respects the same global kill-switch and stays
+            // silent on any failure (the rescue note is the safety net).
+            if Config::disabled() {
+                return;
+            }
+            let cfg = Config::load();
+            hooks::distill::run_bg(&session, &transcript, &cwd, &cfg);
+        }),
     }
 }
 
@@ -777,6 +803,23 @@ restore_enabled = true
 inject_decisions = true
 inject_todos = true
 inject_pinned = true
+
+# --- async LLM distill on compaction -----------------------------------------
+# Opt-in. When ON, every /compact (manual or auto) — after the instant
+# deterministic rescue note — spawns a DETACHED `claude -p` that distills the
+# full pre-compaction transcript into a high-quality distill-* note. This never
+# blocks compaction; the next prompt's guard re-injects the result so the
+# post-compact context recovers (PreCompact/PostCompact can't inject). It spends
+# one model call per compaction, on your session auth (subscription; no API key).
+# env: CTXROT_DISTILL_ON_COMPACT=1
+distill_on_compact = false
+# Headless command for the distill (prompt on stdin, note markdown on stdout).
+# A value with shell metachars runs via `sh -c`. env: CTXROT_DISTILL_CMD
+distill_cmd = "claude -p"
+# Wall-clock cap (seconds) for that background distill; on timeout the rescue
+# note stands. The detached worker bears this wait, not the 10s hook.
+# env: CTXROT_DISTILL_TIMEOUT_SECS
+distill_timeout_secs = 180
 "#;
 
 fn init() -> anyhow::Result<()> {
