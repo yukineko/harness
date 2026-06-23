@@ -304,6 +304,7 @@ mod tests {
             class,
             suggested_model: None,
             done_criteria: None,
+            size: None,
         }
     }
 

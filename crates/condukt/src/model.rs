@@ -34,6 +34,10 @@ pub struct Task {
     pub suggested_model: Option<String>,
     #[serde(default)]
     pub done_criteria: Option<String>,
+    /// Optional size hint (xs|s|m|l|xl) for downstream tools. Free-form and
+    /// permissive: unknown or missing values are accepted and ignored here.
+    #[serde(default)]
+    pub size: Option<String>,
 }
 
 /// The full plan the interpreter agent emits.
@@ -87,5 +91,30 @@ impl HookInput {
     /// Parse hook stdin; any malformed input yields defaults (never panics).
     pub fn parse(raw: &str) -> Self {
         serde_json::from_str(raw).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_without_size_still_parses() {
+        // Back-compat: decompositions emitted before `size` existed must load.
+        let dec: Decomposition = serde_json::from_str(
+            r#"{"goal":"g","tasks":[{"id":"a","touched_files":["src/a.rs"]}]}"#,
+        )
+        .expect("decomposition without size should parse");
+        assert_eq!(dec.tasks.len(), 1);
+        assert_eq!(dec.tasks[0].size, None);
+    }
+
+    #[test]
+    fn task_with_size_is_populated() {
+        let dec: Decomposition = serde_json::from_str(
+            r#"{"goal":"g","tasks":[{"id":"a","size":"m"}]}"#,
+        )
+        .expect("decomposition with size should parse");
+        assert_eq!(dec.tasks[0].size.as_deref(), Some("m"));
     }
 }
