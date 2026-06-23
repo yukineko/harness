@@ -35,6 +35,13 @@ enum Prio {
 pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     let mut blocks: Vec<(Prio, String)> = Vec::new();
 
+    // Post-compaction recovery: if the async distill (feature ④) wrote a fresh
+    // high-quality note since last turn, re-inject it ONCE. This is the only way
+    // the distilled signal re-enters the live context after a /compact, since
+    // PreCompact/PostCompact can't inject. Safety prio so the cap never drops it.
+    if let Some(b) = check_distilled(input, cfg) {
+        blocks.push((Prio::Safety, b));
+    }
     if let Some(b) = check_large_references(&input.prompt, &input.cwd_or_current(), cfg) {
         blocks.push((Prio::Safety, b));
     }
@@ -307,10 +314,69 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<(usize, Strin
     Some((band, format!("[context-rot guard] {body}")))
 }
 
+// ---------------------------------------------- async-distill re-inject (feature ④)
+
+/// Hard ceiling per re-injected section after a compaction (CJK-safe char count).
+const DISTILL_SECTION_CAP_CHARS: usize = 700;
+
+/// Consume the `<state_dir>/<safe>.distilled` marker left by the async-distill
+/// worker and re-inject the distilled Decisions/todos ONCE. The marker is deleted
+/// on read so this fires a single time per distill — the post-compaction handoff
+/// that no hook can do directly. None when no distill landed since last turn.
+fn check_distilled(input: &HookInput, cfg: &Config) -> Option<String> {
+    let marker = crate::hooks::distill::marker_path(cfg, &input.session_id);
+    let note_path = std::fs::read_to_string(&marker).ok()?;
+    let note_path = note_path.trim();
+    // Consume it now so a failure below doesn't make us re-fire every turn.
+    let _ = std::fs::remove_file(&marker);
+    if note_path.is_empty() {
+        return None;
+    }
+    let note = Path::new(note_path);
+    let text = std::fs::read_to_string(note).ok()?;
+
+    let decisions = crate::hooks::restore::extract_section(&text, &["決定事項", "Decisions"])
+        .map(|s| transcript::truncate_chars(&s, DISTILL_SECTION_CAP_CHARS));
+    let todos = crate::hooks::restore::extract_section(&text, &["残課題", "Open todos", "todos"])
+        .map(|s| transcript::truncate_chars(&s, DISTILL_SECTION_CAP_CHARS));
+
+    let mut out = String::from(
+        "[ctxrot distill] /compact 後の高品質蒸留が利用可能（直前の会話から再注入）:\n",
+    );
+    if let Some(d) = &decisions {
+        out.push_str("\n■ 決定事項:\n");
+        out.push_str(d);
+        out.push('\n');
+    }
+    if let Some(t) = &todos {
+        out.push_str("\n■ 残課題:\n");
+        out.push_str(t);
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "\n→ 全文: {note_path}\n（必要時のみ読む。本文には貼らず要約＋リンク運用を維持）"
+    ));
+
+    crate::metrics::emit(
+        cfg,
+        &input.session_id,
+        "distill_inject",
+        serde_json::json!({
+            "note": note_path,
+            "bytes": out.len(),
+            "decisions": decisions.is_some(),
+            "todos": todos.is_some(),
+        }),
+    );
+
+    Some(out)
+}
+
 // ----------------------------------------------------------------- re-anchor (P1)
 
-/// Filesystem-safe form of a session id, for `<state_dir>/<safe>.{band,anchor}`.
-fn safe_session(id: &str) -> String {
+/// Filesystem-safe form of a session id, for `<state_dir>/<safe>.{band,anchor,distilled}`.
+/// Shared with `distill` so the async-distill marker keys on the same name.
+pub(crate) fn safe_session(id: &str) -> String {
     id.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '_' })
         .collect()
@@ -664,6 +730,49 @@ mod tests {
         // …while both safety-critical blocks survive.
         assert!(out.contains("大きい参照を検知"), "large-ref warning must survive");
         assert!(out.contains("危険域"), "danger-band budget must survive");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn distilled_marker_reinjects_once_then_consumed() {
+        let base = std::env::temp_dir().join(format!("ctxrot-distinj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cwd = base.join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cfg = Config {
+            state_dir: base.join("state"),
+            store_dir: base.join("store"),
+            ..Config::default()
+        };
+        let session = "sess-distinj";
+        // A high-quality distill note on disk + the marker pointing at it.
+        let body = "## 決定事項 / Decisions\n\n- serde を採用\n\n## 残課題 / Open todos\n\n- tests を書く\n";
+        let note = harness_core::store::Store::new(cfg.store_dir.clone())
+            .write_note(&cwd, "distill-abc-20260101-000000", body)
+            .unwrap();
+        std::fs::create_dir_all(&cfg.state_dir).unwrap();
+        std::fs::write(
+            crate::hooks::distill::marker_path(&cfg, session),
+            note.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+
+        let input = HookInput {
+            session_id: session.into(),
+            // No transcript → budget/anchor stay silent; only the distill block fires.
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        };
+
+        let out = run(&input, &cfg).expect("distill re-injection on first prompt");
+        assert!(out.contains("[ctxrot distill]"), "expected distill block: {out}");
+        assert!(out.contains("serde を採用"));
+        assert!(out.contains("tests を書く"));
+
+        // Consumed: the marker is gone and a second prompt injects nothing.
+        assert!(!crate::hooks::distill::marker_path(&cfg, session).exists());
+        assert!(run(&input, &cfg).is_none(), "must fire exactly once");
+
         let _ = std::fs::remove_dir_all(&base);
     }
 

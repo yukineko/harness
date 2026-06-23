@@ -6,7 +6,8 @@
 //! todos, touched files and conclusions survive even if the summary drops them.
 //!
 //! No LLM here (PreCompact has a tight timeout). High-quality summarization is
-//! the job of the `/distill` skill.
+//! the job of the `/distill` skill — or, when `distill_on_compact` is enabled, of
+//! the detached async distiller this hook fire-and-forgets (see `hooks::distill`).
 
 use std::path::{Path, PathBuf};
 

@@ -83,6 +83,25 @@ pub struct Config {
     pub inject_todos: bool,
     /// Append the project's pinned loadset items (as pointers) to the carryover.
     pub inject_pinned: bool,
+
+    // ---- async LLM distill on compaction (feature ④) -------------------------
+    /// Opt-in: when a `/compact` (manual or auto) fires PreCompact, after the
+    /// deterministic rescue note lands, spawn a DETACHED background `claude -p`
+    /// that distills the full pre-compaction transcript into a high-quality
+    /// `distill-*` note. Off by default — it spends a model call per compaction.
+    /// The next `guard` (UserPromptSubmit) re-injects it so the post-compact
+    /// in-session context recovers (PreCompact/PostCompact can't inject). Runs on
+    /// the same auth as the session (subscription; no API key).
+    pub distill_on_compact: bool,
+    /// The headless command used for the async distill. Receives the distill
+    /// prompt on stdin and must print ONLY the note markdown on stdout. Default
+    /// `"claude -p"`. A value with shell metachars is run via `sh -c`.
+    pub distill_cmd: String,
+    /// Hard wall-clock cap (seconds) for the background `claude -p` distill. On
+    /// timeout the child is killed and the deterministic rescue note (already on
+    /// disk) stands as the safety net. The detached worker, not the 10s hook,
+    /// bears this wait — so it can be generous.
+    pub distill_timeout_secs: u64,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -111,6 +130,9 @@ struct FileConfig {
     inject_decisions: Option<bool>,
     inject_todos: Option<bool>,
     inject_pinned: Option<bool>,
+    distill_on_compact: Option<bool>,
+    distill_cmd: Option<String>,
+    distill_timeout_secs: Option<u64>,
 }
 
 /// The `~/.ctxrot` base directory.
@@ -162,6 +184,9 @@ impl Default for Config {
             inject_decisions: true,
             inject_todos: true,
             inject_pinned: true,
+            distill_on_compact: false,
+            distill_cmd: "claude -p".to_string(),
+            distill_timeout_secs: 180,
         }
     }
 }
@@ -249,6 +274,15 @@ impl Config {
                 if let Some(v) = fc.inject_pinned {
                     cfg.inject_pinned = v;
                 }
+                if let Some(v) = fc.distill_on_compact {
+                    cfg.distill_on_compact = v;
+                }
+                if let Some(v) = fc.distill_cmd {
+                    cfg.distill_cmd = v;
+                }
+                if let Some(v) = fc.distill_timeout_secs {
+                    cfg.distill_timeout_secs = v;
+                }
             }
         }
 
@@ -281,6 +315,17 @@ impl Config {
             // Convenience kill-switch: CTXROT_RESTORE_DISABLE=1 turns carryover off.
             cfg.restore_enabled = !v;
         }
+        if let Some(v) = env_bool("CTXROT_DISTILL_ON_COMPACT") {
+            cfg.distill_on_compact = v;
+        }
+        if let Ok(v) = std::env::var("CTXROT_DISTILL_CMD") {
+            if !v.trim().is_empty() {
+                cfg.distill_cmd = v;
+            }
+        }
+        if let Some(v) = env_u64("CTXROT_DISTILL_TIMEOUT_SECS") {
+            cfg.distill_timeout_secs = v;
+        }
 
         // bands must be ascending and within (0,1]; sanitize defensively
         cfg.bands.retain(|b| *b > 0.0 && *b <= 1.0);
@@ -299,6 +344,14 @@ impl Config {
         }
         if cfg.reanchor_every_prompts == 0 {
             cfg.reanchor_every_prompts = 8;
+        }
+        // A zero/blank distill command or timeout would make the async distill a
+        // silent no-op; fall back to sane defaults so opting in actually runs.
+        if cfg.distill_cmd.trim().is_empty() {
+            cfg.distill_cmd = "claude -p".to_string();
+        }
+        if cfg.distill_timeout_secs == 0 {
+            cfg.distill_timeout_secs = 180;
         }
         cfg
     }
