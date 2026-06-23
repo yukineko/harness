@@ -1,5 +1,9 @@
-# Build the bundled binaries the plugin hook ships (hooks/hooks.json runs
-# ${CLAUDE_PLUGIN_ROOT}/bin/playbook). `make bins` refreshes both; commit them.
+# Build the bundled per-platform binaries the plugin hook ships. hooks/hooks.json
+# runs ${CLAUDE_PLUGIN_ROOT}/bin/playbook, which is a committed dispatcher shim
+# that execs the matching playbook-<os>-<arch> build — so NEVER overwrite
+# bin/playbook with a raw binary (that ships a host-only build to every platform
+# and breaks the hook with "Exec format error"). `make bins` refreshes the
+# per-platform artifacts; commit them.
 #
 # Linux cross-build uses cargo-zigbuild (no Docker). One-time setup on macOS:
 #   brew install zig
@@ -15,11 +19,11 @@ LINUX_GLIBC  := 2.17
 # Refresh both bundled binaries in bin/.
 bins: mac linux
 
-# Native macOS build → bin/playbook (host arch).
+# Native macOS build → bin/playbook-darwin-<arch> (arm64 or x86_64).
 mac:
 	cargo build --release
-	cp target/release/playbook bin/playbook
-	@file bin/playbook
+	cp target/release/playbook bin/playbook-darwin-$$(uname -m)
+	@file bin/playbook-darwin-$$(uname -m)
 
 # Cross-compile Linux x86_64 → bin/playbook-linux-x86_64.
 linux:
