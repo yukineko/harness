@@ -41,10 +41,10 @@ deterministically. Nothing leaves the machine.
 
 ## Install (plugin)
 
-Via the marketplace (per the catalog in `yukineko/claude-plugins`):
+Via the marketplace (the catalog lives at the root of this repo, `yukineko/harness`):
 
 ```
-/plugin marketplace add <catalog-url>
+/plugin marketplace add yukineko/harness
 /plugin install budgetguard@yukineko
 ```
 

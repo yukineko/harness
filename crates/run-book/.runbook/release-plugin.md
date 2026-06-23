@@ -15,7 +15,7 @@ aliases = ["release", "ship"]
 2. `make bins` で `bin/<name>-darwin-arm64` と `bin/<name>-linux-x86_64` を再生成する
 3. `.claude-plugin/plugin.json` の `version` を上げる
 4. `bin/` を実行ビット付きで commit する（`git update-index --chmod=+x`）
-5. マーケットプレイス `yukineko/claude-plugins` の `marketplace.json` を更新する
+5. リポ root の `.claude-plugin/marketplace.json`（このリポの marketplace カタログ）を更新する
 
 ## Specifications
 - 完了条件: 新しいバイナリがコミットされ、plugin.json の version が上がっていること
