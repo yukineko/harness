@@ -37,7 +37,37 @@ normalize_template = ""
 # カスタム impl prompt テンプレート (省略時は埋め込み既定)。
 impl_template = ""
 
+# ── ① intake (DESIGN-INTAKE.md §3, §7) ───────────────────────────────────────
+# 3ソースを決定的に走査して要件素材を組成する (LLM なし)。
+[sources]
+# Obsidian vault。<vault>/AEGIS/{decisions,sessions} を走査 (authority=高)。空なら skip。
+obsidian_vault = ""
+# repo 文書 glob (authority=中)。単純な再帰走査 + 末尾一致 (glob 依存は足さない)。
+canon          = ["docs/**/*.md"]
+# 過去 prompt の transcript root (authority=低)。enc-cwd は cwd から自動解決。空なら skip。
+transcripts    = "~/.claude/projects"
+# tiebreak 助言の順 (高→低)。情報用途のみ — 矛盾の自動解決や fragment の破棄には使わない (§3.1)。
+authority      = ["obsidian", "canon", "prompt"]
+
+[gather]
+# 束に入れる fragment 上限。
+top_k          = 24
+# これ未満の関連度 (score) は捨てる。authority では決して捨てない (§3.1)。
+min_score      = 1
+
+# [rigor] は後続スライス。フィールドは宣言できるが gather はロジックを実装しない。
+[rigor]
+require_acceptance       = true
+require_canon_citation   = true
+run_d2_audit             = true
+max_interrogation_rounds = 4
+record_decisions         = false
+
 # 使い方 (パイプライン全体):
+#
+#   # ① gather: 3ソースから素材を決定的に収集 (DESIGN-INTAKE.md)
+#   specforge gather --topic "ログイン試行のレート制限"
+#   # → specs/<slug>.gather.json (素材束)。素材ゼロなら束を書かず needs_user: yes (exit 7)。
 #
 #   # ② draft + §5.3 rigor pre-flight
 #   specforge draft --id 2026-06-17-login-rate-limit \

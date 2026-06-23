@@ -18,6 +18,7 @@
 mod agent;
 mod config;
 mod evidence;
+mod gather;
 mod impl_prompt;
 mod implement;
 mod ir;
@@ -40,6 +41,10 @@ const EXIT_AGENT_FAILED: u8 = 4;
 /// §5, §9-3). Defined here so the contract stays disjoint as the pipeline grows.
 #[allow(dead_code)]
 const EXIT_UNRATIFIED_SPEC: u8 = 6;
+/// ① gather found no material to ground the topic (DESIGN-INTAKE.md §8): no
+/// bundle is written and `needs_user: yes` is emitted so the human is pulled in
+/// (principle 6 — don't fabricate a bundle). Disjoint from the reserved values.
+const EXIT_INTAKE_SHORTFALL: u8 = 7;
 
 #[derive(Parser)]
 #[command(name = "specforge", version, about = "Spec generation harness (entry gate: normalize + rigor)")]
@@ -55,6 +60,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// ① Deterministically gather requirement material from 3 sources
+    /// (Obsidian/repo/past-prompts) into a provenance-tagged bundle.
+    Gather {
+        /// Topic string to score sources against.
+        #[arg(long)]
+        topic: String,
+        /// Optional id for the bundle filename (default: a slug of the topic).
+        #[arg(long)]
+        id: Option<String>,
+    },
     /// Normalize a requirement into a draft Spec IR (rigor-gated).
     Draft {
         /// Spec id (becomes `<spec_dir>/<id>.toml`).
@@ -167,6 +182,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
 fn run(cli: &Cli) -> Result<u8> {
     let l = load(cli)?;
     match &cli.command {
+        Command::Gather { topic, id } => cmd_gather(&l, topic, id.as_deref()),
         Command::Draft {
             id,
             title,
@@ -345,6 +361,136 @@ fn ack(l: &Loaded) -> Result<u8> {
         }
     }
     Ok(EXIT_OK)
+}
+
+// ── ① gather ───────────────────────────────────────────────────────────────
+
+/// ① Deterministic intake (DESIGN-INTAKE.md §1–§3). Walk the 3 sources, score
+/// against the topic, persist the bundle, and emit the §8 marker contract. No
+/// LLM, no conflict resolution — authority only orders, never drops.
+fn cmd_gather(l: &Loaded, topic: &str, id: Option<&str>) -> Result<u8> {
+    if topic.trim().is_empty() {
+        anyhow::bail!("--topic が空です");
+    }
+    let key = id.map(|s| s.to_string()).unwrap_or_else(|| slugify(topic));
+
+    let input = gather::GatherInput {
+        obsidian_vault: nonempty(&l.cfg.sources.obsidian_vault).map(expand_tilde),
+        canon_root: l.repo_root.clone(),
+        canon_globs: l.cfg.sources.canon.clone(),
+        transcripts_dir: nonempty(&l.cfg.sources.transcripts)
+            .map(|s| expand_tilde(s).join(gather::encode_cwd(&l.repo_root))),
+        top_k: l.cfg.gather.top_k,
+        min_score: l.cfg.gather.min_score,
+    };
+
+    let bundle = gather::gather(topic, &input);
+
+    // Material shortfall (principle 6): do NOT fabricate a bundle — pull the
+    // human in. Emit the §8 trailer with needs_user: yes and no bundle_path.
+    if bundle.fragments.is_empty() {
+        eprintln!(
+            "specforge: gather — トピック '{topic}' に接地する素材が3ソースから見つからない。束は書かない (intake 素材不足)。"
+        );
+        println!("{}", gather::MARKER);
+        println!("needs_user: yes");
+        println!("fragment_count: 0");
+        return Ok(EXIT_INTAKE_SHORTFALL);
+    }
+
+    let path = write_bundle(l, &key, &bundle)?;
+    print_gather_summary(&bundle);
+    println!();
+    println!("束を書いた -> {}", path.display());
+    println!("{}", gather::MARKER);
+    println!("bundle_path: {}", path.display());
+    println!("fragment_count: {}", bundle.fragments.len());
+    Ok(EXIT_OK)
+}
+
+fn print_gather_summary(bundle: &gather::Bundle) {
+    println!(
+        "specforge: gather '{}' — {} fragments (authority desc, score desc):",
+        bundle.topic,
+        bundle.fragments.len()
+    );
+    for f in &bundle.fragments {
+        let auth = match f.authority {
+            gather::Authority::High => "高",
+            gather::Authority::Mid => "中",
+            gather::Authority::Low => "低",
+        };
+        println!(
+            "  [{auth} score={}] {} ({})",
+            f.score,
+            f.anchor,
+            f.source_path
+        );
+    }
+}
+
+fn bundle_path(l: &Loaded, key: &str) -> PathBuf {
+    l.repo_root
+        .join(&l.cfg.output.spec_dir)
+        .join(format!("{key}.gather.json"))
+}
+
+fn write_bundle(l: &Loaded, key: &str, bundle: &gather::Bundle) -> Result<PathBuf> {
+    let path = bundle_path(l, key);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating bundle dir {}", dir.display()))?;
+    }
+    let json = serde_json::to_string_pretty(bundle).context("serializing gather bundle")?;
+    std::fs::write(&path, json)
+        .with_context(|| format!("writing bundle {}", path.display()))?;
+    Ok(path)
+}
+
+/// `None` for an empty/blank config string, else the trimmed value.
+fn nonempty(s: &str) -> Option<&str> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// Expand a leading `~` to $HOME (best-effort; left as-is if HOME is unset).
+fn expand_tilde(s: &str) -> PathBuf {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    } else if s == "~" {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    PathBuf::from(s)
+}
+
+/// Slug of a topic for the default bundle filename: lowercase alnum runs joined
+/// by `-`, CJK kept verbatim (so Japanese topics produce readable filenames).
+fn slugify(topic: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in topic.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let s = out.trim_matches('-').to_string();
+    if s.is_empty() {
+        "topic".to_string()
+    } else {
+        s
+    }
 }
 
 // --- helpers ---
