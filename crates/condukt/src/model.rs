@@ -47,6 +47,11 @@ pub struct Task {
     /// Like `size`, the engine treats this as a permissive passthrough.
     #[serde(default)]
     pub reproduction_tests: Option<String>,
+    /// Self-assessed confidence the task is well-scoped and completable (high|medium|low).
+    /// The engine carries this through; SKILL.md uses it to gate clarification and
+    /// re-verification. Unknown values are accepted and ignored.
+    #[serde(default)]
+    pub confidence: Option<String>,
 }
 
 /// The full plan the interpreter agent emits.
@@ -147,5 +152,22 @@ mod tests {
             dec.tasks[0].reproduction_tests.as_deref(),
             Some("cargo test -p x")
         );
+    }
+
+    #[test]
+    fn task_without_confidence_defaults_none() {
+        // Back-compat: decompositions emitted before `confidence` existed must load.
+        let dec: Decomposition =
+            serde_json::from_str(r#"{"goal":"g","tasks":[{"id":"a"}]}"#).unwrap();
+        assert_eq!(dec.tasks[0].confidence, None);
+    }
+
+    #[test]
+    fn task_with_confidence_is_populated() {
+        let dec: Decomposition = serde_json::from_str(
+            r#"{"goal":"g","tasks":[{"id":"a","confidence":"low"}]}"#,
+        )
+        .expect("decomposition with confidence should parse");
+        assert_eq!(dec.tasks[0].confidence.as_deref(), Some("low"));
     }
 }

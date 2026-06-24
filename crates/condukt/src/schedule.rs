@@ -307,6 +307,7 @@ mod tests {
             size: None,
             target_symbols: Vec::new(),
             reproduction_tests: None,
+            confidence: None,
         }
     }
 
