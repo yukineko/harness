@@ -67,6 +67,8 @@ enum Command {
     },
     /// Remove condukt hooks from ~/.claude/settings.json.
     Uninstall,
+    /// Print ~/.condukt/knowledge.md to stdout (empty output if absent).
+    Knowledge,
 }
 
 #[derive(Subcommand)]
@@ -220,6 +222,12 @@ fn run_user(cmd: Command) -> Result<()> {
             }
         }
         Command::Uninstall => install::uninstall()?,
+        Command::Knowledge => {
+            let path = config::base_dir().join("knowledge.md");
+            if path.exists() {
+                print!("{}", std::fs::read_to_string(&path)?);
+            }
+        }
         Command::Restore | Command::Statusline => unreachable!("handled in main"),
     }
     Ok(())
