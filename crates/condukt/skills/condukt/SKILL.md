@@ -2,7 +2,7 @@
 name: condukt
 description: 課題を解釈→タスク分割→合意→並列/直列スケジュール(決定論)→worktree並列実装→検証→完了ゲートまで回す合意駆動オーケストレーター。複数ステップ・複数ファイルにまたがる大きめの課題に使う。分割の衝突解析・worktree・状態管理・ゲートは condukt バイナリが決定論的に担い、LLM は解釈・実装・検証に集中する。
 argument-hint: [課題文]
-allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash(git:*), Read, Write, Edit
+allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash(git:*), Read, Write, Edit, Grep, Glob
 ---
 
 # /condukt — 決定論エンジン駆動オーケストレーター
@@ -40,6 +40,14 @@ allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash
 以下の場合は省略して Phase 1 に進む:
 - 課題がコードベース内完結で外部依存が明らか
 - 簡単なリファクタリングや設定変更
+
+researcher を起動した場合、その出力 JSON を変数に受け取り、Phase 1 の interpreter プロンプトに
+含める:
+```
+RESEARCH_BRIEF=$(Task condukt-researcher "...")   # researcher の返す JSON
+```
+Phase 1 の interpreter 起動時に `research_brief: $RESEARCH_BRIEF` をプロンプトに含めることで、
+interpreter が外部仕様・落とし穴・推奨パターンを踏まえた Decomposition を生成できる。
 
 ### Phase 1 — 解釈 (interpreter agent)
 `Task` で `condukt-interpreter` 相当 (subagent_type を持たない環境では `Explore` を model:opus で)
@@ -94,13 +102,22 @@ RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、ru
      - `interface_context` (任意): `t.target_symbols` のスコープ外シグネチャ等を main が Grep で集めて渡してよい。
        省略可 — 渡さなければ worker が自分で Grep して補う。
      - `failure_context` (再投入時のみ): `{reason: <前回 verifier.reason>, failed_tests: <失敗テスト出力>, diff: <前回 git diff>}`
-  4. 完了したら `condukt state set --run $RID --task <t.id> --status done`
+  4. worker の返却 status を確認する:
+     - `done`: `condukt state set --run $RID --task <t.id> --status done`
+     - `needs-serial`: 分類ミス。worktree を破棄し、タスクを serial として main で直接実装して commit する。
+     - `blocked`: ユーザーにエスカレーションし、指示を仰ぐ (`AskUserQuestion` で報告する)。
 - バッチ内は 1 メッセージで複数 `Task` を同時発行して並列化する。
 - `serial` タスクは worktree に出さず main で順に実装し commit。
 
 ### Phase 6 — 検証 (verifier agent) + 実績の記録
 done の各タスクを `condukt-verifier` 相当で done_criteria 照合する。検証する子の **model は
 `<route.json>` の `verifier_model`**(worker と別ティアの独立検証。無ければ既定 sonnet)を使う。
+verifier 起動プロンプトには以下を渡す:
+- `done_criteria`: タスクの合格条件
+- `worktree`: 対象 worktree パス
+- `touched_files`: タスクの実装対象ファイル
+- `target_symbols` (あれば): `t.target_symbols` — 検証対象の関数/クラス名。verifier がピンポイントで
+  照合できる。
 pass なら `condukt state set --run $RID --task <id> --status verified`、fail なら `--status failed`
 にし理由を控える。
 
@@ -109,7 +126,7 @@ verifier が fail したら、**同じターン内で**以下を実行して Pha
 1. タスクを `failed` に set。
 2. `failure_context` を組み立てる:
    ```json
-   { "reason": "<verifier.reason>", "failed_tests": "<失敗テスト出力>", "diff": "<git diff HEAD~1>" }
+   { "reason": "<verifier.reason>", "failed_tests": "<失敗テスト出力>", "diff": "<git diff HEAD 2>/dev/null || git show HEAD>" }
    ```
 3. `suggested_model` を 1 ティア上げる (haiku→sonnet、sonnet→opus)。
 4. 新しい worktree を作成し、`failure_context` と escalated model で Phase 5 worker を再起動。
