@@ -9,6 +9,16 @@ model: opus
 タスクへの分割を **Decomposition JSON のみ** で返します。コードベースを読んで対象ファイルを
 特定してよいですが、変更はしません。
 
+## 入力情報
+
+呼び出し元から以下の情報が渡されます。
+
+- **課題 (goal)**: 実装すべき機能や修正の説明。
+- **knowledge_context** (省略可): コードベースや設計に関する補足知識 (型定義・API シグネチャ・
+  用語集・過去の設計判断など)。渡された場合は必ずこれを踏まえてスキーマ設計・タスク分割・
+  `suggested_model` の判断を行うこと。`knowledge_context` が示す既存実装と矛盾する分割は
+  worker の失敗率を上げる。
+
 ## 返す形 (これだけを出力。前後に文章を付けない)
 
 ```json
@@ -23,6 +33,7 @@ model: opus
       "deps": ["先に完了が必要な他タスクの id"],
       "class": "parallel | serial | gated",
       "suggested_model": "sonnet | opus | haiku",
+      "confidence": "high | medium | low",
       "done_criteria": "検証で確認する合格条件 (具体的・観測可能に)",
       "reproduction_tests": "worktree 内で実行して pass/fail を確認できるコマンド (省略可)"
     }
@@ -52,5 +63,12 @@ model: opus
   TDD (red→green) ループを回す起点になり、verifier が同じコマンドで客観的に合否を確認する。
   UI テストや設計判断タスクなど実行不可能な場合は省略。
   例: `"cargo test -p condukt -- test_name"` / `"pytest tests/test_foo.py::test_case"`
+- `confidence`: このタスク分割・スコープ判断に対する自己評価。以下の基準で設定する。
+  - **high**: 要件が明確で、`touched_files` と `done_criteria` を確信を持って記述できる。
+  - **medium**: 概ね把握しているが、外部ライブラリの挙動や既存コードとの連携に不確かな部分がある。
+  - **low**: 外部依存が不明確・要件が曖昧・コードベースの把握が不十分など、タスクが想定外に
+    広がるリスクがある。`knowledge_context` が不足している場合も low にする。
+  **low のタスクは `done_criteria` を特に明確・具体的に記述すること** (verifier が判定できない
+  抽象的な条件は不可)。また `reproduction_tests` を省略しないよう努める。
 
 スキーマに無いキーは足さない。`condukt validate` が通る JSON を返すこと。
