@@ -87,13 +87,22 @@ Phase 1 の interpreter 起動時に `research_brief: $RESEARCH_BRIEF` をプロ
 interpreter が外部仕様・落とし穴・推奨パターンを踏まえた Decomposition を生成できる。
 
 ### Phase 1 — 解釈 (interpreter agent)
+
+**knowledge 注入 (soft 依存)**: interpreter を起動する前に知識ファイルを取得し、あれば interpreter
+プロンプトに含める:
+```
+KNOWLEDGE=$(condukt knowledge 2>/dev/null || true)
+# KNOWLEDGE が空でなければ interpreter プロンプトに knowledge_context: $KNOWLEDGE として渡す
+```
+
 `Task` で `condukt-interpreter` 相当 (subagent_type を持たない環境では `Explore` を model:opus で)
 を起動し、課題を **Decomposition JSON** にさせる。スキーマは `agents/condukt-interpreter.md` 準拠:
 ```json
 { "goal": "...", "tasks": [
   { "id": "t1", "title": "...", "touched_files": ["path/or/glob", ...],
     "deps": ["他タスクid"], "class": "parallel|serial|gated",
-    "suggested_model": "sonnet|opus|haiku", "done_criteria": "検証で確認する合格条件" }
+    "suggested_model": "sonnet|opus|haiku", "done_criteria": "検証で確認する合格条件",
+    "confidence": "high|medium|low" }
 ]}
 ```
 `open_questions` 相当が出たら、この時点で `AskUserQuestion` を 1 回使って解消する。
@@ -121,6 +130,10 @@ condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 `schedule` 結果 (並列バッチ / serial / gated) を `AskUserQuestion` で提示し合意を取る。割り直しが
 出たら Decomposition を直して Phase 2 へ戻る。`--dry-run` ならここで停止。
 
+**confidence ゲート (Devin Confidence Score 相当)**: `confidence: low` または `confidence: medium`
+のタスクは、`AskUserQuestion` の計画提示で明示的に強調し、done_criteria や scope の確認を促す。
+ユーザーが合意すれば通常通り進む (実装・検証のゲートは Phase 6 で行う)。
+
 ### Phase 4 — run 初期化
 ```
 RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、run id を返す
@@ -146,7 +159,16 @@ BASELINE_EXIT=$?
      commit、merge はするな」** を渡す。加えて以下を渡す (子はこの会話の文脈を見られない):
      - `reproduction_tests` (あれば): `t.reproduction_tests` — worker の TDD ループ起点
      - `target_symbols` (あれば): `t.target_symbols` — 編集対象の関数/クラス名
-     - `interface_context`: `t.target_symbols` が存在する場合は main が Grep でスコープ外シグネチャを収集して渡す（worker に Grep させない）。`target_symbols` がない場合は省略する。
+     - `interface_context`: `t.target_symbols` が存在する場合は main が Grep でスコープ外シグネチャを
+       ピンポイント抽出して渡す（worker に Grep させない）。シグネチャ＋docstring のみを抽出して文脈を
+       圧縮する: `grep -n "^pub fn\|^fn\|^pub struct\|^struct\|^pub trait\|^trait" <file> | head -60`
+       や `grep -A 3 "fn <symbol>" <file>` で定義行とその直後数行のみを取得する。`target_symbols`
+       がない場合は省略する。
+     - `knowledge_context` (soft 依存): `KNOWLEDGE` 変数が空でなければ渡す。プロジェクト固有の規約・
+       落とし穴・推奨パターンを worker が参照できる (Devin Knowledge Base 相当)。
+     - `peer_tasks` (同バッチ並列タスクがある場合): 同バッチの他タスクの `[{id, title, touched_files}]`
+       サマリを渡し、スコープ衝突を防ぐ (Devin peer-awareness 相当)。title + touched_files の要約のみ
+       に留め、done_criteria や diff は含めない。
      - `failure_context` (再投入時のみ): `{reason: <前回 verifier.reason>, failed_tests: <失敗テスト出力>, diff: <前回 git diff>}`
   4. worker の返却 status を確認する:
      - `done`: `condukt state set --run $RID --task <t.id> --status done` し、**他の worker の完了を待たずにその場で Phase 6 の verifier を起動する**（パイプライン化）。
@@ -175,6 +197,11 @@ verifier 起動プロンプトには以下を渡す:
   照合できる。
 pass なら `condukt state set --run $RID --task <id> --status verified`、fail なら `--status failed`
 にし理由を控える。
+
+**confidence 再検証 (low-confidence pass の二重確認)**: verifier が `pass` かつ `confidence: low`
+を返した場合は、model を 1 ティア上げて同じタスクを再度 verifier に投げ、2 回 pass で verified
+に昇格する (Devin confidence-gated clarification の検証側相当)。2 回目も pass なら verified、fail
+なら fail として通常のカスケードエスカレーションへ。
 
 #### カスケードエスカレーション (失敗タスクのリトライ全般をここで管理)
 verifier が fail したら、**同じターン内で**以下を実行して Phase 5 へ再投入する:
