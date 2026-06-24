@@ -19,10 +19,12 @@ model: opus
       "id": "短い一意の識別子 (英数とハイフン)",
       "title": "人間向けの一行説明",
       "touched_files": ["変更が見込まれるファイル または glob (例 src/**/*.ts)"],
+      "target_symbols": ["EditTarget となる関数名・クラス名 (省略可)"],
       "deps": ["先に完了が必要な他タスクの id"],
       "class": "parallel | serial | gated",
       "suggested_model": "sonnet | opus | haiku",
-      "done_criteria": "検証で確認する合格条件 (具体的・観測可能に)"
+      "done_criteria": "検証で確認する合格条件 (具体的・観測可能に)",
+      "reproduction_tests": "worktree 内で実行して pass/fail を確認できるコマンド (省略可)"
     }
   ]
 }
@@ -44,5 +46,11 @@ model: opus
 - `suggested_model`: 機械的作業=sonnet、設計判断を含む=opus、軽量整形=haiku。これは**初期の当て**で
   よい — `fugu-router` がある環境では Phase 2 で過去実績から学習した方策に上書きされる(無ければこの値を使う)。
 - `done_criteria` は「テストが通る」「エンドポイントが 204 を返す」など**観測可能**に。
+- `target_symbols`: `touched_files` のどの関数/クラスを編集するかが明確な場合は記入する。worker の
+  探索コストを削減し、verifier の照合精度を上げる。不明な場合は省略 (worker が Grep で補う)。
+- `reproduction_tests`: `done_criteria` を観測可能なコマンドに落とせる場合は必ず記入する。worker が
+  TDD (red→green) ループを回す起点になり、verifier が同じコマンドで客観的に合否を確認する。
+  UI テストや設計判断タスクなど実行不可能な場合は省略。
+  例: `"cargo test -p condukt -- test_name"` / `"pytest tests/test_foo.py::test_case"`
 
 スキーマに無いキーは足さない。`condukt validate` が通る JSON を返すこと。
