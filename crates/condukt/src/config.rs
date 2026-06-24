@@ -23,6 +23,9 @@ pub struct Config {
     pub state_dir: PathBuf,
     /// Override command for `condukt state test` (None = auto-detect).
     pub test_command: Option<String>,
+    /// How many seconds a Running task may be silent before being considered STUCK.
+    /// Defaults to 1800 (30 minutes).
+    pub stuck_ttl_secs: u64,
 }
 
 #[derive(Default, Deserialize)]
@@ -38,6 +41,7 @@ struct FileConfig {
     max_parallel: Option<usize>,
     state_dir: Option<String>,
     test: Option<FileTestConfig>,
+    stuck_ttl_secs: Option<u64>,
 }
 
 /// `~/.condukt` (falls back to `./.condukt` if there is no home dir). Thin
@@ -56,6 +60,7 @@ impl Config {
             max_parallel: 4,
             state_dir: base.join("state"),
             test_command: None,
+            stuck_ttl_secs: 1800,
         };
 
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
@@ -78,6 +83,9 @@ impl Config {
                 if let Some(t) = fc.test {
                     cfg.test_command = t.command;
                 }
+                if let Some(v) = fc.stuck_ttl_secs {
+                    cfg.stuck_ttl_secs = v;
+                }
             }
         }
 
@@ -90,6 +98,11 @@ impl Config {
         if let Ok(v) = std::env::var("CONDUKT_MAX_PARALLEL") {
             if let Ok(n) = v.parse() {
                 cfg.max_parallel = n;
+            }
+        }
+        if let Ok(v) = std::env::var("CONDUKT_STUCK_TTL_SECS") {
+            if let Ok(n) = v.parse() {
+                cfg.stuck_ttl_secs = n;
             }
         }
         cfg
