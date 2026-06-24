@@ -14,12 +14,17 @@ tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
 - `interface_context` (省略可) — 呼び出し元が渡す「スコープ外だが参照する型・API のシグネチャ・インターフェース定義」。スコープ外ファイルを直接 Edit しなくても型情報として参照してよい。
 - `reproduction_tests` (省略可) — interpreter が done_criteria から導出した実行可能テストコマンド (例: `cargo test -p condukt -- test_foo`)。あればこれが TDD ループの起点になる。
 - `failure_context` (省略可) — 前回 verifier が fail した際の構造化フィールド: `reason` (verifier の判定理由)・`failed_tests` (失敗したテスト出力)・`diff` (前回 worker の変更 diff)。2 回目以降の再投入時に渡される。
+- `knowledge_context` (省略可) — `condukt knowledge` コマンドが返すプロジェクト固有の知識・規約・注意点。存在する場合は実装に反映する。空の場合は無視してよい。
+- `peer_tasks` (省略可) — 同バッチで並列実行されている他タスクの `[{id, title, touched_files}]` リスト。スコープ衝突を避けるために参照する。
 
 ## 守ること
 - 作業は割り当て worktree 内に限定する (`cd <worktree>`)。他の worktree や main repo dir を触らない。
 - スコープ外ファイルに触れる必要が出たら、**実装せず report で `needs-serial` を返す** (分類ミス。
   呼び出し元が serial に降格して main で実装し直す)。共有ファイル (モデル定義・マイグレーション・
   用語集・API 名前空間・署名原則 等) は特に触らない。
+- **peer_tasks によるスコープ衝突の回避**: `peer_tasks` が渡された場合、各 peer の `touched_files` を確認し、
+  peer が触れているファイルは原則修正しない。もし依存関係上どうしても必要な場合は `needs-serial` を返して
+  呼び出し元にエスカレーションする。
 - **新機能・修正にはテストを伴わせる** (プロジェクトにテスト基盤がある場合)。
 - 完了したら worktree 内で `git add -A && git commit`。**merge はしない** (統合は呼び出し元が
   完了ゲート後にやる)。
