@@ -64,6 +64,25 @@ job is to author the Japanese prose sections based on THIS conversation.
 
 4. **Save** the note back to the same path.
 
+5. **Reconcile the cross-session backlog.** The per-session `## 残課題` is a
+   snapshot; the backlog is the durable, self-pruning list of what's still open
+   across sessions (one global note `<vault>/backlog.md`, surfaced at SessionStart).
+   Use the project name from the record note heading as `<P>`.
+   1. **See what's open:**
+      `${CLAUDE_PLUGIN_ROOT}/bin/session-insights backlog list --project <P> --json`
+   2. **Resolve what this session closed.** For each open item that is now done
+      (compare against what was actually accomplished this session), mark it:
+      `… backlog resolve --id <bk-id> [--id <bk-id> …]` (resolved items are
+      removed from the note entirely — exclusion is the point).
+   3. **Add genuinely-open follow-ups** from this session's `## 残課題`:
+      `… backlog add --project <P> --text "<one open item>"` (one call per item;
+      re-adding the same text is idempotent, so existing items won't duplicate).
+      Do NOT add items you just resolved, or transient notes — only durable
+      "still needs doing" work.
+   4. **Re-render the note:** `… backlog render` (prints the backlog note path).
+   Keep backlog item text short and action-oriented ("X が必要", "Y を直す") so the
+   SessionStart brief reads as a clear to-do list.
+
 ## Hard rules
 
 - **Never edit anything between** `<!-- si:numeric:start -->` … `<!-- si:numeric:end -->`
