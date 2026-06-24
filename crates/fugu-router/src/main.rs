@@ -62,6 +62,17 @@ enum Command {
         role: String,
         #[arg(long, default_value_t = 0.0)]
         cost: f64,
+        /// Acceptance criteria for this task (persisted to playbook store when pass).
+        #[arg(long, default_value = "")]
+        done_criteria: String,
+        /// Optional free-text notes about how the task was solved.
+        #[arg(long, default_value = "")]
+        notes: String,
+    },
+    /// Search the playbook store for similar past task procedures.
+    Playbook {
+        #[command(subcommand)]
+        action: PlaybookAction,
     },
     /// Suggest a model for a single free-text task.
     Suggest {
@@ -93,6 +104,22 @@ enum Command {
     Uninstall {
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlaybookAction {
+    /// Search playbooks for similar past task procedures (returns JSON array).
+    Search {
+        /// Query text (task title / description).
+        #[arg(long)]
+        query: String,
+        /// Comma-separated file paths to boost similarity.
+        #[arg(long, default_value = "")]
+        files: String,
+        /// Number of results to return.
+        #[arg(long, default_value_t = 3)]
+        k: usize,
     },
 }
 
@@ -176,21 +203,66 @@ fn run_user(cmd: Command) -> Result<()> {
             status,
             role,
             cost,
+            done_criteria,
+            notes,
         } => {
+            let touched = split_files(&files);
+            let pass = is_pass(&status);
             let ep = store::Episode {
                 ts: store::now_secs(),
-                title,
-                touched_files: split_files(&files),
-                class,
+                title: title.clone(),
+                touched_files: touched.clone(),
+                class: class.clone(),
                 model,
                 role,
-                pass: is_pass(&status),
+                pass,
                 cost_usd: cost,
             };
             store::append(&cfg.store_path(), &ep).context("appending episode")?;
-            eprintln!("recorded: {} \"{}\" pass={}", ep.model, ep.title, ep.pass);
+            if pass && !done_criteria.is_empty() {
+                let pb = store::Playbook {
+                    ts: ep.ts,
+                    title,
+                    touched_files: touched,
+                    class,
+                    done_criteria,
+                    notes,
+                };
+                store::append_playbook(&cfg.playbook_path(), &pb)
+                    .context("appending playbook")?;
+                eprintln!("recorded: {} \"{}\" pass={} (playbook saved)", ep.model, ep.title, pass);
+            } else {
+                eprintln!("recorded: {} \"{}\" pass={}", ep.model, ep.title, pass);
+            }
             Ok(())
         }
+        Command::Playbook { action } => match action {
+            PlaybookAction::Search { query, files, k } => {
+                let playbooks = store::load_playbooks(&cfg.playbook_path());
+                if playbooks.is_empty() {
+                    println!("[]");
+                    return Ok(());
+                }
+                let query_files = split_files(&files);
+                let q_tok = rag::tokenize(&query);
+                let q_files = rag::file_tokens(&query_files);
+                let mut scored: Vec<(f64, &store::Playbook)> = playbooks
+                    .iter()
+                    .map(|pb| {
+                        let e_tok = rag::tokenize(&pb.title);
+                        let e_files = rag::file_tokens(&pb.touched_files);
+                        let sim = rag::similarity(&q_tok, &q_files, &e_tok, &e_files);
+                        (sim, pb)
+                    })
+                    .filter(|(s, _)| *s > 0.0)
+                    .collect();
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                scored.truncate(k);
+                let results: Vec<&store::Playbook> = scored.into_iter().map(|(_, pb)| pb).collect();
+                println!("{}", serde_json::to_string_pretty(&results)?);
+                Ok(())
+            }
+        },
         Command::Suggest { files, class, text } => {
             let title = text.join(" ");
             let f = split_files(&files);
