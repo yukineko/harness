@@ -169,6 +169,23 @@ BASELINE_EXIT=$?
 - exit 非 0（既存失敗あり）: `/tmp/condukt-baseline.txt` の失敗テスト一覧を `baseline_failures` として workers に渡す。verifier はこのリストに含まれる失敗を「実装前から壊れていた」として除外して合否を判定する。
 - テストコマンドが未設定でエラーになる場合は無視して Phase 5 へ進む。
 
+### Phase 4.5.5 — Small-task fast path (省略可)
+
+**発動条件**: 以下のいずれかを満たす場合、Phase 5 の worktree 作成を省略して main で直接実装する:
+- タスクが 1 つのみかつ `class: serial`
+- 全タスクが serial で合計 2 つ以下
+
+**fast path 手順**:
+1. `condukt state set --run $RID --task <t.id> --status running` (worktree/branch なし)
+2. main 上で直接実装・`git add && git commit`
+3. `condukt state set --run $RID --task <t.id> --status done`
+4. Phase 6 (verifier) へ — Phase 7 の worktree merge/remove はスキップ
+
+**通常フローへの戻り条件**:
+- parallel タスクが 1 つでも存在する場合
+- serial タスクが 3 つ以上ある場合
+- `reproduction_tests` が worktree 内での実行を前提とする場合
+
 ### Phase 5 — 並列実装 (batches を順に)
 `schedule.batches` を**先頭から順に** 処理する (バッチ間は依存順、バッチ内は並列):
 
