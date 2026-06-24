@@ -66,20 +66,12 @@ mod tests {
 
     #[test]
     fn strips_repo_root_from_absolute_path() {
-        let root = PathBuf::from("/Users/yuki/src/harness");
-        let raw = "/Users/yuki/src/harness/crates/x.rs";
-        let result = normalise_path(raw, Some(&root));
-        // The absolute path is under the root, so we get the relative portion.
-        // Note: canonicalize may fail on non-existent paths, so we test with
-        // a path that might not exist — in that case we strip textually.
-        // When canonicalize fails we fall back to the raw path unchanged, but
-        // since our test root is a real dir the prefix strip works on the raw
-        // path via the fallback (p.to_path_buf()).  Use a path that shares the
-        // literal prefix.
-        assert!(
-            result == "crates/x.rs" || result == raw,
-            "unexpected result: {result}"
-        );
+        // Use a non-existent path so canonicalize fails and the strip is purely
+        // textual & deterministic (canonicalize is identity here anyway, but this
+        // makes the assertion exact rather than "either-or").
+        let root = PathBuf::from("/no/such/repo/root");
+        let raw = "/no/such/repo/root/crates/x.rs";
+        assert_eq!(normalise_path(raw, Some(&root)), "crates/x.rs");
     }
 
     #[test]
@@ -126,7 +118,7 @@ mod tests {
         // relative stays as-is, outside-repo stays as-is
         assert_eq!(result[1], "relative/path.rs");
         assert_eq!(result[2], "/other/place.rs");
-        // /repo/src/main.rs -> src/main.rs (if canonicalize fails, same literal strip)
-        assert!(result[0] == "src/main.rs" || result[0] == "/repo/src/main.rs");
+        // /repo/src/main.rs -> src/main.rs (non-existent path → deterministic strip)
+        assert_eq!(result[0], "src/main.rs");
     }
 }
