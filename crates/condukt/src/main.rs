@@ -133,6 +133,14 @@ enum StateAction {
     },
     /// List open runs (run_id<TAB>done/total<TAB>goal).
     List,
+    /// Auto-reconcile: detect merged/gone branches and mark tasks verified.
+    Reconcile {
+        #[arg(long)]
+        run: String,
+        /// Preview changes without writing (dry run).
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Aggregate stats across all runs (completion rate, task distribution).
     Stats,
     /// Resume context for a stopped run: pending/failed/done tasks as JSON.
@@ -329,6 +337,37 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                     eprintln!("  - {r}");
                 }
                 std::process::exit(1);
+            }
+        }
+        StateAction::Reconcile { run, dry_run } => {
+            let rs = state::RunState::load(cfg, cwd, &run)?;
+            let (updated, changes) = state::reconcile_run(cfg, cwd, rs, &cfg.default_branch)?;
+            if changes.is_empty() {
+                eprintln!("reconcile: nothing to change for run '{run}'");
+            } else {
+                for c in &changes {
+                    if c.old_status == c.new_status {
+                        eprintln!(
+                            "  [{}]  {} (status unchanged: {:?})",
+                            c.task_id, c.reason, c.old_status
+                        );
+                    } else {
+                        eprintln!(
+                            "  [{}]  {:?} → {:?}  ({})",
+                            c.task_id, c.old_status, c.new_status, c.reason
+                        );
+                    }
+                }
+                if dry_run {
+                    eprintln!("dry-run: {} change(s) would be applied", changes.len());
+                } else {
+                    updated.save(cfg, cwd)?;
+                    let (done, total) = updated.counts();
+                    eprintln!(
+                        "reconcile: applied {} change(s) — run '{run}': {done}/{total} verified",
+                        changes.len()
+                    );
+                }
             }
         }
         StateAction::List => {

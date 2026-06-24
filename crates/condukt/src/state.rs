@@ -150,6 +150,106 @@ pub fn load_decomposition(cfg: &Config, cwd: &Path, run_id: &str) -> Result<Stri
         .with_context(|| format!("no decomposition for run '{run_id}' at {}", path.display()))
 }
 
+// ── Reconcile ─────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct ReconcileChange {
+    pub task_id: String,
+    pub old_status: Status,
+    pub new_status: Status,
+    pub reason: String,
+}
+
+/// Auto-detect tasks whose branches are already merged (or gone) and promote
+/// them to `verified`, clearing stale worktree references along the way.
+///
+/// A task is reconciled to `verified` when:
+/// 1. Its branch is an ancestor of `default_branch` (`git merge-base --is-ancestor`), OR
+/// 2. Its branch no longer exists AND its worktree is gone from disk.
+///
+/// If the worktree is gone but the branch still exists (unmerged), only the
+/// worktree reference is cleared — the status is left as-is.
+///
+/// Returns (updated RunState, list of changes) so the caller can save and report.
+pub fn reconcile_run(
+    cfg: &Config,
+    cwd: &Path,
+    mut run: RunState,
+    default_branch: &str,
+) -> Result<(RunState, Vec<ReconcileChange>)> {
+    let repo = crate::store::repo_root(cwd);
+    let mut changes = Vec::new();
+
+    for t in run.tasks.iter_mut() {
+        if t.status == Status::Verified {
+            continue;
+        }
+
+        let worktree_gone = t
+            .worktree
+            .as_ref()
+            .map(|p| !PathBuf::from(p).exists())
+            .unwrap_or(true); // no worktree recorded → treat as gone
+
+        let branch_merged = t.branch.as_deref().map(|b| {
+            // `git merge-base --is-ancestor <b> <default>` exits 0 if b is an ancestor.
+            crate::worktree::git(
+                &repo,
+                &["merge-base", "--is-ancestor", b, default_branch],
+            )
+            .is_ok()
+        });
+
+        let branch_exists = t.branch.as_deref().map(|b| {
+            crate::worktree::git(
+                &repo,
+                &["rev-parse", "--verify", &format!("refs/heads/{b}")],
+            )
+            .is_ok()
+        });
+
+        let should_verify = match (branch_merged, branch_exists) {
+            (Some(true), _) => true, // merged: branch is an ancestor of default
+            (Some(false), Some(false)) if worktree_gone => true, // branch deleted + worktree gone
+            _ => false,
+        };
+
+        if should_verify {
+            let reason = match branch_merged {
+                Some(true) => format!(
+                    "branch '{}' is merged into '{default_branch}'",
+                    t.branch.as_deref().unwrap_or("?")
+                ),
+                _ => format!(
+                    "branch '{}' no longer exists and worktree is gone",
+                    t.branch.as_deref().unwrap_or("?")
+                ),
+            };
+            changes.push(ReconcileChange {
+                task_id: t.id.clone(),
+                old_status: t.status,
+                new_status: Status::Verified,
+                reason,
+            });
+            t.status = Status::Verified;
+            t.worktree = None; // clear stale reference
+        } else if worktree_gone && t.worktree.is_some() {
+            // Worktree gone but branch exists/unknown — just clear the stale path.
+            changes.push(ReconcileChange {
+                task_id: t.id.clone(),
+                old_status: t.status,
+                new_status: t.status,
+                reason: format!(
+                    "cleared stale worktree reference (path no longer on disk)"
+                ),
+            });
+            t.worktree = None;
+        }
+    }
+
+    Ok((run, changes))
+}
+
 // ── Stats ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
