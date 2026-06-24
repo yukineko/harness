@@ -59,6 +59,9 @@ fugu-router record --title "..." --files a,b --class parallel \
                    --model sonnet --status verified --cost 0.12   # feed an outcome
 fugu-router suggest --files src/auth/login.ts "fix login validation"  # one-off
 fugu-router stats [--json]                                   # per-model pass-rate / avg cost
+fugu-router import --episodes /path/episodes.jsonl [--playbooks /path/playbooks.jsonl] [--dry-run]
+                                                             # merge another machine's stores (content-hash dedup)
+fugu-router import --dedup                                   # dedup local stores in place
 fugu-router init                                             # write fugu-router.toml
 fugu-router prompt                                           # UserPromptSubmit hook (injects a summary)
 ```
@@ -119,6 +122,29 @@ Remove with `fugu-router uninstall`. Set `FUGU_ROUTER_DISABLED=1` to no-op.
 `pass_threshold` (how sure before trusting a cheaper tier), `min_samples` (how
 much history before leaving the cold-start prior), `sim_threshold` (how similar a
 past task must be to count).
+
+| Key | Default | Description |
+|---|---|---|
+| `store_file` | `~/.fugu-router/episodes.jsonl` | Episode store path (redirect to a git-tracked path to share across machines) |
+| `playbook_file` | `~/.fugu-router/playbooks.jsonl` | Playbook store path (same; both stores can be git-tracked independently) |
+
+### Sharing stores across machines (git workflow)
+
+Point both `store_file` and `playbook_file` at files inside a git repo. On the
+receiving machine, after pulling, run `fugu-router import --episodes
+/path/to/synced/episodes.jsonl` to merge. The import deduplicates by content
+hash so pulling the same episode twice is safe.
+
+`fugu-router import --dedup` rewrites the local stores in place, dropping any
+exact duplicates (content-hash comparison; first-seen order is preserved).
+
+### Path normalisation in `record`
+
+`fugu-router record --files ...` normalises absolute file paths to repo-relative
+paths at record time. For example, `/Users/yuki/src/harness/crates/x.rs` becomes
+`crates/x.rs` when the current working directory is inside the harness repo. This
+eliminates machine-specific path segments from the episode store so paths transfer
+cleanly across machines and produce better k-NN file-token similarity.
 
 ## Cold start
 

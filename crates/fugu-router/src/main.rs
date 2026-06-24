@@ -11,6 +11,7 @@ mod config;
 mod decomp;
 mod inject;
 mod install;
+mod pathutil;
 mod policy;
 mod rag;
 mod rng;
@@ -104,6 +105,23 @@ enum Command {
     Uninstall {
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Merge another machine's store file(s) into the local stores, deduplicating
+    /// by content hash. At least one of --episodes or --playbooks must be given.
+    /// With --dedup (and no source path), deduplicates the LOCAL stores in place.
+    Import {
+        /// Path to the source episodes JSONL to import.
+        #[arg(long)]
+        episodes: Option<PathBuf>,
+        /// Path to the source playbooks JSONL to import.
+        #[arg(long)]
+        playbooks: Option<PathBuf>,
+        /// Report counts only; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Dedup the LOCAL store(s) in place rather than importing from a source.
+        #[arg(long)]
+        dedup: bool,
     },
 }
 
@@ -206,7 +224,11 @@ fn run_user(cmd: Command) -> Result<()> {
             done_criteria,
             notes,
         } => {
-            let touched = split_files(&files);
+            let raw_touched = split_files(&files);
+            // Normalise absolute paths to repo-relative so stored paths are
+            // portable across machines (no username / mount-point leakage).
+            let repo_root = pathutil::repo_root_from_cwd();
+            let touched = pathutil::normalise_paths(&raw_touched, repo_root.as_deref());
             let pass = is_pass(&status);
             let ep = store::Episode {
                 ts: store::now_secs(),
@@ -279,6 +301,12 @@ fn run_user(cmd: Command) -> Result<()> {
         Command::Init { target } => config::init_config(&target),
         Command::Install { dry_run } => install::install(dry_run),
         Command::Uninstall { dry_run } => install::uninstall(dry_run),
+        Command::Import {
+            episodes,
+            playbooks,
+            dry_run,
+            dedup,
+        } => cmd_import(&cfg, episodes, playbooks, dry_run, dedup),
         Command::Prompt => unreachable!("handled in main"),
     }
 }
@@ -297,7 +325,7 @@ fn cmd_route(cfg: &config::Config, file: Option<PathBuf>, report: Option<PathBuf
 
     let mut report_map = serde_json::Map::new();
     for t in &mut dec.tasks {
-        let d = route_decision(&cfg, &t.title, &t.touched_files, &t.class, &eps, &mut rng);
+        let d = route_decision(cfg, &t.title, &t.touched_files, &t.class, &eps, &mut rng);
         // gated tasks keep whatever the interpreter chose; everything else is set.
         if d.basis != "gated" {
             t.suggested_model = d.worker_model.clone();
@@ -325,6 +353,72 @@ fn cmd_route(cfg: &config::Config, file: Option<PathBuf>, report: Option<PathBuf
             .with_context(|| format!("writing report {}", rp.display()))?;
         eprintln!("wrote routing report -> {}", rp.display());
     }
+    Ok(())
+}
+
+fn cmd_import(
+    cfg: &config::Config,
+    episodes_src: Option<PathBuf>,
+    playbooks_src: Option<PathBuf>,
+    dry_run: bool,
+    dedup: bool,
+) -> Result<()> {
+    if dedup {
+        // Dedup LOCAL stores in place; source paths must not be given.
+        if episodes_src.is_some() || playbooks_src.is_some() {
+            anyhow::bail!("--dedup cannot be combined with --episodes or --playbooks source paths");
+        }
+        let ep_path = cfg.store_path();
+        if ep_path.exists() {
+            let s = store::dedup_episodes(&ep_path).context("deduplicating episodes")?;
+            println!(
+                "episodes: {} read, {} unique kept, {} duplicates removed",
+                s.read, s.new, s.skipped
+            );
+        } else {
+            println!("episodes: store not found, nothing to dedup");
+        }
+        let pb_path = cfg.playbook_path();
+        if pb_path.exists() {
+            let s = store::dedup_playbooks(&pb_path).context("deduplicating playbooks")?;
+            println!(
+                "playbooks: {} read, {} unique kept, {} duplicates removed",
+                s.read, s.new, s.skipped
+            );
+        } else {
+            println!("playbooks: store not found, nothing to dedup");
+        }
+        return Ok(());
+    }
+
+    if episodes_src.is_none() && playbooks_src.is_none() {
+        anyhow::bail!("at least one of --episodes or --playbooks must be specified (or use --dedup)");
+    }
+
+    if dry_run {
+        eprintln!("dry-run mode: no files will be written");
+    }
+
+    if let Some(src) = episodes_src {
+        let dst = cfg.store_path();
+        let s = store::import_episodes(&src, &dst, dry_run)
+            .with_context(|| format!("importing episodes from {}", src.display()))?;
+        println!(
+            "episodes: {} read, {} new appended, {} duplicates skipped",
+            s.read, s.new, s.skipped
+        );
+    }
+
+    if let Some(src) = playbooks_src {
+        let dst = cfg.playbook_path();
+        let s = store::import_playbooks(&src, &dst, dry_run)
+            .with_context(|| format!("importing playbooks from {}", src.display()))?;
+        println!(
+            "playbooks: {} read, {} new appended, {} duplicates skipped",
+            s.read, s.new, s.skipped
+        );
+    }
+
     Ok(())
 }
 

@@ -8,6 +8,8 @@ pub struct Config {
     pub enabled: bool,
     /// Override the episode store path. Default: ~/.fugu-router/episodes.jsonl
     pub store_file: Option<String>,
+    /// Override the playbook store path. Default: ~/.fugu-router/playbooks.jsonl
+    pub playbook_file: Option<String>,
     /// Neighbours to retrieve per task.
     pub k: usize,
     /// Minimum similarity for a neighbour to count.
@@ -27,6 +29,7 @@ impl Default for Config {
         Self {
             enabled: true,
             store_file: None,
+            playbook_file: None,
             k: 6,
             sim_threshold: 0.15,
             pass_threshold: 0.7,
@@ -52,13 +55,16 @@ impl Config {
 
     pub fn store_path(&self) -> PathBuf {
         match &self.store_file {
-            Some(p) => harness_core::config::expand_tilde(p).into(),
+            Some(p) => harness_core::config::expand_tilde(p),
             None => home_dir().join(".fugu-router").join("episodes.jsonl"),
         }
     }
 
     pub fn playbook_path(&self) -> PathBuf {
-        home_dir().join(".fugu-router").join("playbooks.jsonl")
+        match &self.playbook_file {
+            Some(p) => harness_core::config::expand_tilde(p),
+            None => home_dir().join(".fugu-router").join("playbooks.jsonl"),
+        }
     }
 }
 
