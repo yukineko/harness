@@ -40,7 +40,7 @@ const FILE_STOP: &[&str] = &[
 pub fn file_tokens(files: &[String]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for f in files {
-        for seg in f.to_lowercase().split(|c: char| matches!(c, '/' | '\\' | '.')) {
+        for seg in f.to_lowercase().split(['/', '\\', '.']) {
             let seg = seg.trim_matches('*');
             if seg.len() >= 2 && !FILE_STOP.contains(&seg) {
                 crate::semantic::expand_into(&mut out, seg);

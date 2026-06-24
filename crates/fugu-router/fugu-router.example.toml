@@ -7,6 +7,9 @@ enabled = true
 # Episode store (the learning signal). One JSON object per line.
 # store_file = "~/.fugu-router/episodes.jsonl"
 
+# Playbook store (verified task procedures). One JSON object per line.
+# playbook_file = "~/.fugu-router/playbooks.jsonl"
+
 # How many nearest past tasks to consider when routing.
 k = 6
 
