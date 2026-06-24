@@ -77,8 +77,17 @@ impl RunState {
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("creating state dir {}", dir.display()))?;
         let path = dir.join(format!("{}.json", self.run_id));
+        let tmp_path = dir.join(format!("{}.json.tmp", self.run_id));
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, json).with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(&tmp_path, &json)
+            .with_context(|| format!("writing tmp {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "renaming {} -> {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
         Ok(path)
     }
 
@@ -139,8 +148,19 @@ pub fn decomposition_path(cfg: &Config, cwd: &Path, run_id: &str) -> PathBuf {
 /// Persist the raw decomposition JSON alongside the run state.
 pub fn save_decomposition(cfg: &Config, cwd: &Path, run_id: &str, json: &str) -> Result<()> {
     let path = decomposition_path(cfg, cwd, run_id);
-    std::fs::write(&path, json)
-        .with_context(|| format!("writing decomposition to {}", path.display()))
+    let dir = path.parent().expect("decomposition path has no parent");
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating state dir {}", dir.display()))?;
+    let tmp_path = dir.join(format!("{run_id}.decomposition.json.tmp"));
+    std::fs::write(&tmp_path, json)
+        .with_context(|| format!("writing tmp decomposition to {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &path).with_context(|| {
+        format!(
+            "renaming {} -> {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })
 }
 
 /// Load the raw decomposition JSON for an existing run. Fails if not found.
@@ -437,5 +457,103 @@ mod tests {
         // empty dir — no recognizable project files
         assert_eq!(auto_detect_test_command(&dir), "cargo test");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Helper: build a minimal Config pointing state_dir at a temp directory.
+    fn make_test_cfg(tmp: &Path) -> Config {
+        Config {
+            worktree_base: tmp.join("worktrees"),
+            default_branch: "main".to_string(),
+            shared_globs: Vec::new(),
+            max_parallel: 4,
+            state_dir: tmp.to_path_buf(),
+            test_command: None,
+        }
+    }
+
+    #[test]
+    fn save_is_atomic_no_tmp_left() {
+        let tmp = make_tmp_dir("atomic-save");
+        let cfg = make_test_cfg(&tmp);
+        let rs = RunState {
+            run_id: "run-atomic".into(),
+            goal: "test atomic write".into(),
+            tasks: vec![],
+        };
+        // save must succeed
+        let saved_path = rs.save(&cfg, &tmp).unwrap();
+        // final file exists
+        assert!(saved_path.exists(), "final .json must exist after save");
+        // no stray .tmp file should remain
+        let tmp_path = saved_path.with_extension("json.tmp");
+        // Note: the tmp file has extension "json.tmp" which means the full name
+        // is "<run_id>.json.tmp", not "<run_id>.json" + ".tmp".
+        // Re-derive it the same way the impl does.
+        let dir = saved_path.parent().unwrap();
+        let leftover_tmp = dir.join(format!("{}.json.tmp", rs.run_id));
+        assert!(
+            !leftover_tmp.exists(),
+            "tmp file must not remain after atomic rename: {}",
+            leftover_tmp.display()
+        );
+        // Silence unused-variable warning for the first derivation attempt.
+        let _ = tmp_path;
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let tmp = make_tmp_dir("atomic-roundtrip");
+        let cfg = make_test_cfg(&tmp);
+        let rs = RunState {
+            run_id: "run-rt".into(),
+            goal: "roundtrip goal".into(),
+            tasks: vec![TaskState {
+                id: "t1".into(),
+                status: Status::Pending,
+                worktree: None,
+                branch: None,
+            }],
+        };
+        rs.save(&cfg, &tmp).unwrap();
+        let loaded = RunState::load(&cfg, &tmp, "run-rt").unwrap();
+        assert_eq!(loaded.run_id, rs.run_id);
+        assert_eq!(loaded.goal, rs.goal);
+        assert_eq!(loaded.tasks.len(), 1);
+        assert_eq!(loaded.tasks[0].id, "t1");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn save_decomposition_is_atomic_no_tmp_left() {
+        let tmp = make_tmp_dir("atomic-decomp");
+        let cfg = make_test_cfg(&tmp);
+        let run_id = "run-decomp";
+        let json = r#"{"tasks":[]}"#;
+        save_decomposition(&cfg, &tmp, run_id, json).unwrap();
+        // final file exists
+        let final_path = decomposition_path(&cfg, &tmp, run_id);
+        assert!(final_path.exists(), "decomposition .json must exist after save");
+        // no stray .tmp remains
+        let dir = final_path.parent().unwrap();
+        let leftover_tmp = dir.join(format!("{run_id}.decomposition.json.tmp"));
+        assert!(
+            !leftover_tmp.exists(),
+            "tmp decomposition file must not remain: {}",
+            leftover_tmp.display()
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn save_decomposition_roundtrip() {
+        let tmp = make_tmp_dir("decomp-rt");
+        let cfg = make_test_cfg(&tmp);
+        let run_id = "run-decomp-rt";
+        let payload = r#"{"tasks":[{"id":"x"}]}"#;
+        save_decomposition(&cfg, &tmp, run_id, payload).unwrap();
+        let loaded = load_decomposition(&cfg, &tmp, run_id).unwrap();
+        assert_eq!(loaded, payload);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
