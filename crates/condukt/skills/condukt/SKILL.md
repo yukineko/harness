@@ -29,13 +29,13 @@ allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash
 ## 手順
 
 ### Phase 0 — 受領
-引数から課題文を取る (無ければ直前の会話の依頼)。`--dry-run` なら Phase 4 の schedule 提示で止める。
+引数から課題文を取る (無ければ直前の会話の依頼)。`--dry-run` なら Phase 3 の schedule 提示で止める。
 
 ### Phase 0.5 — リサーチ (researcher agent, 条件付き)
 以下のいずれかを満たす場合に `condukt-researcher` を起動する:
 - 課題が外部ライブラリ/API に依存しており、仕様が手元に無い
 - 既知の落とし穴 (breaking change・互換性問題) が想定される
-- 過去の類似実装パターンが不明
+- 新しいアーキテクチャパターンを導入する場合
 
 以下の場合は省略して Phase 1 に進む:
 - 課題がコードベース内完結で外部依存が明らか
@@ -99,8 +99,7 @@ RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、ru
      commit、merge はするな」** を渡す。加えて以下を渡す (子はこの会話の文脈を見られない):
      - `reproduction_tests` (あれば): `t.reproduction_tests` — worker の TDD ループ起点
      - `target_symbols` (あれば): `t.target_symbols` — 編集対象の関数/クラス名
-     - `interface_context` (任意): `t.target_symbols` のスコープ外シグネチャ等を main が Grep で集めて渡してよい。
-       省略可 — 渡さなければ worker が自分で Grep して補う。
+     - `interface_context`: `t.target_symbols` が存在する場合は main が Grep でスコープ外シグネチャを収集して渡す（worker に Grep させない）。`target_symbols` がない場合は省略する。
      - `failure_context` (再投入時のみ): `{reason: <前回 verifier.reason>, failed_tests: <失敗テスト出力>, diff: <前回 git diff>}`
   4. worker の返却 status を確認する:
      - `done`: `condukt state set --run $RID --task <t.id> --status done`
@@ -145,7 +144,7 @@ fugu-router record --title "<task.title>" --files "<task.touched_files をカン
 ```
 condukt state gate --run $RID      # exit 0 まで完了宣言しない
 ```
-- FAIL の理由 (未 verified / worktree 残置 / 未コミット) を解消する。`failed` タスクは **Phase 6 のカスケードエスカレーション手順に従って** Phase 5 に再投入する (failure_context 注入・model 昇格・上限到達時のユーザーエスカレーションはすべて Phase 6 参照)。
+- FAIL の理由 (未 verified / worktree 残置 / 未コミット) を解消する。`failed` タスクが残っている場合は Phase 6 に戻る。
 - 各 verified タスクの worktree を **自分の turn 内で** 閉じる:
   `condukt worktree merge --branch condukt/<id>` → `condukt worktree remove --path "$WP" --branch condukt/<id>`。
   最後に `condukt worktree cleanup` で orphan が無いことを確認。
