@@ -282,6 +282,22 @@ pub fn reconcile_run(
     Ok((run, changes))
 }
 
+// ── Stuck detection ───────────────────────────────────────────────────────
+
+/// Returns task ids that are stuck: status=Running and updated_at is older than stuck_ttl_secs.
+///
+/// Tasks whose `updated_at` is `None` (legacy data without timestamp) are **not**
+/// considered stuck — absence of evidence is not evidence of being stuck.
+pub fn stuck_task_ids(run: &RunState, stuck_ttl_secs: u64) -> Vec<String> {
+    let threshold = now_secs() - stuck_ttl_secs as i64;
+    run.tasks
+        .iter()
+        .filter(|t| t.status == Status::Running)
+        .filter(|t| t.updated_at.map(|ts| ts < threshold).unwrap_or(false))
+        .map(|t| t.id.clone())
+        .collect()
+}
+
 // ── Stats ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -482,6 +498,7 @@ mod tests {
             max_parallel: 4,
             state_dir: tmp.to_path_buf(),
             test_command: None,
+            stuck_ttl_secs: 1800,
         }
     }
 
@@ -619,5 +636,96 @@ mod tests {
         assert!(ts <= after, "timestamp must be <= after");
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ── stuck_task_ids tests ──────────────────────────────────────────────
+
+    fn make_run_with_tasks(tasks: Vec<TaskState>) -> RunState {
+        RunState {
+            run_id: "run-stuck-test".into(),
+            goal: "stuck detection".into(),
+            tasks,
+        }
+    }
+
+    /// A Running task whose updated_at is older than the TTL must appear in the result.
+    #[test]
+    fn stuck_task_ids_ttl_exceeded() {
+        let ttl: u64 = 60;
+        // Set updated_at to 2× TTL ago so it is definitely past the threshold.
+        let old_ts = now_secs() - (ttl as i64 * 2);
+        let run = make_run_with_tasks(vec![TaskState {
+            id: "stuck-task".into(),
+            status: Status::Running,
+            worktree: None,
+            branch: None,
+            updated_at: Some(old_ts),
+        }]);
+        let ids = stuck_task_ids(&run, ttl);
+        assert_eq!(ids, vec!["stuck-task".to_string()]);
+    }
+
+    /// A Running task whose updated_at is recent must NOT appear in the result.
+    #[test]
+    fn stuck_task_ids_ttl_not_exceeded() {
+        let ttl: u64 = 3600;
+        // Set updated_at to just 10 seconds ago — well within TTL.
+        let recent_ts = now_secs() - 10;
+        let run = make_run_with_tasks(vec![TaskState {
+            id: "active-task".into(),
+            status: Status::Running,
+            worktree: None,
+            branch: None,
+            updated_at: Some(recent_ts),
+        }]);
+        let ids = stuck_task_ids(&run, ttl);
+        assert!(ids.is_empty(), "recent Running task must not be stuck");
+    }
+
+    /// A Running task with updated_at == None (legacy data) must NOT be considered stuck.
+    #[test]
+    fn stuck_task_ids_none_updated_at_not_stuck() {
+        let ttl: u64 = 60;
+        let run = make_run_with_tasks(vec![TaskState {
+            id: "legacy-task".into(),
+            status: Status::Running,
+            worktree: None,
+            branch: None,
+            updated_at: None,
+        }]);
+        let ids = stuck_task_ids(&run, ttl);
+        assert!(ids.is_empty(), "Running task with no timestamp must not be stuck");
+    }
+
+    /// Non-Running tasks must never appear, even if their timestamp is ancient.
+    #[test]
+    fn stuck_task_ids_only_running_tasks_are_candidates() {
+        let ttl: u64 = 60;
+        let ancient_ts = now_secs() - 9999;
+        let run = make_run_with_tasks(vec![
+            TaskState {
+                id: "pending-old".into(),
+                status: Status::Pending,
+                worktree: None,
+                branch: None,
+                updated_at: Some(ancient_ts),
+            },
+            TaskState {
+                id: "done-old".into(),
+                status: Status::Done,
+                worktree: None,
+                branch: None,
+                updated_at: Some(ancient_ts),
+            },
+            TaskState {
+                id: "verified-old".into(),
+                status: Status::Verified,
+                worktree: None,
+                branch: None,
+                updated_at: Some(ancient_ts),
+            },
+        ]);
+        let ids = stuck_task_ids(&run, ttl);
+        assert!(ids.is_empty(), "only Running tasks should be candidates for stuck detection");
     }
 }
