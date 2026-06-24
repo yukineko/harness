@@ -95,6 +95,15 @@ KNOWLEDGE=$(condukt knowledge 2>/dev/null || true)
 # KNOWLEDGE が空でなければ interpreter プロンプトに knowledge_context: $KNOWLEDGE として渡す
 ```
 
+**playbook 検索 (soft 依存)**: fugu-router が利用可能なら、類似過去タスクの手順を取得して
+interpreter プロンプトに含める (Devin Playbooks 相当):
+```
+if command -v fugu-router >/dev/null 2>&1; then
+  PLAYBOOKS=$(fugu-router playbook search --query "<課題文の要約>" --k 3 2>/dev/null || true)
+  # PLAYBOOKS が "[]" 以外なら interpreter プロンプトに playbook_context: $PLAYBOOKS として渡す
+fi
+```
+
 `Task` で `condukt-interpreter` 相当 (subagent_type を持たない環境では `Explore` を model:opus で)
 を起動し、課題を **Decomposition JSON** にさせる。スキーマは `agents/condukt-interpreter.md` 準拠:
 ```json
@@ -220,8 +229,12 @@ opus で失敗した場合、または初回から opus を使っていた場合
 ```
 fugu-router record --title "<task.title>" --files "<task.touched_files をカンマ区切り>" \
   --class <task.class> --model <worker に使ったモデル> \
-  --status verified|failed --cost <gauge から取れれば>
+  --status verified|failed --cost <gauge から取れれば> \
+  --done-criteria "<task.done_criteria>" \
+  --notes "<worker サマリの要点 (任意)>"
 ```
+`--done-criteria` を渡すと、verified タスクの手順が `~/.fugu-router/playbooks.jsonl` に蓄積され
+次回 Phase 1 の playbook 検索に現れる (Devin Playbooks 相当)。failed の場合は無視される。
 
 ### Phase 7 — 完了ゲート + 統合
 ```
