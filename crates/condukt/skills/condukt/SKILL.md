@@ -171,31 +171,31 @@ BASELINE_EXIT=$?
 
 ### Phase 5 — 並列実装 (batches を順に)
 `schedule.batches` を**先頭から順に** 処理する (バッチ間は依存順、バッチ内は並列):
-- バッチ内の各タスク `t` について:
-  1. `WP=$(condukt worktree create --topic <t.id> --branch condukt/<t.id>)`
-  2. `condukt state set --run $RID --task <t.id> --status running --worktree "$WP" --branch condukt/<t.id>`
-  3. `Task` で `condukt-worker` 相当を起動 (model=`t.suggested_model`)。プロンプトに
-     **作業ディレクトリ=$WP・触れてよいファイル=t.touched_files・done_criteria・「worktree 内で
-     commit、merge はするな」** を渡す。加えて以下を渡す (子はこの会話の文脈を見られない):
-     - `reproduction_tests` (あれば): `t.reproduction_tests` — worker の TDD ループ起点
-     - `target_symbols` (あれば): `t.target_symbols` — 編集対象の関数/クラス名
-     - `interface_context`: `t.target_symbols` が存在する場合は main が Grep でスコープ外シグネチャを
-       ピンポイント抽出して渡す（worker に Grep させない）。シグネチャ＋docstring のみを抽出して文脈を
-       圧縮する: `grep -n "^pub fn\|^fn\|^pub struct\|^struct\|^pub trait\|^trait" <file> | head -60`
-       や `grep -A 3 "fn <symbol>" <file>` で定義行とその直後数行のみを取得する。`target_symbols`
-       がない場合は省略する。
-     - `knowledge_context` (soft 依存): `KNOWLEDGE` 変数が空でなければ渡す。プロジェクト固有の規約・
-       落とし穴・推奨パターンを worker が参照できる (Devin Knowledge Base 相当)。
-     - `peer_tasks` (同バッチ並列タスクがある場合): 同バッチの他タスクの `[{id, title, touched_files}]`
-       サマリを渡し、スコープ衝突を防ぐ (Devin peer-awareness 相当)。title + touched_files の要約のみ
-       に留め、done_criteria や diff は含めない。
-     - `failure_context` (再投入時のみ): `{reason: <前回 verifier.reason>, failed_tests: <失敗テスト出力>, diff: <前回 git diff>}`
-  4. worker の返却 status を確認する:
-     - `done`: `condukt state set --run $RID --task <t.id> --status done` し、**他の worker の完了を待たずにその場で Phase 6 の verifier を起動する**（パイプライン化）。
-     - `needs-serial`: 分類ミス。worktree を破棄し、タスクを serial として main で直接実装して commit する。
-     - `blocked`: ユーザーにエスカレーションし、指示を仰ぐ (`AskUserQuestion` で報告する)。
-- バッチ内は 1 メッセージで複数 `Task` を同時発行して並列化する。worker が完了するたびに即 verifier を起動し、worker 完了の待ち合わせはしない（後続 worker が動いている間に先行タスクの検証が進む）。
-- `serial` タスクは worktree に出さず main で順に実装し commit。
+
+バッチ内の各タスク `t` について:
+1. `WP=$(condukt worktree create --topic <t.id> --branch condukt/<t.id>)`
+2. `condukt state set --run $RID --task <t.id> --status running --worktree "$WP" --branch condukt/<t.id>`
+3. `Task` で `condukt-worker` 相当を起動 (model=`t.suggested_model`)。下表のフィールドを渡す。
+4. worker の返却 status を確認する:
+   - `done`: `condukt state set --run $RID --task <t.id> --status done` し、**他の worker の完了を待たずにその場で Phase 6 の verifier を起動する**（パイプライン化）。
+   - `needs-serial`: 分類ミス。worktree を破棄し、タスクを serial として main で直接実装して commit する。
+   - `blocked`: ユーザーにエスカレーションし、指示を仰ぐ (`AskUserQuestion` で報告する)。
+
+バッチ内は 1 メッセージで複数 `Task` を同時発行して並列化する。worker が完了するたびに即 verifier を起動し、worker 完了の待ち合わせはしない（後続 worker が動いている間に先行タスクの検証が進む）。`serial` タスクは worktree に出さず main で順に実装し commit。
+
+#### Worker プロンプト構成テンプレート (Phase 5 で毎回渡すフィールド一覧)
+
+| フィールド | 必須/省略可 | 収集方法 | 説明 |
+|---|---|---|---|
+| 作業ディレクトリ | 必須 | `condukt worktree create` の出力 (`$WP`) | worktree 内だけで作業・commit させる起点 |
+| `touched_files` | 必須 | Decomposition JSON の `t.touched_files` | worker が触れてよいファイルのスコープ |
+| `done_criteria` | 必須 | Decomposition JSON の `t.done_criteria` | verifier が照合する合格条件 |
+| `reproduction_tests` | 省略可 | Decomposition JSON の `t.reproduction_tests` | TDD ループ起点。渡すと worker が red→green サイクルを回す |
+| `target_symbols` | 省略可 | Decomposition JSON の `t.target_symbols` | 編集対象の関数/クラス名。あれば `interface_context` も必須 |
+| `interface_context` | `target_symbols` あれば必須 | main が Grep でスコープ外シグネチャを抽出 | worker に Grep させず main が事前収集。`grep -n "^pub fn\|^fn\|..." <file> \| head -60` や `grep -A 3 "fn <symbol>" <file>` でシグネチャ＋docstring のみ抽出して圧縮 |
+| `knowledge_context` | 省略可 (soft 依存) | Phase 1 で取得した `$KNOWLEDGE` 変数 | プロジェクト固有の規約・落とし穴・推奨パターン (Devin Knowledge Base 相当) |
+| `peer_tasks` | 並列タスクがあれば必須 | 同バッチの他タスクの `[{id, title, touched_files}]` | スコープ衝突防止 (Devin peer-awareness 相当)。`title + touched_files` の要約のみ。`done_criteria` や diff は含めない |
+| `failure_context` | 再投入時のみ | verifier の `reason` + 失敗テスト出力 + `git diff` | `{reason, failed_tests, diff}` の形式。worker が前回失敗を把握して別アプローチを取る |
 
 ### Phase 6 — 検証 (verifier agent) + 実績の記録
 
