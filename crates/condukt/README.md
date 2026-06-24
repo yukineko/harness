@@ -30,6 +30,9 @@ SessionStart hook.
 | `condukt validate` | check a decomposition JSON (unique ids, known deps, no cycles). |
 | `condukt worktree create/merge/remove/cleanup/list` | git-worktree lifecycle; enforces "path outside the repo" and "one dir = one branch". |
 | `condukt state init/set/show/gate/list` | persist a run's task statuses; `gate` exits non-zero until every task is verified and no worktree is left dirty or unremoved. |
+| `condukt state stats` | aggregate all runs (complete and incomplete): completion rate, task count, status distribution — useful as a before/after benchmark. |
+| `condukt state reconcile --run <id> [--dry-run]` | auto-promote tasks to `verified` when their branch is already merged into the default branch or has been deleted with its worktree. Fixes stale state after a session crash without manual `state set` calls. |
+| `condukt state resume-context --run <id>` | emit pending/failed/done tasks as JSON for resuming a stopped run across sessions (see Phase 0-alt in the skill). |
 | `condukt state test` | run the project's test suite from the repo root (auto-detects `cargo test` / `npm test` / `pytest`, or uses `[test].command` from config). |
 | `condukt restore` | SessionStart hook: reminds you of unfinished runs / orphan worktrees. |
 | `condukt statusline` | one-line run progress for the `statusLine` setting. |

@@ -171,7 +171,15 @@ fugu-router record --title "<task.title>" --files "<task.touched_files をカン
 ```
 condukt state gate --run $RID      # exit 0 まで完了宣言しない
 ```
-- FAIL の理由 (未 verified / worktree 残置 / 未コミット) を解消する。`failed` タスクが残っている場合は Phase 6 に戻る。
+- gate FAIL の場合、**まず reconcile を試みる**（branch がマージ済みのタスクを自動 verified に昇格）:
+  ```
+  condukt state reconcile --run $RID
+  condukt state gate --run $RID    # 再チェック
+  ```
+- reconcile 後も FAIL が残る場合に限り、理由ごとに対処する:
+  - `failed` タスク → Phase 6 のカスケードエスカレーションへ戻す
+  - worktree 残置 → `condukt worktree cleanup --remove` で掃除
+  - 未コミット → 該当 worktree 内で commit させる
 - 各 verified タスクの worktree を **自分の turn 内で** 閉じる:
   `condukt worktree merge --branch condukt/<id>` → `condukt worktree remove --path "$WP" --branch condukt/<id>`。
   最後に `condukt worktree cleanup` で orphan が無いことを確認。
