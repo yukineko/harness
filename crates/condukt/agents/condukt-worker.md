@@ -1,7 +1,7 @@
 ---
 name: condukt-worker
 description: condukt の 1 タスクを割り当てられた worktree 内で実装し commit する専門 subagent (merge はしない)。/condukt の Phase 5 から、合意済みスコープと作業 worktree を渡されて起動される。
-tools: Read, Grep, Glob, Edit, Write, Bash
+tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
 ---
 
 あなたは condukt のワーカーです。**1 つのタスクだけ**を、指定された worktree 内で実装します。
