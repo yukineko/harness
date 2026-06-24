@@ -152,6 +152,43 @@ pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     reasons
 }
 
+/// Run the project's test suite and exit with its exit code.
+pub fn run_tests(cfg: &Config, cwd: &Path, _rs: &RunState) -> Result<()> {
+    let cmd_str = cfg
+        .test_command
+        .clone()
+        .unwrap_or_else(|| auto_detect_test_command(cwd));
+    eprintln!("condukt: running tests: {}", cmd_str);
+    let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+    if parts.is_empty() {
+        bail!("empty test command");
+    }
+    let status = std::process::Command::new(parts[0])
+        .args(&parts[1..])
+        .current_dir(cwd)
+        .status()
+        .with_context(|| format!("failed to run '{cmd_str}'"))?;
+    if status.success() {
+        eprintln!("condukt: tests passed");
+        Ok(())
+    } else {
+        bail!("tests failed (exit {})", status.code().unwrap_or(-1))
+    }
+}
+
+fn auto_detect_test_command(cwd: &Path) -> String {
+    if cwd.join("Cargo.toml").exists() {
+        return "cargo test".to_string();
+    }
+    if cwd.join("package.json").exists() {
+        return "npm test".to_string();
+    }
+    if cwd.join("pyproject.toml").exists() || cwd.join("setup.py").exists() {
+        return "pytest".to_string();
+    }
+    "cargo test".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +224,43 @@ mod tests {
             ],
         };
         assert_eq!(rs.counts(), (1, 2));
+    }
+
+    fn make_tmp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("condukt-test-{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn auto_detect_cargo() {
+        let dir = make_tmp_dir("auto-cargo");
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        assert_eq!(auto_detect_test_command(&dir), "cargo test");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn auto_detect_npm() {
+        let dir = make_tmp_dir("auto-npm");
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        assert_eq!(auto_detect_test_command(&dir), "npm test");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn auto_detect_pytest() {
+        let dir = make_tmp_dir("auto-pytest");
+        std::fs::write(dir.join("pyproject.toml"), "").unwrap();
+        assert_eq!(auto_detect_test_command(&dir), "pytest");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn auto_detect_fallback() {
+        let dir = make_tmp_dir("auto-fallback");
+        // empty dir — no recognizable project files
+        assert_eq!(auto_detect_test_command(&dir), "cargo test");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

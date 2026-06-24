@@ -133,6 +133,11 @@ enum StateAction {
     },
     /// List open runs (run_id<TAB>done/total<TAB>goal).
     List,
+    /// Run the project's test suite (from config [test].command or auto-detect).
+    Test {
+        #[arg(long)]
+        run: String,
+    },
 }
 
 fn main() {
@@ -316,6 +321,10 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 let (done, total) = rs.counts();
                 println!("{}\t{}/{}\t{}", rs.run_id, done, total, rs.goal);
             }
+        }
+        StateAction::Test { run } => {
+            let rs = state::RunState::load(cfg, cwd, &run)?;
+            state::run_tests(cfg, cwd, &rs)?;
         }
     }
     Ok(())
