@@ -141,3 +141,10 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 - バイナリ不在 → README の導入手順を案内 (plugin install)。
 - 子が共有ファイルに触りたがる → 分類ミス。serial 降格して main で実装。
 - worktree 残置 → Phase 7 で必ず閉じる。`condukt state gate` が残置を検出する。
+- **condukt 自身を改修する場合** → 触れてよいファイルは必ず **git リポジトリ側**
+  (`crates/condukt/agents/`・`crates/condukt/skills/`・`crates/condukt/src/` を含む
+  worktree) を指す。**install キャッシュ (`~/.claude/plugins/cache/.../condukt/...`) を
+  worker に編集させない** — キャッシュ編集は git 外でリポジトリと黙って乖離し、新規 install で
+  消える。worker に渡す touched_files はリポジトリ相対パスにし、統合後に
+  `crates/condukt/scripts/sync-plugin-assets.sh` でローカル install を更新する
+  (`--check` で乖離検出)。

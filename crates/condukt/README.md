@@ -110,6 +110,28 @@ cargo clippy --all-targets
 scripts/build-plugin-bin.sh        # stage bin/condukt-<os>-<arch> for the host
 ```
 
+### Source of truth: edit the repo, not the cache
+
+`crates/condukt/` (this directory) is the **single source of truth**. `/plugin
+install` copies it to `~/.claude/plugins/cache/<owner>/condukt/<version>/` as a
+plain copy (no `.git`), and the running `/condukt` skill loads its agents and
+`SKILL.md` from there. Editing that cache copy — easy to do by accident when you
+use condukt to improve condukt itself — produces edits that live outside git and
+silently diverge from the repo.
+
+Rule: **never hand-edit the cache.** Edit the files here, then refresh your local
+install. When condukt orchestrates a change to its **own** plugin, point the
+workers at this repo (a git worktree of it), never at the cache path.
+
+```
+scripts/sync-plugin-assets.sh           # repo -> cache: refresh your local install
+scripts/sync-plugin-assets.sh --check   # report drift; exit 1 if cache != repo
+```
+
+Run `--check` before committing (or wire it into a pre-push hook) to catch a
+cache that has drifted from the repo, or a new agent/skill file that was created
+in the cache but never committed.
+
 ## License
 
 MIT
