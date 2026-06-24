@@ -17,6 +17,13 @@ allowed-tools: Task, Bash(ctxrot:*), Read
 `$ARGUMENTS` の最初の語を **action**、残りを **path/label** とみなす。action が無ければ
 `list` として扱う。
 
+action の一覧:
+- `load` — その場でロード
+- `pin` / `unpin` — セッション間ポインタ登録/解除
+- `drop` / `unload` / `undrop` — context から除外/解除
+- `use-note` / `clear-note` — restore が使うノートを固定/解除
+- `list` / `status` — 現状確認（デフォルト）
+
 ---
 
 ## action ごとの手順
@@ -53,6 +60,21 @@ context から**外したい**物を登録する（`unload` は `drop` のエイ
 
 ### `undrop <path>`
 - `ctxrot ctx undrop <item>` を実行して報告。
+
+### `use-note <path>`
+次回セッション以降の `restore` が**この特定ノートを優先して使う**よう固定する。
+`ctxrot note list` で一覧を確認してからパスを選ぶ。
+
+1. `ctxrot note list` でノート一覧を表示し、使いたいパスを確認するよう促す。
+2. `ctxrot ctx use-note <path>` を実行。
+3. 「次のセッション開始時 (SessionStart) から有効になる。今すぐ確認するなら新セッションを開いて」と伝える。
+4. 自動選択に戻したいときは `ctxrot ctx clear-note` を使うと案内する。
+
+### `clear-note`
+固定中のノートを解除し、`restore` の自動選択（最新ノート優先）に戻す。
+
+- `ctxrot ctx clear-note` を実行して報告。
+- 固定が解除されると次回 SessionStart から自動選択に戻る旨を伝える。
 
 ---
 

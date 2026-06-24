@@ -28,6 +28,11 @@ pub struct LoadSet {
     /// fresh-session carryover, and surfaced by `/ctx` for a manual `/compact`.
     #[serde(default)]
     pub dropped: Vec<String>,
+    /// When set, `restore` uses this specific note path instead of auto-selecting
+    /// the latest. Set with `ctxrot ctx use-note <path>`, clear with
+    /// `ctxrot ctx clear-note`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_note: Option<String>,
 }
 
 /// The on-disk path for a project's loadset.
@@ -86,8 +91,28 @@ impl LoadSet {
         remove_item(&mut self.dropped, item)
     }
 
+    /// Set the preferred note path for `restore` to use instead of auto-selection.
+    /// Returns true if anything changed.
+    pub fn set_preferred_note(&mut self, path: &str) -> bool {
+        if self.preferred_note.as_deref() == Some(path) {
+            return false;
+        }
+        self.preferred_note = Some(path.to_string());
+        true
+    }
+
+    /// Clear the preferred note, reverting `restore` to auto-selection.
+    /// Returns true if anything changed.
+    pub fn clear_preferred_note(&mut self) -> bool {
+        if self.preferred_note.is_none() {
+            return false;
+        }
+        self.preferred_note = None;
+        true
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.pinned.is_empty() && self.dropped.is_empty()
+        self.pinned.is_empty() && self.dropped.is_empty() && self.preferred_note.is_none()
     }
 }
 
