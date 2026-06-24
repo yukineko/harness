@@ -35,9 +35,32 @@ job is to author the Japanese prose sections based on THIS conversation.
    If a section genuinely has nothing, write a short honest line (e.g. `特になし`)
    rather than leaving the placeholder.
 
-   If the conversation is long, delegate the transcript review to a **subagent**
-   and have it return just the per-section bullet points, so the main context
-   stays light (same spirit as the `/distill` skill).
+   **Distill via a fresh Sonnet subagent — never switch the main model.** Spawn a
+   subagent with `model: "sonnet"` and have it return just the per-section bullet
+   points. Pass the transcript as a **file path**, not pasted text, so the
+   subagent's fresh context only loads what it reads:
+
+   ```
+   Agent(
+     subagent_type: "general-purpose",   // or ctxrot:ctxrot-distiller
+     model: "sonnet",
+     prompt: "Read this session transcript and return ONLY the per-section
+              bullet points for a record note: 完了サマリ / つまずき・学び /
+              振り返り・確立した方針 / 残課題 / 関連. Do not implement anything.
+              Transcript: <abs path to $CLAUDE_CODE_SESSION_ID.jsonl under
+              ~/.claude/projects/<slug>/>"
+   )
+   ```
+
+   Resolve the transcript path from `$CLAUDE_CODE_SESSION_ID` (the `.jsonl` lives
+   under `~/.claude/projects/<cwd-slug>/`). The subagent starts with an empty
+   context, so even a long Opus session distills under Sonnet's window.
+
+   **Do NOT distill by switching the live session to Sonnet** (e.g. `/model
+   sonnet`). If this is an Opus 1M-context session whose live context already
+   exceeds Sonnet's 200k window, switching mid-session overflows and errors
+   ("prompt is too long"). Keep the main loop on Opus; only the subagent runs
+   Sonnet. (Same spirit as the `/distill` skill.)
 
 4. **Save** the note back to the same path.
 
@@ -52,3 +75,6 @@ job is to author the Japanese prose sections based on THIS conversation.
 - Keep the existing section order and headings; don't restructure the note.
 - If `$ARGUMENTS` is given, treat it as a focus hint for the prose (e.g. which
   thread of the session to emphasize), not as a new filename.
+- **Never switch the main session model** to do the distillation. Distill only
+  via a Sonnet subagent (step 3); the main loop stays on whatever model the
+  session started with.
