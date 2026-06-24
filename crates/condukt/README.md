@@ -30,6 +30,7 @@ SessionStart hook.
 | `condukt validate` | check a decomposition JSON (unique ids, known deps, no cycles). |
 | `condukt worktree create/merge/remove/cleanup/list` | git-worktree lifecycle; enforces "path outside the repo" and "one dir = one branch". |
 | `condukt state init/set/show/gate/list` | persist a run's task statuses; `gate` exits non-zero until every task is verified and no worktree is left dirty or unremoved. |
+| `condukt state test` | run the project's test suite from the repo root (auto-detects `cargo test` / `npm test` / `pytest`, or uses `[test].command` from config). |
 | `condukt restore` | SessionStart hook: reminds you of unfinished runs / orphan worktrees. |
 | `condukt statusline` | one-line run progress for the `statusLine` setting. |
 | `condukt init / install / uninstall` | create `~/.condukt`; manual hook wiring (plugin users don't need these). |
@@ -75,20 +76,53 @@ Remove with `condukt uninstall`.
 
 ## Configuration
 
-`~/.condukt/config.toml` (defaults shown; env overrides in parentheses):
+`~/.condukt/config.toml` (defaults shown):
 
 ```toml
-worktree_base  = "~/.condukt/worktrees"  # MUST be outside any repo  (CONDUKT_WORKTREE_BASE)
-default_branch = "main"                   #                          (CONDUKT_DEFAULT_BRANCH)
-max_parallel   = 4                        # advisory soft cap        (CONDUKT_MAX_PARALLEL)
+worktree_base  = "~/.condukt/worktrees"  # MUST be outside any repo
+default_branch = "main"
+max_parallel   = 4                        # advisory soft cap on concurrent workers
 shared_globs   = []                       # globs that force a touching task to run serially
+
+# Command `condukt state test` runs (via `sh -c`, from the repo root).
+# Omit to auto-detect (cargo test / npm test / pytest).
+# [test]
+# command = "cargo test"
 ```
 
 `shared_globs` is how you keep workers off project-wide files without hardcoding
 anything — e.g. `["**/models.py", "**/migrations/**", "docs/glossary.md"]`. Any
 parallel task touching one is demoted to serial with a warning.
 
-Set `CONDUKT_DISABLE=1` to make the hooks no-op.
+### Environment variables
+
+All config file keys can be overridden at runtime with environment variables.
+`CONDUKT_DISABLE` is a hook-only kill switch and has no config file equivalent.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CONDUKT_WORKTREE_BASE` | `~/.condukt/worktrees` | Directory where worktrees are created (must be outside any repo). |
+| `CONDUKT_DEFAULT_BRANCH` | `main` | Branch completed work is merged back into. |
+| `CONDUKT_MAX_PARALLEL` | `4` | Advisory soft cap on concurrent workers. |
+| `CONDUKT_DISABLE` | _(unset)_ | Set to `1` to make the SessionStart/statusline hooks no-op (useful in CI). |
+
+### `condukt state test`
+
+Runs the project's test suite from the repo root and propagates its exit code.
+
+```
+condukt state test --run <run-id>
+```
+
+The command source is resolved in this priority order:
+
+1. `[test].command` in `~/.condukt/config.toml`
+2. Auto-detected from the repo root: `cargo test` (Cargo.toml), `npm test` (package.json), `pytest` (pyproject.toml / setup.py), falling back to `cargo test`.
+
+The command is executed via `sh -c`, so quoted arguments, pipes, and env-var
+expansions all work as expected — e.g. `command = "pytest -k 'unit or smoke'"`.
+Running from the repo root (not the cwd of the caller) means auto-detection always
+sees the project manifest even when the caller is in a subdirectory.
 
 ## Constraints
 
