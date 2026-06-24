@@ -5,7 +5,7 @@
 //! session's conclusions survive without re-bloating context. We never inject the
 //! whole note — just the durable signal plus a pointer to read more on demand.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::loadset::LoadSet;
@@ -58,19 +58,39 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
 /// both sections are off/empty and the note carries nothing else worth a pointer).
 fn note_carryover(input: &HookInput, cfg: &Config, cwd: &Path) -> Option<String> {
     let store = Store::new(cfg.store_dir.clone());
-    // Prefer this session's own note (resume/compact keep the same session_id),
-    // so parallel sessions don't grab each other's carryover. Else fall back to a
-    // SAFE cross-session note: the latest when the stream is unambiguous, but
-    // never a sibling session's tagged note when parallel usage is detected.
-    let latest = store
-        .latest_note_for_session(cwd, &input.session_id)
-        .or_else(|| store.latest_fallback_note(cwd))?;
+
+    // Check for a user-pinned note first (`ctxrot ctx use-note`). If the pinned
+    // path no longer exists, fall back to auto-selection and surface a warning.
+    let ls = LoadSet::load(&cfg.state_dir, cwd);
+    let (latest, preferred) = if let Some(ref pref) = ls.preferred_note {
+        let p = PathBuf::from(pref);
+        if p.exists() {
+            (p, true)
+        } else {
+            // Pinned note is gone; fall back silently to auto-selection.
+            let auto = store
+                .latest_note_for_session(cwd, &input.session_id)
+                .or_else(|| store.latest_fallback_note(cwd))?;
+            (auto, false)
+        }
+    } else {
+        // Normal auto-selection: prefer this session's own note, then latest safe note.
+        let auto = store
+            .latest_note_for_session(cwd, &input.session_id)
+            .or_else(|| store.latest_fallback_note(cwd))?;
+        (auto, false)
+    };
 
     let meta = std::fs::metadata(&latest).ok()?;
     if meta.len() > READ_CAP {
         // Unexpectedly large note: just point at it, don't inline.
+        let label = if preferred {
+            "[ctxrot restore] 指定ノート（固定中）"
+        } else {
+            "[ctxrot restore] 前回の退避ノート"
+        };
         return Some(format!(
-            "[ctxrot restore] 前回の退避ノートあり: {}\n→ 必要なら読み込んで続きから作業を。",
+            "{label}あり: {}\n→ 必要なら読み込んで続きから作業を。",
             latest.display()
         ));
     }
@@ -89,7 +109,11 @@ fn note_carryover(input: &HookInput, cfg: &Config, cwd: &Path) -> Option<String>
     };
 
     let mut out = String::new();
-    out.push_str("[ctxrot restore] 前回セッションからの引き継ぎ（要約）:\n");
+    if preferred {
+        out.push_str("[ctxrot restore] 指定ノートから引き継ぎ（`ctxrot ctx use-note` で固定中）:\n");
+    } else {
+        out.push_str("[ctxrot restore] 前回セッションからの引き継ぎ（要約）:\n");
+    }
     if let Some(d) = &decisions {
         out.push_str("\n■ 決定事項:\n");
         out.push_str(d);

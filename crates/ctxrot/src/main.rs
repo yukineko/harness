@@ -149,6 +149,19 @@ enum CtxAction {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
+    /// Pin a specific note path so `restore` always uses it instead of
+    /// auto-selecting the latest. Clear with `clear-note`.
+    UseNote {
+        /// Absolute path to the note file (from `ctxrot note list`).
+        path: PathBuf,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    /// Remove the pinned note, reverting `restore` to auto-selection.
+    ClearNote {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -615,8 +628,12 @@ fn main() {
                     let ls = loadset::LoadSet::load(&cfg.state_dir, &cwd);
                     println!("loadset: {}", loadset::path_for(&cfg.state_dir, &cwd).display());
                     if ls.is_empty() {
-                        println!("(空: このプロジェクトの pin / drop はまだありません)");
+                        println!("(空: このプロジェクトの pin / drop / use-note はまだありません)");
                         return;
+                    }
+                    if let Some(ref pref) = ls.preferred_note {
+                        println!("preferred-note (restore が優先使用):");
+                        println!("  * {pref}");
                     }
                     println!("pinned ({}):", ls.pinned.len());
                     for p in &ls.pinned {
@@ -643,6 +660,27 @@ fn main() {
                     let ls = loadset::LoadSet::load(&cfg.state_dir, &resolve(cwd));
                     for d in &ls.dropped {
                         println!("{d}");
+                    }
+                }
+                CtxAction::UseNote { path, cwd } => {
+                    let path_str = path.to_string_lossy().into_owned();
+                    ctx_mutate(&cfg, resolve(cwd), "preferred-note set", &path_str, |ls| {
+                        ls.set_preferred_note(&path_str)
+                    })
+                }
+                CtxAction::ClearNote { cwd } => {
+                    let cwd = resolve(cwd);
+                    let mut ls = loadset::LoadSet::load(&cfg.state_dir, &cwd);
+                    if ls.clear_preferred_note() {
+                        match ls.save(&cfg.state_dir, &cwd) {
+                            Ok(_) => println!("preferred-note: cleared"),
+                            Err(e) => {
+                                eprintln!("loadset write failed: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        println!("preferred-note: （変更なし: 設定されていません）");
                     }
                 }
             }
