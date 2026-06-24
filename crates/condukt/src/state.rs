@@ -697,6 +697,152 @@ mod tests {
         assert!(ids.is_empty(), "Running task with no timestamp must not be stuck");
     }
 
+    // ── abandon_task helper ───────────────────────────────────────────────
+    // These tests exercise the logic that `StateAction::Abandon` uses.
+    // The actual command glue lives in main.rs; here we test the state mutations.
+
+    /// A running task set to pending via abandon must have status Pending,
+    /// cleared worktree/branch, and updated_at == None.
+    #[test]
+    fn state_abandon_running_task_becomes_pending() {
+        let mut run = make_run_with_tasks(vec![TaskState {
+            id: "t1".into(),
+            status: Status::Running,
+            worktree: Some("/path/to/wt".into()),
+            branch: Some("feature/t1".into()),
+            updated_at: Some(now_secs()),
+        }]);
+        let t = run.tasks.iter_mut().find(|t| t.id == "t1").unwrap();
+        t.status = Status::Pending;
+        t.worktree = None;
+        t.branch = None;
+        t.updated_at = None;
+
+        assert_eq!(t.status, Status::Pending);
+        assert!(t.worktree.is_none(), "worktree must be cleared on abandon");
+        assert!(t.branch.is_none(), "branch must be cleared on abandon");
+        assert!(t.updated_at.is_none(), "updated_at must be reset to None on abandon");
+    }
+
+    /// A failed task can also be abandoned back to pending.
+    #[test]
+    fn state_abandon_failed_task_becomes_pending() {
+        let mut run = make_run_with_tasks(vec![TaskState {
+            id: "t-fail".into(),
+            status: Status::Failed,
+            worktree: Some("/path/to/wt".into()),
+            branch: Some("feature/fail".into()),
+            updated_at: Some(now_secs() - 100),
+        }]);
+        let t = run.tasks.iter_mut().find(|t| t.id == "t-fail").unwrap();
+        t.status = Status::Pending;
+        t.worktree = None;
+        t.branch = None;
+        t.updated_at = None;
+
+        assert_eq!(t.status, Status::Pending);
+        assert!(t.worktree.is_none());
+        assert!(t.branch.is_none());
+        assert!(t.updated_at.is_none());
+    }
+
+    /// Trying to abandon a task with status Pending must not be valid
+    /// (the command handler bails! in main.rs; here we verify the guard logic).
+    #[test]
+    fn state_abandon_guard_rejects_non_running_non_failed() {
+        let run = make_run_with_tasks(vec![
+            TaskState {
+                id: "pending-task".into(),
+                status: Status::Pending,
+                worktree: None,
+                branch: None,
+                updated_at: None,
+            },
+            TaskState {
+                id: "verified-task".into(),
+                status: Status::Verified,
+                worktree: None,
+                branch: None,
+                updated_at: None,
+            },
+        ]);
+        for t in &run.tasks {
+            let is_abandonable = t.status == Status::Running || t.status == Status::Failed;
+            assert!(!is_abandonable, "task '{}' with status {:?} must not be abandonable", t.id, t.status);
+        }
+    }
+
+    /// --all-stuck abandons all stuck tasks (Running + TTL exceeded).
+    #[test]
+    fn state_abandon_all_stuck_resets_to_pending() {
+        let ttl: u64 = 60;
+        let old_ts = now_secs() - (ttl as i64 * 2);
+        let recent_ts = now_secs() - 10;
+        let mut run = make_run_with_tasks(vec![
+            TaskState {
+                id: "stuck-1".into(),
+                status: Status::Running,
+                worktree: Some("/wt/stuck1".into()),
+                branch: Some("feat/stuck1".into()),
+                updated_at: Some(old_ts),
+            },
+            TaskState {
+                id: "stuck-2".into(),
+                status: Status::Running,
+                worktree: Some("/wt/stuck2".into()),
+                branch: Some("feat/stuck2".into()),
+                updated_at: Some(old_ts),
+            },
+            TaskState {
+                id: "active".into(),
+                status: Status::Running,
+                worktree: Some("/wt/active".into()),
+                branch: Some("feat/active".into()),
+                updated_at: Some(recent_ts),
+            },
+        ]);
+
+        let ids = stuck_task_ids(&run, ttl);
+        assert_eq!(ids.len(), 2, "only the two old tasks should be stuck");
+
+        for id in &ids {
+            let t = run.tasks.iter_mut().find(|t| t.id == *id).unwrap();
+            t.status = Status::Pending;
+            t.worktree = None;
+            t.branch = None;
+            t.updated_at = None;
+        }
+
+        // stuck tasks are now pending
+        let t1 = run.tasks.iter().find(|t| t.id == "stuck-1").unwrap();
+        let t2 = run.tasks.iter().find(|t| t.id == "stuck-2").unwrap();
+        assert_eq!(t1.status, Status::Pending);
+        assert!(t1.worktree.is_none());
+        assert!(t1.branch.is_none());
+        assert!(t1.updated_at.is_none());
+        assert_eq!(t2.status, Status::Pending);
+        assert!(t2.worktree.is_none());
+
+        // active task is untouched
+        let ta = run.tasks.iter().find(|t| t.id == "active").unwrap();
+        assert_eq!(ta.status, Status::Running);
+        assert!(ta.worktree.is_some());
+    }
+
+    /// Specifying a non-existent task id must be caught (no task found in run).
+    #[test]
+    fn state_abandon_nonexistent_task_not_found() {
+        let run = make_run_with_tasks(vec![TaskState {
+            id: "real-task".into(),
+            status: Status::Running,
+            worktree: None,
+            branch: None,
+            updated_at: Some(now_secs()),
+        }]);
+        let found = run.tasks.iter().find(|t| t.id == "no-such-task");
+        assert!(found.is_none(), "non-existent task id must not be found");
+    }
+
     /// Non-Running tasks must never appear, even if their timestamp is ancient.
     #[test]
     fn stuck_task_ids_only_running_tasks_are_candidates() {

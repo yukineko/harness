@@ -163,6 +163,17 @@ enum StateAction {
         #[arg(long)]
         run: String,
     },
+    /// Reset running/failed tasks back to pending, clearing their worktree/branch refs.
+    Abandon {
+        #[arg(long)]
+        run: String,
+        /// Abandon a specific task (set it back to pending).
+        #[arg(long)]
+        task: Option<String>,
+        /// Abandon all stuck tasks (running + TTL exceeded) at once.
+        #[arg(long)]
+        all_stuck: bool,
+    },
 }
 
 fn main() {
@@ -496,6 +507,42 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
         StateAction::Test { run } => {
             let rs = state::RunState::load(cfg, cwd, &run)?;
             state::run_tests(cfg, cwd, &rs)?;
+        }
+        StateAction::Abandon { run, task, all_stuck } => {
+            let mut rs = state::RunState::load(cfg, cwd, &run)?;
+            let ids: Vec<String> = if let Some(task_id) = task {
+                // Specific task: validate it exists and is running/failed.
+                let t = rs
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == task_id)
+                    .ok_or_else(|| anyhow!("no task '{task_id}' in run '{run}'"))?;
+                if t.status != state::Status::Running && t.status != state::Status::Failed {
+                    bail!(
+                        "task '{task_id}' has status {:?}; only running/failed tasks can be abandoned",
+                        t.status
+                    );
+                }
+                vec![task_id]
+            } else if all_stuck {
+                state::stuck_task_ids(&rs, cfg.stuck_ttl_secs)
+            } else {
+                bail!("specify --task <id> or --all-stuck");
+            };
+
+            if ids.is_empty() {
+                eprintln!("nothing to abandon");
+            } else {
+                for id in &ids {
+                    let t = rs.tasks.iter_mut().find(|t| t.id == *id).unwrap();
+                    t.status = state::Status::Pending;
+                    t.worktree = None;
+                    t.branch = None;
+                    t.updated_at = None;
+                }
+                rs.save(cfg, cwd)?;
+                eprintln!("abandoned {} task(s): {}", ids.len(), ids.join(", "));
+            }
         }
     }
     Ok(())
