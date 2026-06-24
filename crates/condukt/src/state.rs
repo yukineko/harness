@@ -44,6 +44,18 @@ pub struct TaskState {
     pub worktree: Option<String>,
     #[serde(default)]
     pub branch: Option<String>,
+    /// Unix timestamp (seconds) when this task's status was last changed.
+    /// `None` for tasks loaded from older run-state files (backward-compatible).
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+}
+
+pub fn now_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,12 +421,14 @@ mod tests {
                     status: Status::Verified,
                     worktree: None,
                     branch: None,
+                    updated_at: None,
                 },
                 TaskState {
                     id: "b".into(),
                     status: Status::Done,
                     worktree: None,
                     branch: None,
+                    updated_at: None,
                 },
             ],
         };
@@ -513,6 +527,7 @@ mod tests {
                 status: Status::Pending,
                 worktree: None,
                 branch: None,
+                updated_at: None,
             }],
         };
         rs.save(&cfg, &tmp).unwrap();
@@ -554,6 +569,55 @@ mod tests {
         save_decomposition(&cfg, &tmp, run_id, payload).unwrap();
         let loaded = load_decomposition(&cfg, &tmp, run_id).unwrap();
         assert_eq!(loaded, payload);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Backward-compat: JSON without updated_at must load successfully with updated_at == None.
+    #[test]
+    fn backward_compat_no_updated_at() {
+        let json = r#"{
+            "run_id": "run-legacy",
+            "goal": "legacy goal",
+            "tasks": [
+                {"id": "t1", "status": "pending"}
+            ]
+        }"#;
+        let rs: RunState = serde_json::from_str(json).expect("must deserialize legacy JSON");
+        assert_eq!(rs.tasks[0].updated_at, None);
+    }
+
+    /// After a Set operation, updated_at must be Some(positive timestamp).
+    #[test]
+    fn set_status_writes_updated_at() {
+        let tmp = make_tmp_dir("timestamp-set");
+        let cfg = make_test_cfg(&tmp);
+        let before = now_secs();
+        let rs = RunState {
+            run_id: "run-ts".into(),
+            goal: "timestamp test".into(),
+            tasks: vec![TaskState {
+                id: "t1".into(),
+                status: Status::Pending,
+                worktree: None,
+                branch: None,
+                updated_at: None,
+            }],
+        };
+        rs.save(&cfg, &tmp).unwrap();
+
+        // Simulate StateAction::Set: load, mutate, save.
+        let mut loaded = RunState::load(&cfg, &tmp, "run-ts").unwrap();
+        let t = loaded.tasks.iter_mut().find(|t| t.id == "t1").unwrap();
+        t.status = Status::Running;
+        t.updated_at = Some(now_secs());
+        loaded.save(&cfg, &tmp).unwrap();
+
+        let after = now_secs();
+        let reloaded = RunState::load(&cfg, &tmp, "run-ts").unwrap();
+        let ts = reloaded.tasks[0].updated_at.expect("updated_at must be Some after Set");
+        assert!(ts >= before, "timestamp must be >= before");
+        assert!(ts <= after, "timestamp must be <= after");
+
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
