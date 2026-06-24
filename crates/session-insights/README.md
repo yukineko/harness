@@ -15,6 +15,7 @@ blocks a turn.
 
 | Hook | Records |
 |---|---|
+| **SessionStart** | prints the open **backlog** for the current project (see below) |
 | **PostToolUse** | each tool call (per-tool counts, distinct files touched) |
 | **Stop** | a completed turn; optionally writes the Obsidian session note |
 
@@ -38,6 +39,27 @@ session a1b2c3d4  [2026-06-20T18:00:00+09:00]
   turns: 12   tool events: 47   files: 9
   top tools: Edit 18, Bash 12, Read 9, Write 5, Grep 3
 ```
+
+## Backlog (cross-session open issues)
+
+Beyond the per-session record note, session-insights keeps a durable,
+self-pruning list of what's still open across sessions — so you can always tell
+what to do next. It lives in one global Obsidian note (`<vault>/backlog.md`) and
+is surfaced at **SessionStart**. Resolved items are removed from the note (the
+JSON store keeps them for history).
+
+```sh
+session-insights backlog add --project harness --text "rebuild darwin-x86_64 on an x86 Mac"
+session-insights backlog list --project harness --json   # for tools / the /record flow
+session-insights backlog resolve --id bk-3c886e1f         # drop it from the note
+session-insights backlog render                           # (re)write <vault>/backlog.md
+session-insights backlog brief                            # SessionStart summary
+```
+
+The `/record` command reconciles the backlog automatically: it resolves what the
+session closed and adds genuinely-open follow-ups from `## 残課題`. `add` is
+idempotent by project+text, so items never duplicate. Zero-config — the store is
+local; `render` is a no-op until the vault dir exists.
 
 ## Obsidian logging (opt-in)
 
