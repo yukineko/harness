@@ -31,6 +31,33 @@ allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash
 ### Phase 0 — 受領
 引数から課題文を取る (無ければ直前の会話の依頼)。`--dry-run` なら Phase 3 の schedule 提示で止める。
 
+**open run チェック**: `--resume` フラグが無い場合でも、まず停止中 run が無いか確認する:
+```
+condukt state list
+```
+出力が空でなければ、ユーザーに「再開するか新規で進めるか」を `AskUserQuestion` で確認する。
+引数が `--resume <RID>` または `resume <RID>` の形式であれば、**Phase 0-alt** へ進む。
+
+### Phase 0-alt — Resume (中断 run の再開)
+
+`--resume <RID>` が指定された場合（または Phase 0 でユーザーが再開を選んだ場合）、Phases 0–4 を
+スキップして以下を実行する:
+
+```
+condukt state resume-context --run <RID>
+```
+
+返される JSON の内容で分岐する:
+
+| 条件 | 次のアクション |
+|---|---|
+| `verified_count == total_count` | Phase 7（完了ゲート）へ |
+| `needs_verification` が空でない | Phase 6（検証）から再開。`needs_verification` タスクを検証する |
+| `pending_tasks` / `failed_tasks` が空でない | Phase 5（実装）から再開。`pending_tasks` を通常実装、`failed_tasks` を `failure_context` 付きで実装 |
+
+`failed_tasks` の `failure_context` は以前の verifier 理由が state に無い場合は省略し、
+`done_criteria` と `touched_files` のみを渡す。再開後は通常の Phase 5→6→7 フローに合流する。
+
 ### Phase 0.5 — リサーチ (researcher agent, 条件付き)
 以下のいずれかを満たす場合に `condukt-researcher` を起動する:
 - 課題が外部ライブラリ/API に依存しており、仕様が手元に無い

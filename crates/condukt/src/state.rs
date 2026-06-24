@@ -95,6 +95,17 @@ impl RunState {
 /// Open runs (not every task verified) for this project. Used by the SessionStart
 /// hook and `state list`.
 pub fn open_runs(cfg: &Config, cwd: &Path) -> Vec<RunState> {
+    all_runs(cfg, cwd)
+        .into_iter()
+        .filter(|rs| {
+            let (done, total) = rs.counts();
+            done < total
+        })
+        .collect()
+}
+
+/// All runs (complete and incomplete) for this project, sorted by run_id.
+pub fn all_runs(cfg: &Config, cwd: &Path) -> Vec<RunState> {
     let dir = project_dir(cfg, cwd);
     let mut runs = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -103,18 +114,75 @@ pub fn open_runs(cfg: &Config, cwd: &Path) -> Vec<RunState> {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
+            // Skip decomposition sidecars (run-id.decomposition.json).
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if fname.ends_with(".decomposition.json") {
+                continue;
+            }
             if let Ok(txt) = std::fs::read_to_string(&path) {
                 if let Ok(rs) = serde_json::from_str::<RunState>(&txt) {
-                    let (done, total) = rs.counts();
-                    if done < total {
-                        runs.push(rs);
-                    }
+                    runs.push(rs);
                 }
             }
         }
     }
     runs.sort_by(|a, b| a.run_id.cmp(&b.run_id));
     runs
+}
+
+// ── Decomposition sidecar ──────────────────────────────────────────────────
+
+pub fn decomposition_path(cfg: &Config, cwd: &Path, run_id: &str) -> PathBuf {
+    project_dir(cfg, cwd).join(format!("{run_id}.decomposition.json"))
+}
+
+/// Persist the raw decomposition JSON alongside the run state.
+pub fn save_decomposition(cfg: &Config, cwd: &Path, run_id: &str, json: &str) -> Result<()> {
+    let path = decomposition_path(cfg, cwd, run_id);
+    std::fs::write(&path, json)
+        .with_context(|| format!("writing decomposition to {}", path.display()))
+}
+
+/// Load the raw decomposition JSON for an existing run. Fails if not found.
+pub fn load_decomposition(cfg: &Config, cwd: &Path, run_id: &str) -> Result<String> {
+    let path = decomposition_path(cfg, cwd, run_id);
+    std::fs::read_to_string(&path)
+        .with_context(|| format!("no decomposition for run '{run_id}' at {}", path.display()))
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct RunStats {
+    pub run_id: String,
+    pub goal: String,
+    pub verified: usize,
+    pub total: usize,
+    pub is_complete: bool,
+    pub status_counts: std::collections::HashMap<String, usize>,
+}
+
+pub fn compute_stats(cfg: &Config, cwd: &Path) -> Vec<RunStats> {
+    all_runs(cfg, cwd)
+        .into_iter()
+        .map(|rs| {
+            let mut counts = std::collections::HashMap::new();
+            for t in &rs.tasks {
+                let key = format!("{:?}", t.status).to_lowercase();
+                *counts.entry(key).or_insert(0usize) += 1;
+            }
+            let (verified, total) = rs.counts();
+            let is_complete = verified == total && total > 0;
+            RunStats {
+                run_id: rs.run_id,
+                goal: rs.goal,
+                verified,
+                total,
+                is_complete,
+                status_counts: counts,
+            }
+        })
+        .collect()
 }
 
 /// Reasons the run is NOT complete (empty = gate passes).
