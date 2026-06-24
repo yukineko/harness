@@ -35,8 +35,18 @@ allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash
 ```
 condukt state list
 ```
-出力が空でなければ、ユーザーに「再開するか新規で進めるか」を `AskUserQuestion` で確認する。
-引数が `--resume <RID>` または `resume <RID>` の形式であれば、**Phase 0-alt** へ進む。
+結果に応じて分岐する:
+
+| open run 数 | $ARGUMENTS | 対応 |
+|---|---|---|
+| 0 件 | あり | 通常フロー（Phase 0.5 へ） |
+| 0 件 | 空 | 直前の会話から課題を取る |
+| **1 件** | **空** | **AskUserQuestion なしで自動的に Phase 0-alt（resume）へ移行** |
+| 1 件 | あり | 新規課題として扱う（既存 run は放置） |
+| 2 件以上 | 空 | `AskUserQuestion` でどれを再開するか確認 |
+| 2 件以上 | あり | 新規課題として扱う |
+
+引数が `--resume <RID>` または `resume <RID>` の形式でも **Phase 0-alt** へ進む。
 
 ### Phase 0-alt — Resume (中断 run の再開)
 
@@ -116,6 +126,16 @@ condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、run id を返す
 ```
 
+### Phase 4.5 — ベースライン取得
+実装開始前にテストスイートの現状を記録する:
+```
+condukt state test --run $RID > /tmp/condukt-baseline.txt 2>&1
+BASELINE_EXIT=$?
+```
+- exit 0（全通過）: 以降 worker / verifier は「テストが新たに壊れた」ことを fail の根拠にできる。
+- exit 非 0（既存失敗あり）: `/tmp/condukt-baseline.txt` の失敗テスト一覧を `baseline_failures` として workers に渡す。verifier はこのリストに含まれる失敗を「実装前から壊れていた」として除外して合否を判定する。
+- テストコマンドが未設定でエラーになる場合は無視して Phase 5 へ進む。
+
 ### Phase 5 — 並列実装 (batches を順に)
 `schedule.batches` を**先頭から順に** 処理する (バッチ間は依存順、バッチ内は並列):
 - バッチ内の各タスク `t` について:
@@ -129,13 +149,22 @@ RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、ru
      - `interface_context`: `t.target_symbols` が存在する場合は main が Grep でスコープ外シグネチャを収集して渡す（worker に Grep させない）。`target_symbols` がない場合は省略する。
      - `failure_context` (再投入時のみ): `{reason: <前回 verifier.reason>, failed_tests: <失敗テスト出力>, diff: <前回 git diff>}`
   4. worker の返却 status を確認する:
-     - `done`: `condukt state set --run $RID --task <t.id> --status done`
+     - `done`: `condukt state set --run $RID --task <t.id> --status done` し、**他の worker の完了を待たずにその場で Phase 6 の verifier を起動する**（パイプライン化）。
      - `needs-serial`: 分類ミス。worktree を破棄し、タスクを serial として main で直接実装して commit する。
      - `blocked`: ユーザーにエスカレーションし、指示を仰ぐ (`AskUserQuestion` で報告する)。
-- バッチ内は 1 メッセージで複数 `Task` を同時発行して並列化する。
+- バッチ内は 1 メッセージで複数 `Task` を同時発行して並列化する。worker が完了するたびに即 verifier を起動し、worker 完了の待ち合わせはしない（後続 worker が動いている間に先行タスクの検証が進む）。
 - `serial` タスクは worktree に出さず main で順に実装し commit。
 
 ### Phase 6 — 検証 (verifier agent) + 実績の記録
+
+**機械的 done_criteria の早期判定（verifier スキップ）**:
+`done_criteria` が以下のような観察可能な事実の確認のみで構成される場合、verifier agent を省略して `Bash` で直接判定する:
+- 特定の文字列が特定のファイルに存在する (`grep`)
+- 特定のファイル/ディレクトリが存在する (`ls`, `test -f`)
+- `cargo test` / `npm test` などのコマンドが exit 0 で終わる
+
+判断基準: `done_criteria` に「実装」「ロジック」「設計」「コード」「振る舞い」等の語が無く、コマンド 1 ～ 3 本で完結するなら機械判定。shell チェックが pass → verified に set、fail → 通常 verifier フローへ（shell 判定は verifier の前段最適化であり、境界は厳しめに取る）。
+
 done の各タスクを `condukt-verifier` 相当で done_criteria 照合する。検証する子の **model は
 `<route.json>` の `verifier_model`**(worker と別ティアの独立検証。無ければ既定 sonnet)を使う。
 verifier 起動プロンプトには以下を渡す:
