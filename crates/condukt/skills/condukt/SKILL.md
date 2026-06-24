@@ -48,6 +48,17 @@ condukt state list
 
 引数が `--resume <RID>` または `resume <RID>` の形式でも **Phase 0-alt** へ進む。
 
+**STUCK タスクの検知と回復**: `condukt state list` の結果に `running` 状態のタスクが含まれる場合、
+前セッションの worker が途中で終了した可能性がある (stuck worker)。以下で回復する:
+```
+condukt state abandon --run $RID --all-stuck   # stuck タスクを pending に戻す
+# コマンドが無い場合は個別に戻す:
+condukt state set --run $RID --task <t.id> --status pending
+```
+pending に戻したタスクは Phase 0-alt → Phase 5 で通常通り再投入する。`--all-stuck` は TTL 超過
+(デフォルト: 最終更新から 30 分超) の `running` タスクのみを対象とする。現在実行中の worker が
+ある場合は誤って停止しないよう、実行中 Task の有無を確認してから実行する。
+
 ### Phase 0-alt — Resume (中断 run の再開)
 
 `--resume <RID>` が指定された場合（または Phase 0 でユーザーが再開を選んだ場合）、Phases 0–4 を
@@ -252,6 +263,15 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 - 各 verified タスクの worktree を **自分の turn 内で** 閉じる:
   `condukt worktree merge --branch condukt/<id>` → `condukt worktree remove --path "$WP" --branch condukt/<id>`。
   最後に `condukt worktree cleanup` で orphan が無いことを確認。
+- **merge pre-flight 衝突への対処**: `condukt worktree merge` が merge pre-flight で衝突を検出した
+  場合は以下の手順で対処する:
+  1. 衝突しているタスク (branch) を特定する。衝突 branch が複数ある場合は 1 つずつ処理する。
+  2. 衝突が軽微で自動解消可能な場合: worktree 内に移動して `git merge main` → 手動でコンフリクト
+     マーカーを解消 → commit してから再度 `condukt worktree merge` を実行する。
+  3. 衝突が大きく再実装が必要な場合: タスクを `failed` に set し、Phase 6 カスケードエスカレーション
+     を経て新しい worktree で再実装する。再実装 worker には衝突の詳細を `failure_context.reason` に
+     含めて渡す。
+  4. 解消後に再度 `condukt state gate --run $RID` を実行して gate PASS を確認する。
 - gate PASS で統合完了を報告 (タスク表 / 変更ファイル / 検証結果 / GATED の残提案)。
 
 ### Phase 8 — クローズ
@@ -261,6 +281,12 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 - バイナリ不在 → README の導入手順を案内 (plugin install)。
 - 子が共有ファイルに触りたがる → 分類ミス。serial 降格して main で実装。
 - worktree 残置 → Phase 7 で必ず閉じる。`condukt state gate` が残置を検出する。
+- **stuck worker** → `condukt state abandon --run $RID --task <id>` で `pending` に戻し Phase 5 へ
+  再投入する。`--all-stuck` で TTL 超過の running タスクをまとめて pending に戻せる。Phase 0 の
+  open run チェック時に running タスクを検出したら、Task の有無を確認後に実行する。
+- **merge 衝突** → Phase 7 で `condukt worktree merge` が pre-flight 衝突を検出した場合、worktree
+  内で手動マージ解消後に Phase 7 リトライするか、大きな衝突は再実装として Phase 5 に戻す。詳細は
+  Phase 7「merge pre-flight 衝突への対処」を参照。
 - **condukt 自身を改修する場合** → 触れてよいファイルは必ず **git リポジトリ側**
   (`crates/condukt/agents/`・`crates/condukt/skills/`・`crates/condukt/src/` を含む
   worktree) を指す。**install キャッシュ (`~/.claude/plugins/cache/.../condukt/...`) を
