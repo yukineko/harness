@@ -62,13 +62,19 @@ pub fn save(cfg: &Config, session: &str, s: &Session) {
 
 impl Session {
     /// Ensure identity/started fields are set (idempotent).
+    ///
+    /// `session_id`/`project`/`cwd` are session identity: they are pinned on the
+    /// first call (session start) and never overwritten afterwards. This keeps
+    /// the project name stable even if the working directory changes mid-session
+    /// (e.g. a `cd` into a subdir), which would otherwise make the record note
+    /// name flip between tool events. Only `last_at` is refreshed every call.
     pub fn ensure(&mut self, session_id: &str, project: &str, cwd: &str) {
         if self.started_at.is_empty() {
             self.started_at = now();
             self.session_id = session_id.to_string();
+            self.project = project.to_string();
+            self.cwd = cwd.to_string();
         }
-        self.project = project.to_string();
-        self.cwd = cwd.to_string();
         self.last_at = now();
     }
 
@@ -214,6 +220,21 @@ mod tests {
         assert_eq!(s.size(t), "L");
         s.tool_events = 100;
         assert_eq!(s.size(t), "XL");
+    }
+
+    #[test]
+    fn ensure_pins_project_on_first_call() {
+        let mut s = Session::default();
+        s.ensure("sess-1", "harness", "/Users/x/src/harness");
+        let started = s.started_at.clone();
+        assert_eq!(s.project, "harness");
+        assert_eq!(s.cwd, "/Users/x/src/harness");
+        // A later tool event from a changed cwd must NOT rewrite project/cwd.
+        s.ensure("sess-1", "session-insights", "/Users/x/src/harness/crates/session-insights");
+        assert_eq!(s.project, "harness", "project must stay pinned to session start");
+        assert_eq!(s.cwd, "/Users/x/src/harness", "cwd must stay pinned to session start");
+        assert_eq!(s.session_id, "sess-1");
+        assert_eq!(s.started_at, started, "started_at must not change");
     }
 
     #[test]
