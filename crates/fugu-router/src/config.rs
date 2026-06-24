@@ -56,6 +56,10 @@ impl Config {
             None => home_dir().join(".fugu-router").join("episodes.jsonl"),
         }
     }
+
+    pub fn playbook_path(&self) -> PathBuf {
+        home_dir().join(".fugu-router").join("playbooks.jsonl")
+    }
 }
 
 pub fn home_dir() -> PathBuf {
