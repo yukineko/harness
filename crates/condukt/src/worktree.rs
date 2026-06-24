@@ -63,8 +63,26 @@ pub fn create(repo: &Path, worktree_base: &Path, topic: &str, branch: &str) -> R
     Ok(path)
 }
 
+/// Run a git command without bailing on non-zero exit; return (success, stdout, stderr).
+fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn git {:?}", args))?;
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        String::from_utf8_lossy(&out.stderr).trim().to_string(),
+    ))
+}
+
 /// Merge `branch` into the configured default branch. Verifies the repo is
 /// actually on the default branch first (verify -> act).
+///
+/// Pre-flight: attempts `git merge --no-commit --no-ff` to detect conflicts
+/// before performing the real merge. If conflicts are detected, aborts the
+/// trial merge and returns an error without touching the branch history.
 pub fn merge(repo: &Path, branch: &str, default_branch: &str) -> Result<()> {
     git(repo, &["checkout", default_branch])
         .with_context(|| format!("could not checkout {default_branch} before merge"))?;
@@ -72,9 +90,158 @@ pub fn merge(repo: &Path, branch: &str, default_branch: &str) -> Result<()> {
     if current != default_branch {
         bail!("expected to be on '{default_branch}' but on '{current}'; aborting merge");
     }
+
+    // ── Pre-flight: trial merge (no-commit) to detect conflicts ──────────────
+    // `git merge --no-commit --no-ff` either succeeds with a staged merge or
+    // fails immediately when conflicts exist. In both cases we abort and then
+    // re-run the real merge only when there are no conflicts.
+    let (trial_ok, _, trial_stderr) =
+        git_try(repo, &["merge", "--no-commit", "--no-ff", branch])?;
+
+    if !trial_ok {
+        // Trial merge reported conflicts. Abort to restore clean state.
+        let _ = git_try(repo, &["merge", "--abort"]);
+        bail!(
+            "merge of '{branch}' into '{default_branch}' has conflicts (pre-flight); \
+             aborting without modifying history.\n{trial_stderr}"
+        );
+    }
+
+    // Even a "successful" --no-commit merge may leave CONFLICT markers when
+    // git decides to apply both sides with markers rather than refusing. Use
+    // `git ls-files --unmerged` to catch those cases.
+    let unmerged = git(repo, &["ls-files", "--unmerged"])?;
+    if !unmerged.trim().is_empty() {
+        let _ = git_try(repo, &["merge", "--abort"]);
+        bail!(
+            "merge of '{branch}' into '{default_branch}' has unresolved conflicts (pre-flight); \
+             aborting without modifying history."
+        );
+    }
+
+    // No conflicts found in trial — abort the staged trial and do the real merge.
+    git_try(repo, &["merge", "--abort"])
+        .with_context(|| "could not abort trial merge before real merge")?;
+
     git(repo, &["merge", "--no-edit", branch])
         .with_context(|| format!("merge of {branch} into {default_branch} failed"))?;
     Ok(())
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Initialise a bare-minimum git repo with an initial commit on `main`.
+    fn init_repo() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo = tmp.path().to_path_buf();
+
+        git(&repo, &["init", "-b", "main"]).unwrap();
+        git(&repo, &["config", "user.email", "test@example.com"]).unwrap();
+        git(&repo, &["config", "user.name", "Test"]).unwrap();
+
+        // Initial commit on main
+        let f = repo.join("base.txt");
+        fs::write(&f, "base\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        (tmp, repo)
+    }
+
+    /// Create a branch from HEAD, write `content` to `file`, commit and return.
+    fn make_branch(repo: &Path, branch: &str, file: &str, content: &str) {
+        git(repo, &["checkout", "-b", branch]).unwrap();
+        fs::write(repo.join(file), content).unwrap();
+        git(repo, &["add", "."]).unwrap();
+        git(
+            repo,
+            &["commit", "-m", &format!("add {file} on {branch}")],
+        )
+        .unwrap();
+        git(repo, &["checkout", "main"]).unwrap();
+    }
+
+    #[test]
+    fn worktree_merge_no_conflict_succeeds() {
+        let (_tmp, repo) = init_repo();
+        make_branch(&repo, "feat", "feat.txt", "feature content\n");
+
+        merge(&repo, "feat", "main").expect("clean merge should succeed");
+
+        // The file should now exist on main
+        assert!(repo.join("feat.txt").exists());
+    }
+
+    #[test]
+    fn worktree_merge_conflict_returns_error() {
+        let (_tmp, repo) = init_repo();
+
+        // Both branches modify the same file at the same line → guaranteed conflict
+        let conflict_file = "shared.txt";
+
+        // Write a shared base first on main
+        fs::write(repo.join(conflict_file), "line1\nline2\nline3\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "add shared file"]).unwrap();
+
+        // Branch: modify line2 to "branch version"
+        git(&repo, &["checkout", "-b", "conflict-branch"]).unwrap();
+        fs::write(
+            repo.join(conflict_file),
+            "line1\nbranch version\nline3\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "branch edit"]).unwrap();
+
+        // Main: modify line2 differently → creates a real conflict
+        git(&repo, &["checkout", "main"]).unwrap();
+        fs::write(
+            repo.join(conflict_file),
+            "line1\nmain version\nline3\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "main edit"]).unwrap();
+
+        let result = merge(&repo, "conflict-branch", "main");
+        assert!(
+            result.is_err(),
+            "conflicting merge should return an error, but got Ok"
+        );
+
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("conflict") || err_msg.contains("unresolved"),
+            "error message should mention conflicts, got: {err_msg}"
+        );
+
+        // The repo should be in a clean state (no in-progress merge)
+        let merge_head = repo.join(".git").join("MERGE_HEAD");
+        assert!(
+            !merge_head.exists(),
+            "MERGE_HEAD should not exist after aborted pre-flight"
+        );
+    }
+
+    #[test]
+    fn worktree_is_dirty_clean_repo() {
+        let (_tmp, repo) = init_repo();
+        assert!(!is_dirty(&repo).expect("is_dirty should not error on a clean repo"));
+    }
+
+    #[test]
+    fn worktree_is_dirty_with_uncommitted_change() {
+        let (_tmp, repo) = init_repo();
+        fs::write(repo.join("new.txt"), "dirty\n").unwrap();
+        assert!(is_dirty(&repo).expect("is_dirty should not error"));
+    }
 }
 
 /// Remove the worktree at `path` and delete its `branch` (best-effort on branch).
