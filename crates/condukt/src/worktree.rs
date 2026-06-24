@@ -245,15 +245,36 @@ mod tests {
 }
 
 /// Remove the worktree at `path` and delete its `branch` (best-effort on branch).
-pub fn remove(repo: &Path, path: &Path, branch: Option<&str>) -> Result<()> {
+///
+/// If the branch cannot be deleted because it is not fully merged, a warning is
+/// printed to stderr and the function still returns `Ok(())`. The caller is
+/// responsible for acting on the warning (e.g. the CLI prints it again with
+/// context).
+///
+/// Returns `Some(branch_name)` when the branch was NOT deleted (unmerged or
+/// any other error), `None` when no branch was requested or deletion succeeded.
+pub fn remove(repo: &Path, path: &Path, branch: Option<&str>) -> Result<Option<String>> {
     let path_str = path.to_string_lossy().to_string();
     git(repo, &["worktree", "remove", &path_str])
         .with_context(|| format!("could not remove worktree {}", path.display()))?;
     if let Some(b) = branch {
-        // -d (safe delete) only; leave unmerged branches for the user.
-        let _ = git(repo, &["branch", "-d", b]);
+        match git(repo, &["branch", "-d", b]) {
+            Ok(_) => {}
+            Err(e) => {
+                // The branch still exists — most likely it was not fully merged.
+                // Warn on stderr and surface the branch name to the caller so it
+                // can display a more actionable message.
+                eprintln!(
+                    "warning: branch '{}' was not deleted (not fully merged). \
+                     Use `git branch -D {}` to force-delete, or merge it first.",
+                    b, b
+                );
+                eprintln!("  (git said: {e})");
+                return Ok(Some(b.to_string()));
+            }
+        }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// (path, branch) pairs for every registered worktree except the primary.
@@ -318,4 +339,133 @@ pub fn is_dirty(path: &Path) -> Result<bool> {
     let status = git(path, &["status", "--porcelain"])
         .map_err(|e| anyhow!("status check failed for {}: {e}", path.display()))?;
     Ok(!status.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Initialise a bare-minimum git repo in `dir` (main branch, one commit).
+    fn init_repo(dir: &Path) {
+        git(dir, &["init", "-b", "main"]).unwrap();
+        git(dir, &["config", "user.email", "test@example.com"]).unwrap();
+        git(dir, &["config", "user.name", "Test"]).unwrap();
+        // Commit something so HEAD is valid.
+        let readme = dir.join("README.md");
+        fs::write(&readme, "initial").unwrap();
+        git(dir, &["add", "README.md"]).unwrap();
+        git(dir, &["commit", "-m", "initial"]).unwrap();
+    }
+
+    /// remove() returns Ok(None) when the branch was merged and deletes cleanly.
+    #[test]
+    fn remove_returns_none_when_branch_merged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+
+        // Create a branch that we immediately merge back in — it is "merged".
+        git(&repo, &["checkout", "-b", "feat/merged"]).unwrap();
+        git(&repo, &["checkout", "main"]).unwrap();
+        git(&repo, &["merge", "--no-edit", "feat/merged"]).unwrap();
+
+        // Re-create the branch so we can try to remove it via add+remove worktree.
+        // The branch has no unique commits so -d will succeed.
+        // To avoid checking out the branch in a worktree we just test branch -d
+        // directly via the expected code path: a branch that is fully merged.
+        // We simulate by calling remove() with a non-existent path (after prune)
+        // We need a real worktree for the `git worktree remove` to work, so:
+        let wt_base = tmp.path().join("worktrees");
+        fs::create_dir_all(&wt_base).unwrap();
+        let wt_path = wt_base.join("merged-wt");
+        // Create a new branch for the worktree (identical content to main).
+        git(&repo, &["worktree", "add", wt_path.to_str().unwrap(), "-b", "feat/wt-merged"]).unwrap();
+        // Merge it.
+        git(&repo, &["merge", "--no-edit", "feat/wt-merged"]).unwrap();
+        // Now remove: branch -d should succeed because it is merged.
+        let result = remove(&repo, &wt_path, Some("feat/wt-merged")).unwrap();
+        assert_eq!(result, None, "merged branch should be deleted: got {:?}", result);
+    }
+
+    /// remove() returns Ok(Some(branch)) when the branch is NOT merged.
+    #[test]
+    fn remove_returns_branch_name_when_unmerged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+
+        let wt_base = tmp.path().join("worktrees");
+        fs::create_dir_all(&wt_base).unwrap();
+        let wt_path = wt_base.join("unmerged-wt");
+        git(&repo, &["worktree", "add", wt_path.to_str().unwrap(), "-b", "feat/unmerged"]).unwrap();
+
+        // Add a commit to the worktree so it diverges from main.
+        let extra = wt_path.join("extra.txt");
+        fs::write(&extra, "unique").unwrap();
+        git(&wt_path, &["add", "extra.txt"]).unwrap();
+        git(&wt_path, &["commit", "-m", "diverge"]).unwrap();
+
+        // Now remove: -d should fail because feat/unmerged is not merged.
+        let result = remove(&repo, &wt_path, Some("feat/unmerged")).unwrap();
+        assert_eq!(
+            result.as_deref(),
+            Some("feat/unmerged"),
+            "unmerged branch should be returned"
+        );
+
+        // The branch must still exist in the repo.
+        let branches = git(&repo, &["branch"]).unwrap();
+        assert!(
+            branches.contains("feat/unmerged"),
+            "unmerged branch should still exist after remove; got: {}",
+            branches
+        );
+    }
+
+    /// orphans() returns directories under worktree_base not tracked by git.
+    #[test]
+    fn orphans_detects_unregistered_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+
+        let wt_base = tmp.path().join("worktrees");
+        fs::create_dir_all(&wt_base).unwrap();
+
+        // A directory that git never knew about.
+        let ghost = wt_base.join("ghost-dir");
+        fs::create_dir_all(&ghost).unwrap();
+
+        let found = orphans(&repo, &wt_base).unwrap();
+        assert!(
+            found.iter().any(|p| p.ends_with("ghost-dir")),
+            "ghost-dir should be reported as orphan; got: {:?}",
+            found
+        );
+    }
+
+    /// orphans() does not list a legitimately registered worktree.
+    #[test]
+    fn orphans_excludes_registered_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+
+        let wt_base = tmp.path().join("worktrees");
+        fs::create_dir_all(&wt_base).unwrap();
+        let wt_path = wt_base.join("registered");
+        git(&repo, &["worktree", "add", wt_path.to_str().unwrap(), "-b", "feat/reg"]).unwrap();
+
+        let found = orphans(&repo, &wt_base).unwrap();
+        assert!(
+            !found.iter().any(|p| p.ends_with("registered")),
+            "registered worktree should not be listed as orphan; got: {:?}",
+            found
+        );
+    }
 }
