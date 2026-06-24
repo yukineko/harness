@@ -133,6 +133,13 @@ enum StateAction {
     },
     /// List open runs (run_id<TAB>done/total<TAB>goal).
     List,
+    /// Aggregate stats across all runs (completion rate, task distribution).
+    Stats,
+    /// Resume context for a stopped run: pending/failed/done tasks as JSON.
+    ResumeContext {
+        #[arg(long)]
+        run: String,
+    },
     /// Run the project's test suite (from config [test].command or auto-detect).
     Test {
         #[arg(long)]
@@ -249,7 +256,13 @@ fn run_worktree(cfg: &Config, cwd: &Path, action: WtAction) -> Result<()> {
 fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
     match action {
         StateAction::Init { run, file } => {
-            let dec = read_decomposition(file)?;
+            let raw = match &file {
+                Some(p) => std::fs::read_to_string(p)
+                    .with_context(|| format!("reading {}", p.display()))?,
+                None => read_stdin(),
+            };
+            let dec: model::Decomposition =
+                serde_json::from_str(&raw).context("parsing decomposition JSON")?;
             let errs = schedule::validate(&dec);
             if !errs.is_empty() {
                 bail!("invalid decomposition:\n  - {}", errs.join("\n  - "));
@@ -271,6 +284,8 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 tasks,
             };
             let path = rs.save(cfg, cwd)?;
+            // Persist the decomposition so `state resume-context` can reconstruct tasks.
+            state::save_decomposition(cfg, cwd, &run_id, &raw)?;
             eprintln!("initialized run '{run_id}' at {}", path.display());
             println!("{run_id}");
         }
@@ -322,6 +337,90 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 println!("{}\t{}/{}\t{}", rs.run_id, done, total, rs.goal);
             }
         }
+        StateAction::Stats => {
+            let all = state::compute_stats(cfg, cwd);
+            if all.is_empty() {
+                eprintln!("no runs found");
+                return Ok(());
+            }
+            let total_runs = all.len();
+            let complete = all.iter().filter(|s| s.is_complete).count();
+            let rate = if total_runs > 0 {
+                complete * 100 / total_runs
+            } else {
+                0
+            };
+            eprintln!(
+                "condukt stats: {complete}/{total_runs} complete ({rate}%)\n"
+            );
+            // Header
+            println!("{:<32}  {:>6}  {:>6}  {}",
+                "run_id", "done", "total", "goal");
+            println!("{}", "-".repeat(72));
+            for s in &all {
+                let marker = if s.is_complete { "✓" } else { " " };
+                let goal_short = truncate_chars(&s.goal, 30);
+                println!(
+                    "{marker} {:<30}  {:>6}  {:>6}  {}",
+                    &s.run_id, s.verified, s.total, goal_short
+                );
+            }
+            // Task status distribution across all runs.
+            let mut totals: std::collections::HashMap<String, usize> = Default::default();
+            for s in &all {
+                for (k, v) in &s.status_counts {
+                    *totals.entry(k.clone()).or_insert(0) += v;
+                }
+            }
+            println!("\ntask status distribution (all runs):");
+            let mut pairs: Vec<_> = totals.into_iter().collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (k, v) in pairs {
+                println!("  {k}: {v}");
+            }
+        }
+        StateAction::ResumeContext { run } => {
+            let rs = state::RunState::load(cfg, cwd, &run)?;
+            let dec_raw = state::load_decomposition(cfg, cwd, &run)?;
+            let dec: model::Decomposition =
+                serde_json::from_str(&dec_raw).context("parsing saved decomposition")?;
+            // Build a map from task id → full decomposition task.
+            let dec_map: std::collections::HashMap<_, _> =
+                dec.tasks.iter().map(|t| (t.id.clone(), t)).collect();
+
+            let mut pending = Vec::new();
+            let mut failed = Vec::new();
+            let mut needs_verification = Vec::new();
+            let mut verified_count = 0usize;
+
+            for ts in &rs.tasks {
+                let base = dec_map.get(&ts.id).map(|t| serde_json::to_value(t).unwrap_or_default());
+                let entry = serde_json::json!({
+                    "id": ts.id,
+                    "status": format!("{:?}", ts.status).to_lowercase(),
+                    "worktree": ts.worktree,
+                    "branch": ts.branch,
+                    "task": base,
+                });
+                match ts.status {
+                    state::Status::Pending | state::Status::Running => pending.push(entry),
+                    state::Status::Failed => failed.push(entry),
+                    state::Status::Done => needs_verification.push(entry),
+                    state::Status::Verified => verified_count += 1,
+                }
+            }
+
+            let out = serde_json::json!({
+                "run_id": rs.run_id,
+                "goal": rs.goal,
+                "verified_count": verified_count,
+                "total_count": rs.tasks.len(),
+                "pending_tasks": pending,
+                "failed_tasks": failed,
+                "needs_verification": needs_verification,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
         StateAction::Test { run } => {
             let rs = state::RunState::load(cfg, cwd, &run)?;
             state::run_tests(cfg, cwd, &rs)?;
@@ -362,6 +461,14 @@ fn init(cfg: &Config) -> Result<()> {
     std::fs::write(&cfg_path, default).with_context(|| format!("writing {}", cfg_path.display()))?;
     eprintln!("wrote {}", cfg_path.display());
     Ok(())
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    let mut chars = s.char_indices();
+    match chars.nth(max_chars) {
+        Some((idx, _)) => format!("{}…", &s[..idx]),
+        None => s.to_string(),
+    }
 }
 
 fn default_run_id() -> String {
