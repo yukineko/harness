@@ -250,7 +250,14 @@ fn run_worktree(cfg: &Config, cwd: &Path, action: WtAction) -> Result<()> {
         }
         WtAction::Merge { branch } => worktree::merge(&repo, &branch, &cfg.default_branch)?,
         WtAction::Remove { path, branch } => {
-            worktree::remove(&repo, &path, branch.as_deref())?;
+            let undeleted = worktree::remove(&repo, &path, branch.as_deref())?;
+            if let Some(b) = undeleted {
+                eprintln!(
+                    "condukt: worktree removed but branch '{}' remains — \
+                     it has unmerged commits. Merge or force-delete it manually.",
+                    b
+                );
+            }
         }
         WtAction::Cleanup { remove } => {
             let orphans = worktree::orphans(&repo, &cfg.worktree_base)?;
