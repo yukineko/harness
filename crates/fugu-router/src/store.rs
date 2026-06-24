@@ -3,10 +3,12 @@
 //! Fail-soft throughout — a malformed line is skipped, a missing file reads as
 //! empty, so a corrupt store never breaks routing or a turn.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// One routing outcome: a task's features, the model that ran it, and whether it
 /// passed verification (plus cost). The k-NN policy learns from these.
@@ -63,6 +65,159 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Return a stable hex content-hash for an Episode (all fields, via canonical JSON).
+/// Two Episode values are duplicates iff their content_hash_episode values match.
+pub fn content_hash_episode(ep: &Episode) -> String {
+    // Serialize in a field-order-stable way: sort keys by serialising to Value then
+    // using to_string (serde_json always serialises struct fields in declaration order).
+    let canonical = serde_json::to_string(ep).unwrap_or_default();
+    hex_sha256(canonical.as_bytes())
+}
+
+/// Return a stable hex content-hash for a Playbook entry.
+pub fn content_hash_playbook(pb: &Playbook) -> String {
+    let canonical = serde_json::to_string(pb).unwrap_or_default();
+    hex_sha256(canonical.as_bytes())
+}
+
+fn hex_sha256(data: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(data);
+    format!("{:x}", h.finalize())
+}
+
+/// Summary of one import/dedup operation on a single store file.
+#[derive(Debug, Default)]
+pub struct ImportSummary {
+    pub read: usize,
+    pub new: usize,
+    pub skipped: usize,
+}
+
+/// Merge episodes from `src` into `dst`, skipping content-identical records.
+/// When `dry_run` is true, nothing is written. Returns a summary.
+pub fn import_episodes(src: &Path, dst: &Path, dry_run: bool) -> std::io::Result<ImportSummary> {
+    let existing = load(dst);
+    let existing_hashes: HashSet<String> =
+        existing.iter().map(content_hash_episode).collect();
+
+    let Ok(text) = std::fs::read_to_string(src) else {
+        return Ok(ImportSummary::default());
+    };
+    let src_eps: Vec<Episode> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Episode>(l).ok())
+        .collect();
+
+    let mut summary = ImportSummary { read: src_eps.len(), ..Default::default() };
+    for ep in &src_eps {
+        if existing_hashes.contains(&content_hash_episode(ep)) {
+            summary.skipped += 1;
+        } else {
+            summary.new += 1;
+            if !dry_run {
+                append(dst, ep)?;
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// Merge playbooks from `src` into `dst`, skipping content-identical records.
+/// When `dry_run` is true, nothing is written. Returns a summary.
+pub fn import_playbooks(src: &Path, dst: &Path, dry_run: bool) -> std::io::Result<ImportSummary> {
+    let existing = load_playbooks(dst);
+    let existing_hashes: HashSet<String> =
+        existing.iter().map(content_hash_playbook).collect();
+
+    let Ok(text) = std::fs::read_to_string(src) else {
+        return Ok(ImportSummary::default());
+    };
+    let src_pbs: Vec<Playbook> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Playbook>(l).ok())
+        .collect();
+
+    let mut summary = ImportSummary { read: src_pbs.len(), ..Default::default() };
+    for pb in &src_pbs {
+        if existing_hashes.contains(&content_hash_playbook(pb)) {
+            summary.skipped += 1;
+        } else {
+            summary.new += 1;
+            if !dry_run {
+                append_playbook(dst, pb)?;
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// Rewrite `path` in place, removing duplicate Episode records (first-seen wins).
+/// Uses an atomic write (temp file + rename) to avoid corruption on error.
+pub fn dedup_episodes(path: &Path) -> std::io::Result<ImportSummary> {
+    let eps = load(path);
+    let total = eps.len();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unique: Vec<&Episode> = Vec::new();
+    for ep in &eps {
+        if seen.insert(content_hash_episode(ep)) {
+            unique.push(ep);
+        }
+    }
+    let skipped = total - unique.len();
+    if skipped > 0 {
+        atomic_write_jsonl(path, &unique, serde_json::to_string)?;
+    }
+    Ok(ImportSummary { read: total, new: unique.len(), skipped })
+}
+
+/// Rewrite `path` in place, removing duplicate Playbook records (first-seen wins).
+pub fn dedup_playbooks(path: &Path) -> std::io::Result<ImportSummary> {
+    let pbs = load_playbooks(path);
+    let total = pbs.len();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unique: Vec<&Playbook> = Vec::new();
+    for pb in &pbs {
+        if seen.insert(content_hash_playbook(pb)) {
+            unique.push(pb);
+        }
+    }
+    let skipped = total - unique.len();
+    if skipped > 0 {
+        atomic_write_jsonl(path, &unique, serde_json::to_string)?;
+    }
+    Ok(ImportSummary { read: total, new: unique.len(), skipped })
+}
+
+/// Write `items` as JSONL to a temp file next to `path`, then rename atomically.
+fn atomic_write_jsonl<T, F>(path: &Path, items: &[T], serialize: F) -> std::io::Result<()>
+where
+    F: Fn(&T) -> Result<String, serde_json::Error>,
+{
+    // Place the temp file in the same directory so rename is same-fs.
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let tmp_path = dir.join(format!(
+        ".fugu-router-tmp-{}.jsonl",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        for item in items {
+            let line = serialize(item).unwrap_or_default();
+            writeln!(f, "{line}")?;
+        }
+        f.flush()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
 /// A verified task's procedure record — stored separately from Episodes so
 /// routing statistics stay unaffected by the larger procedure text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +262,142 @@ pub fn append_playbook(path: &Path, pb: &Playbook) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_ep(title: &str, model: &str) -> Episode {
+        Episode {
+            ts: 1,
+            title: title.into(),
+            touched_files: vec!["src/lib.rs".into()],
+            class: "parallel".into(),
+            model: model.into(),
+            role: "worker".into(),
+            pass: true,
+            cost_usd: 0.01,
+        }
+    }
+
+    fn sample_pb(title: &str) -> Playbook {
+        Playbook {
+            ts: 1,
+            title: title.into(),
+            touched_files: vec!["src/lib.rs".into()],
+            class: "parallel".into(),
+            done_criteria: "tests pass".into(),
+            notes: "".into(),
+        }
+    }
+
+    #[test]
+    fn content_hash_episode_identical_records_match() {
+        let ep1 = sample_ep("add auth", "sonnet");
+        let ep2 = sample_ep("add auth", "sonnet");
+        assert_eq!(content_hash_episode(&ep1), content_hash_episode(&ep2));
+    }
+
+    #[test]
+    fn content_hash_episode_distinct_records_differ() {
+        let ep1 = sample_ep("add auth", "sonnet");
+        let ep2 = sample_ep("add billing", "sonnet");
+        assert_ne!(content_hash_episode(&ep1), content_hash_episode(&ep2));
+        // model difference also distinguishes
+        let ep3 = sample_ep("add auth", "opus");
+        assert_ne!(content_hash_episode(&ep1), content_hash_episode(&ep3));
+    }
+
+    #[test]
+    fn import_episodes_deduplicates() {
+        let dir = std::env::temp_dir().join("fugu-router-import-ep-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("src.jsonl");
+        let dst = dir.join("dst.jsonl");
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+
+        let ep_a = sample_ep("add auth", "sonnet");
+        let ep_b = sample_ep("add billing", "haiku");
+
+        // dst already has ep_a
+        append(&dst, &ep_a).unwrap();
+        // src has ep_a (duplicate) + ep_b (new)
+        append(&src, &ep_a).unwrap();
+        append(&src, &ep_b).unwrap();
+
+        let summary = import_episodes(&src, &dst, false).unwrap();
+        assert_eq!(summary.read, 2);
+        assert_eq!(summary.new, 1);
+        assert_eq!(summary.skipped, 1);
+
+        let loaded = load(&dst);
+        assert_eq!(loaded.len(), 2, "dst should have exactly 2 unique episodes");
+        assert!(loaded.iter().any(|e| e.title == "add auth"));
+        assert!(loaded.iter().any(|e| e.title == "add billing"));
+    }
+
+    #[test]
+    fn import_episodes_dry_run_writes_nothing() {
+        let dir = std::env::temp_dir().join("fugu-router-import-dry-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("src.jsonl");
+        let dst = dir.join("dst.jsonl");
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+
+        let ep_a = sample_ep("add auth", "sonnet");
+        let ep_b = sample_ep("fix login", "haiku");
+        append(&src, &ep_a).unwrap();
+        append(&src, &ep_b).unwrap();
+
+        let summary = import_episodes(&src, &dst, true).unwrap();
+        assert_eq!(summary.new, 2);
+        // dry run: dst should still be empty / not exist
+        assert!(load(&dst).is_empty());
+    }
+
+    #[test]
+    fn dedup_episodes_removes_duplicates_preserves_order() {
+        let dir = std::env::temp_dir().join("fugu-router-dedup-ep-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("episodes.jsonl");
+        let _ = std::fs::remove_file(&path);
+
+        let ep_a = sample_ep("add auth", "sonnet");
+        let ep_b = sample_ep("add billing", "haiku");
+        append(&path, &ep_a).unwrap();
+        append(&path, &ep_b).unwrap();
+        append(&path, &ep_a).unwrap(); // duplicate
+
+        let summary = dedup_episodes(&path).unwrap();
+        assert_eq!(summary.read, 3);
+        assert_eq!(summary.new, 2);
+        assert_eq!(summary.skipped, 1);
+
+        let loaded = load(&path);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].title, "add auth");
+        assert_eq!(loaded[1].title, "add billing");
+    }
+
+    #[test]
+    fn dedup_playbooks_removes_duplicates() {
+        let dir = std::env::temp_dir().join("fugu-router-dedup-pb-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("playbooks.jsonl");
+        let _ = std::fs::remove_file(&path);
+
+        let pb_a = sample_pb("add auth");
+        let pb_b = sample_pb("add billing");
+        append_playbook(&path, &pb_a).unwrap();
+        append_playbook(&path, &pb_b).unwrap();
+        append_playbook(&path, &pb_a).unwrap(); // duplicate
+
+        let summary = dedup_playbooks(&path).unwrap();
+        assert_eq!(summary.read, 3);
+        assert_eq!(summary.new, 2);
+        assert_eq!(summary.skipped, 1);
+
+        let loaded = load_playbooks(&path);
+        assert_eq!(loaded.len(), 2);
+    }
 
     #[test]
     fn playbook_roundtrip() {
