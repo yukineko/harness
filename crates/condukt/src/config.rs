@@ -21,6 +21,13 @@ pub struct Config {
     pub max_parallel: usize,
     /// Where run-state files are stored.
     pub state_dir: PathBuf,
+    /// Override command for `condukt state test` (None = auto-detect).
+    pub test_command: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct FileTestConfig {
+    command: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -30,6 +37,7 @@ struct FileConfig {
     shared_globs: Option<Vec<String>>,
     max_parallel: Option<usize>,
     state_dir: Option<String>,
+    test: Option<FileTestConfig>,
 }
 
 /// `~/.condukt` (falls back to `./.condukt` if there is no home dir). Thin
@@ -47,6 +55,7 @@ impl Config {
             shared_globs: Vec::new(),
             max_parallel: 4,
             state_dir: base.join("state"),
+            test_command: None,
         };
 
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
@@ -65,6 +74,9 @@ impl Config {
                 }
                 if let Some(v) = fc.state_dir {
                     cfg.state_dir = expand_tilde(&v);
+                }
+                if let Some(t) = fc.test {
+                    cfg.test_command = t.command;
                 }
             }
         }
