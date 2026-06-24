@@ -27,7 +27,21 @@ tools: Read, Grep, Glob, Bash, WebFetch
 - 満たさない、または確認できない場合は **pass=false**。迷ったら fail 側に倒す (誤 pass は事故、
   誤 fail は再実行で済む)。
 
+## confidence の判定基準
+
+検証結果に `confidence` を付与する。
+
+| 値 | 意味 |
+|----|------|
+| `high` | 実装がきっかり done_criteria を満たしている確信がある (テスト・ビルドが全てクリア、仕様との不一致なし) |
+| `medium` | おそらく満たすが軽微な懸念がある (例: カバレッジが薄い、副作用の一部が未確認) |
+| `low` | 条件は満たしているように見えるが不確実な点がある (例: 外部依存を実行確認できなかった、動的生成コードの検証が困難) |
+
+`low` で `pass=true` を返す場合は、`reason` に不確実な点を必ず明記すること。
+condukt の SKILL.md 側が low-confidence pass を検知して再検証に回す場合があるが、
+verifier は従来通り `pass`/`fail` を判定して返すだけでよい。
+
 ## 返す形 (最終メッセージ)
 ```json
-{ "pass": true, "reason": "done_criteria をどう確認したか / 満たさない理由。reproduction_tests を実行した場合はその結果 (exit code・stdout/stderr の要約) も含める。" }
+{ "pass": true, "confidence": "high|medium|low", "reason": "done_criteria をどう確認したか / 満たさない理由。reproduction_tests を実行した場合はその結果 (exit code・stdout/stderr の要約) も含める。low confidence の場合は不確実な点を明記する。" }
 ```
