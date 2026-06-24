@@ -172,7 +172,7 @@ pub struct ReconcileChange {
 ///
 /// Returns (updated RunState, list of changes) so the caller can save and report.
 pub fn reconcile_run(
-    cfg: &Config,
+    _cfg: &Config,
     cwd: &Path,
     mut run: RunState,
     default_branch: &str,
