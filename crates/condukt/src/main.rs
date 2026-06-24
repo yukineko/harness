@@ -292,6 +292,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                     status: state::Status::Pending,
                     worktree: None,
                     branch: None,
+                    updated_at: None,
                 })
                 .collect();
             let rs = state::RunState {
@@ -320,6 +321,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .find(|t| t.id == task)
                 .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
             t.status = st;
+            t.updated_at = Some(state::now_secs());
             if worktree.is_some() {
                 t.worktree = worktree;
             }
