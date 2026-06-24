@@ -1,7 +1,7 @@
 ---
 name: condukt-verifier
 description: condukt の 1 タスクの実装が done_criteria を満たすかを批判的に検証し pass/reason を返す専門 subagent。/condukt の Phase 6 から委譲される。実装はしない。
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, WebFetch
 model: opus
 ---
 

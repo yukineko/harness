@@ -38,6 +38,15 @@ pub struct Task {
     /// permissive: unknown or missing values are accepted and ignored here.
     #[serde(default)]
     pub size: Option<String>,
+    /// Symbols (functions/classes) the task is expected to edit — finer than
+    /// `touched_files`. The engine does not act on these; carried through so the
+    /// skill can forward them to a worker without losing them across `state init`.
+    #[serde(default)]
+    pub target_symbols: Vec<String>,
+    /// A command that reproduces/validates the task's outcome (the TDD anchor).
+    /// Like `size`, the engine treats this as a permissive passthrough.
+    #[serde(default)]
+    pub reproduction_tests: Option<String>,
 }
 
 /// The full plan the interpreter agent emits.
@@ -116,5 +125,27 @@ mod tests {
         )
         .expect("decomposition with size should parse");
         assert_eq!(dec.tasks[0].size.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn task_without_agentic_fields_defaults_empty() {
+        // Back-compat: decompositions emitted before the agentic fields existed.
+        let dec: Decomposition =
+            serde_json::from_str(r#"{"goal":"g","tasks":[{"id":"a"}]}"#).unwrap();
+        assert!(dec.tasks[0].target_symbols.is_empty());
+        assert_eq!(dec.tasks[0].reproduction_tests, None);
+    }
+
+    #[test]
+    fn task_carries_target_symbols_and_reproduction_tests() {
+        let dec: Decomposition = serde_json::from_str(
+            r#"{"goal":"g","tasks":[{"id":"a","target_symbols":["foo","Bar"],"reproduction_tests":"cargo test -p x"}]}"#,
+        )
+        .expect("decomposition with agentic fields should parse");
+        assert_eq!(dec.tasks[0].target_symbols, vec!["foo", "Bar"]);
+        assert_eq!(
+            dec.tasks[0].reproduction_tests.as_deref(),
+            Some("cargo test -p x")
+        );
     }
 }

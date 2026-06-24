@@ -349,7 +349,12 @@ fn init(cfg: &Config) -> Result<()> {
          max_parallel = {}\n\
          # Globs that force a touching task to run serially (never in parallel),\n\
          # e.g. [\"**/models.py\", \"**/migrations/**\", \"docs/glossary.md\"].\n\
-         shared_globs = []\n",
+         shared_globs = []\n\
+         \n\
+         # Command `condukt state test` runs (via `sh -c`, from the repo root).\n\
+         # Omit to auto-detect (cargo test / npm test / pytest).\n\
+         # [test]\n\
+         # command = \"cargo test\"\n",
         cfg.worktree_base.display(),
         cfg.default_branch,
         cfg.max_parallel

@@ -305,6 +305,8 @@ mod tests {
             suggested_model: None,
             done_criteria: None,
             size: None,
+            target_symbols: Vec::new(),
+            reproduction_tests: None,
         }
     }
 

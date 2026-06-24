@@ -152,20 +152,27 @@ pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     reasons
 }
 
-/// Run the project's test suite and exit with its exit code.
+/// Run the project's test suite (from the repo root) and propagate its result.
+///
+/// The command runs at the repo top-level, not the raw cwd, so invoking
+/// `condukt state test` from a subdirectory still tests the whole project and
+/// auto-detection sees the project's manifest. The command is handed to `sh -c`
+/// so quoted args, pipes, and env vars in a configured `test_command` work as
+/// the user expects (`pytest -k "foo bar"`).
 pub fn run_tests(cfg: &Config, cwd: &Path, _rs: &RunState) -> Result<()> {
+    let root = repo_root(cwd);
     let cmd_str = cfg
         .test_command
         .clone()
-        .unwrap_or_else(|| auto_detect_test_command(cwd));
-    eprintln!("condukt: running tests: {}", cmd_str);
-    let parts: Vec<&str> = cmd_str.split_whitespace().collect();
-    if parts.is_empty() {
+        .unwrap_or_else(|| auto_detect_test_command(&root));
+    if cmd_str.trim().is_empty() {
         bail!("empty test command");
     }
-    let status = std::process::Command::new(parts[0])
-        .args(&parts[1..])
-        .current_dir(cwd)
+    eprintln!("condukt: running tests in {}: {cmd_str}", root.display());
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd_str)
+        .current_dir(&root)
         .status()
         .with_context(|| format!("failed to run '{cmd_str}'"))?;
     if status.success() {
