@@ -111,6 +111,8 @@ enum StateAction {
         file: Option<PathBuf>,
     },
     /// Update one task's status (and optionally its worktree/branch).
+    /// Passing --worktree/--branch without a value has no effect; use
+    /// --clear-worktree / --clear-branch to explicitly erase the existing value.
     Set {
         #[arg(long)]
         run: String,
@@ -122,6 +124,12 @@ enum StateAction {
         worktree: Option<String>,
         #[arg(long)]
         branch: Option<String>,
+        /// Explicitly clear the worktree field (set it to null).
+        #[arg(long)]
+        clear_worktree: bool,
+        /// Explicitly clear the branch field (set it to null).
+        #[arg(long)]
+        clear_branch: bool,
     },
     /// Print a run's full state as JSON.
     Show {
@@ -312,6 +320,8 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             status,
             worktree,
             branch,
+            clear_worktree,
+            clear_branch,
         } => {
             let mut rs = state::RunState::load(cfg, cwd, &run)?;
             let st: state::Status = status.parse()?;
@@ -322,10 +332,16 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
             t.status = st;
             t.updated_at = Some(state::now_secs());
-            if worktree.is_some() {
+            // None 上書き保護: --worktree/--branch が省略された場合は既存値を保持する。
+            // 明示的にクリアしたい場合は --clear-worktree / --clear-branch を使う。
+            if clear_worktree {
+                t.worktree = None;
+            } else if worktree.is_some() {
                 t.worktree = worktree;
             }
-            if branch.is_some() {
+            if clear_branch {
+                t.branch = None;
+            } else if branch.is_some() {
                 t.branch = branch;
             }
             rs.save(cfg, cwd)?;
@@ -539,4 +555,81 @@ fn read_stdin() -> String {
     let mut s = String::new();
     let _ = std::io::stdin().read_to_string(&mut s);
     s
+}
+
+#[cfg(test)]
+mod state_set_tests {
+    use crate::state::{RunState, Status, TaskState};
+
+    fn make_run(worktree: Option<&str>, branch: Option<&str>) -> RunState {
+        RunState {
+            run_id: "r1".into(),
+            goal: "test".into(),
+            tasks: vec![TaskState {
+                id: "t1".into(),
+                status: Status::Pending,
+                worktree: worktree.map(str::to_string),
+                branch: branch.map(str::to_string),
+                updated_at: None,
+            }],
+        }
+    }
+
+    /// worktree/branch が Some のタスクに worktree/branch なしで Set を実行しても
+    /// 既存の worktree/branch が消えないこと (None 上書き保護)。
+    #[test]
+    fn state_set_none_does_not_overwrite_worktree_or_branch() {
+        let mut rs = make_run(Some("/path/to/tree"), Some("feature/x"));
+        let t = rs.tasks.iter_mut().find(|t| t.id == "t1").unwrap();
+
+        // worktree/branch を None のまま (省略相当) でステータスだけ更新する。
+        let new_worktree: Option<String> = None;
+        let new_branch: Option<String> = None;
+        let clear_worktree = false;
+        let clear_branch = false;
+
+        t.status = Status::Running;
+        t.updated_at = Some(crate::state::now_secs());
+        if clear_worktree {
+            t.worktree = None;
+        } else if new_worktree.is_some() {
+            t.worktree = new_worktree;
+        }
+        if clear_branch {
+            t.branch = None;
+        } else if new_branch.is_some() {
+            t.branch = new_branch;
+        }
+
+        assert_eq!(t.worktree.as_deref(), Some("/path/to/tree"), "worktree must be preserved");
+        assert_eq!(t.branch.as_deref(), Some("feature/x"), "branch must be preserved");
+        assert_eq!(t.status, Status::Running);
+        assert!(t.updated_at.is_some());
+    }
+
+    /// --clear-worktree / --clear-branch フラグで既存値を明示的に消去できること。
+    #[test]
+    fn state_set_clear_flags_erase_worktree_and_branch() {
+        let mut rs = make_run(Some("/path/to/tree"), Some("feature/x"));
+        let t = rs.tasks.iter_mut().find(|t| t.id == "t1").unwrap();
+
+        let clear_worktree = true;
+        let clear_branch = true;
+        let new_worktree: Option<String> = None;
+        let new_branch: Option<String> = None;
+
+        if clear_worktree {
+            t.worktree = None;
+        } else if new_worktree.is_some() {
+            t.worktree = new_worktree;
+        }
+        if clear_branch {
+            t.branch = None;
+        } else if new_branch.is_some() {
+            t.branch = new_branch;
+        }
+
+        assert!(t.worktree.is_none(), "worktree must be cleared");
+        assert!(t.branch.is_none(), "branch must be cleared");
+    }
 }
