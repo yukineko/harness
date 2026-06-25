@@ -69,6 +69,26 @@ enum Command {
     Uninstall,
     /// Print ~/.condukt/knowledge.md to stdout (empty output if absent).
     Knowledge,
+    /// Run one iteration of the test-fix cycle for the given module type.
+    ///
+    /// Executes build/deploy/test in the sequence appropriate for the module:
+    ///   server: deploy → test
+    ///   client: build → test
+    ///   e2e:    build → deploy → test
+    ///
+    /// Prints a JSON object with iteration, failure_count, stop, and stop_reason.
+    /// Exit 0 while progress is being made; exit 1 when stop=true and tests failed.
+    Loop {
+        /// Module type determines the cycle sequence.
+        #[arg(long, value_name = "server|client|e2e")]
+        module: String,
+        /// Which iteration this is (informational; included in JSON output).
+        #[arg(long, default_value = "1")]
+        iteration: usize,
+        /// Failure count from the previous iteration (used for no-progress detection).
+        #[arg(long)]
+        prev_failures: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -107,6 +127,16 @@ enum StateAction {
     Init {
         #[arg(long)]
         run: Option<String>,
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Terminal or session label for identification (e.g. from `tty`).
+        /// Shown in `state list` and included in conflict reports.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Check whether a decomposition's touched_files conflict with open runs.
+    /// Exits 0 if no conflicts, exits 1 if conflicts are found (JSON on stdout).
+    ConflictCheck {
         #[arg(long)]
         file: Option<PathBuf>,
     },
@@ -184,6 +214,18 @@ enum StateAction {
         #[arg(long)]
         run: String,
     },
+    /// List all non-terminal tasks across open runs as JSON (for interactive cancel).
+    ListTasks,
+    /// Cancel a specific task, marking it as cancelled and clearing its worktree/branch.
+    /// Works for pending/running/done tasks. Verified tasks cannot be cancelled.
+    /// NOTE: cancelling a running task only updates state; an in-flight worker must be
+    /// stopped manually (the binary cannot reach into a running Claude agent).
+    Cancel {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        task: String,
+    },
 }
 
 fn main() {
@@ -257,6 +299,32 @@ fn run_user(cmd: Command) -> Result<()> {
                 print!("{}", std::fs::read_to_string(&path)?);
             }
         }
+        Command::Loop {
+            module,
+            iteration,
+            prev_failures,
+        } => {
+            use crate::config::ModuleCycle;
+            use crate::state::{count_test_failures, loop_should_stop, run_cycle};
+            let cycle = ModuleCycle::from_str(&module)
+                .ok_or_else(|| anyhow!("unknown module '{module}'; use server, client, or e2e"))?;
+            let result = run_cycle(&cfg, &cwd, cycle)?;
+            let (stop, stop_reason) = loop_should_stop(prev_failures, result.failure_count);
+            let out = serde_json::json!({
+                "iteration": iteration,
+                "module": module,
+                "failure_count": result.failure_count,
+                "success": result.success,
+                "stop": stop,
+                "stop_reason": stop_reason,
+                "output": result.output,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            // Exit non-zero when not all tests pass so shell scripts can branch on it.
+            if !result.success && stop {
+                std::process::exit(1);
+            }
+        }
         Command::Restore | Command::Statusline => unreachable!("handled in main"),
     }
     Ok(())
@@ -307,7 +375,7 @@ fn run_worktree(cfg: &Config, cwd: &Path, action: WtAction) -> Result<()> {
 
 fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
     match action {
-        StateAction::Init { run, file } => {
+        StateAction::Init { run, file, label } => {
             let raw = match &file {
                 Some(p) => std::fs::read_to_string(p)
                     .with_context(|| format!("reading {}", p.display()))?,
@@ -336,12 +404,27 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 goal: dec.goal.clone(),
                 tasks,
                 paused: false,
+                terminal_label: label,
             };
             let path = rs.save(cfg, cwd)?;
             // Persist the decomposition so `state resume-context` can reconstruct tasks.
             state::save_decomposition(cfg, cwd, &run_id, &raw)?;
             eprintln!("initialized run '{run_id}' at {}", path.display());
             println!("{run_id}");
+        }
+        StateAction::ConflictCheck { file } => {
+            let raw = match &file {
+                Some(p) => std::fs::read_to_string(p)
+                    .with_context(|| format!("reading {}", p.display()))?,
+                None => read_stdin(),
+            };
+            let dec: model::Decomposition =
+                serde_json::from_str(&raw).context("parsing decomposition JSON")?;
+            let report = state::cross_run_conflicts(cfg, cwd, &dec);
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if report.has_conflicts {
+                std::process::exit(1);
+            }
         }
         StateAction::Set {
             run,
@@ -429,7 +512,12 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             for rs in state::open_runs(cfg, cwd) {
                 let (done, total) = rs.counts();
                 let paused_tag = if rs.paused { " [paused]" } else { "" };
-                println!("{}\t{}/{}\t{}{}", rs.run_id, done, total, rs.goal, paused_tag);
+                let label_tag = rs
+                    .terminal_label
+                    .as_deref()
+                    .map(|l| format!(" @{l}"))
+                    .unwrap_or_default();
+                println!("{}\t{}/{}\t{}{}{}", rs.run_id, done, total, rs.goal, paused_tag, label_tag);
             }
         }
         StateAction::Stats => {
@@ -501,7 +589,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                     state::Status::Pending | state::Status::Running => pending.push(entry),
                     state::Status::Failed => failed.push(entry),
                     state::Status::Done => needs_verification.push(entry),
-                    state::Status::Verified => verified_count += 1,
+                    state::Status::Verified | state::Status::Cancelled => verified_count += 1,
                 }
             }
 
@@ -561,6 +649,42 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
         }
         StateAction::Resume { run } => {
             state::resume_run(cfg, cwd, &run)?;
+        }
+        StateAction::ListTasks => {
+            let tasks = state::list_cancellable_tasks(cfg, cwd);
+            println!("{}", serde_json::to_string_pretty(&tasks)?);
+        }
+        StateAction::Cancel { run, task } => {
+            let mut rs = state::RunState::load(cfg, cwd, &run)?;
+            let t = rs
+                .tasks
+                .iter_mut()
+                .find(|t| t.id == task)
+                .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
+            if t.status == state::Status::Verified {
+                bail!("task '{task}' is already verified and cannot be cancelled");
+            }
+            if t.status == state::Status::Cancelled {
+                eprintln!("task '{task}' is already cancelled");
+                return Ok(());
+            }
+            let was_running = t.status == state::Status::Running;
+            let old_status = t.status;
+            t.status = state::Status::Cancelled;
+            t.worktree = None;
+            t.branch = None;
+            t.updated_at = Some(state::now_secs());
+            rs.save(cfg, cwd)?;
+            if was_running {
+                eprintln!(
+                    "cancelled task '{task}' (was running — in-flight worker may still \
+                     complete; stop it manually if needed)"
+                );
+            } else {
+                eprintln!("cancelled task '{task}' (was {:?})", old_status);
+            }
+            let (done, total) = rs.counts();
+            eprintln!("run '{run}': {done}/{total} done");
         }
     }
     Ok(())
@@ -645,6 +769,7 @@ mod state_set_tests {
                 updated_at: None,
             }],
             paused: false,
+            terminal_label: None,
         }
     }
 
