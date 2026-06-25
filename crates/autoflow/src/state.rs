@@ -10,13 +10,18 @@ pub enum Phase {
     Idle,
     /// Blocked once with a /record prompt; next Stop will check condukt.
     RecordRequested,
-    /// Condukt check done (blocked or allowed); no more blocking this session.
+    /// In the condukt loop (auto ≤4 times, ask user ≥5 times).
+    Continuing,
+    /// All condukt tasks are done; no more blocking this session.
     Done,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SessionState {
     pub phase: Phase,
+    /// How many times we have prompted to run /condukt this session.
+    #[serde(default)]
+    pub condukt_prompts: u32,
 }
 
 fn state_path(state_dir: &Path, session_id: &str) -> PathBuf {
