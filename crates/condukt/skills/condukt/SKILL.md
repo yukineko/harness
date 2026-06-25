@@ -160,7 +160,6 @@ condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 チェックは 2 種類あり、JSON の `conflicts` と `similar_goal_runs` の両方を見る。
 
 ```bash
-LABEL=$(tty 2>/dev/null || echo "pid-$$")
 CONFLICT_JSON=$(condukt state conflict-check --file <json.routed> 2>/dev/null)
 CONFLICT_EXIT=$?
 ```
@@ -197,10 +196,10 @@ CONFLICT_EXIT=$?
 `similar_goal_runs` のみで `conflicts` が空の場合も同じ選択肢を提示する。
 
 ### Phase 4 — run 初期化
-`--label` に端末識別子 (tty の出力など) を渡すことで、`state list` で端末ごとに実行中の run を
-識別できるようになる。
+`condukt state init` は `--label` を省略すると tty または `pid-<PID>` を自動填入します。
+手動で上書きしたい場合のみ `--label` を指定してください。
 ```
-RID=$(condukt state init --file <json> --label "$LABEL")   # tasks=pending で run を作成、run id を返す
+RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、run id を返す
 ```
 
 ### Phase 4.5 — ベースライン取得

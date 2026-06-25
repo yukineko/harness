@@ -388,6 +388,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 bail!("invalid decomposition:\n  - {}", errs.join("\n  - "));
             }
             let run_id = run.unwrap_or_else(default_run_id);
+            let resolved_label = label.or_else(resolve_label);
             let tasks = dec
                 .tasks
                 .iter()
@@ -404,7 +405,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 goal: dec.goal.clone(),
                 tasks,
                 paused: false,
-                terminal_label: label,
+                terminal_label: resolved_label,
             };
             let path = rs.save(cfg, cwd)?;
             // Persist the decomposition so `state resume-context` can reconstruct tasks.
@@ -744,6 +745,18 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 
 fn default_run_id() -> String {
     chrono::Local::now().format("run-%Y%m%d-%H%M%S").to_string()
+}
+
+/// Auto-detect a terminal label: try `tty` output first, fall back to `pid-<PID>`.
+fn resolve_label() -> Option<String> {
+    let tty = std::process::Command::new("tty").output().ok()?;
+    if tty.status.success() {
+        let name = String::from_utf8_lossy(&tty.stdout).trim().to_string();
+        if !name.is_empty() && name != "not a tty" {
+            return Some(name);
+        }
+    }
+    Some(format!("pid-{}", std::process::id()))
 }
 
 fn read_decomposition(file: Option<PathBuf>) -> Result<model::Decomposition> {
