@@ -325,6 +325,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 run_id: run_id.clone(),
                 goal: dec.goal.clone(),
                 tasks,
+                paused: false,
             };
             let path = rs.save(cfg, cwd)?;
             // Persist the decomposition so `state resume-context` can reconstruct tasks.

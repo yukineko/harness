@@ -64,6 +64,8 @@ pub struct RunState {
     #[serde(default)]
     pub goal: String,
     pub tasks: Vec<TaskState>,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 fn project_dir(cfg: &Config, cwd: &Path) -> PathBuf {
