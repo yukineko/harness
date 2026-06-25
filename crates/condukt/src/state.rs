@@ -465,6 +465,7 @@ mod tests {
                     updated_at: None,
                 },
             ],
+            paused: false,
         };
         assert_eq!(rs.counts(), (1, 2));
     }
@@ -528,6 +529,7 @@ mod tests {
             run_id: "run-atomic".into(),
             goal: "test atomic write".into(),
             tasks: vec![],
+            paused: false,
         };
         // save must succeed
         let saved_path = rs.save(&cfg, &tmp).unwrap();
@@ -564,6 +566,7 @@ mod tests {
                 branch: None,
                 updated_at: None,
             }],
+            paused: false,
         };
         rs.save(&cfg, &tmp).unwrap();
         let loaded = RunState::load(&cfg, &tmp, "run-rt").unwrap();
@@ -637,6 +640,7 @@ mod tests {
                 branch: None,
                 updated_at: None,
             }],
+            paused: false,
         };
         rs.save(&cfg, &tmp).unwrap();
 
@@ -663,6 +667,7 @@ mod tests {
             run_id: "run-stuck-test".into(),
             goal: "stuck detection".into(),
             tasks,
+            paused: false,
         }
     }
 
