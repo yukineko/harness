@@ -5,6 +5,7 @@ members  = ["crates/*"]
 [workspace.package]
 rust-version = "1.82"     # is_none_or 使用のため（既存クレート）
 edition      = "2021"
+license      = "MIT"
 
 # 共通依存はここに集約し、各クレートは段階的に `workspace = true` へ移行する。
 # Phase A 時点では各クレートの [dependencies] はそのまま（移行は後続フェーズ）。

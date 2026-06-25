@@ -34,21 +34,17 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "ISC",
     "Unicode-DFS-2016",
+    "Unicode-3.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "Zlib",
     "CC0-1.0",
     "OpenSSL",
+    "MPL-2.0",
 ]
-# Warn (not deny) on unknown/unlisted license expressions
-unlicensed = "warn"
-allow-osi-fsf-free = "neither"
-default = "deny"
-copyleft = "warn"
 
 [[licenses.exceptions]]
-# serde and related crates use MIT/Apache dual-license — explicitly allowed above
-allow = ["Unicode-DFS-2016"]
+allow = ["Unicode-3.0"]
 name = "unicode-ident"
 
 [bans]
