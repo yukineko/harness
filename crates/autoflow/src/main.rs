@@ -2,12 +2,17 @@
 //!
 //! Stop hook state machine (per session):
 //!   idle → [enough work?] → block: /record → record_requested
-//!   record_requested | continuing → [pending tasks?]
-//!     no pending  → done (allow)
-//!     pending, condukt_prompts < 5  → block: /condukt (auto) → continuing
-//!     pending, condukt_prompts ≥ 5  → block: ask user → continuing (stay, ask each stop)
+//!   record_requested | continuing → [condukt pending?]
+//!     yes → block: /condukt (condukt tasks) → continuing
+//!     no  → [backlog open?]
+//!       yes → block: /condukt <next item> → continuing
+//!       no  → done (allow)
 //!   done → allow
+//!
+//!   condukt_prompts < 5  → block automatically
+//!   condukt_prompts ≥ 5  → block: ask user each time
 
+mod backlog;
 mod config;
 mod condukt;
 mod insights;
@@ -72,10 +77,7 @@ fn stop_command() -> ! {
             }
             Phase::RecordRequested | Phase::Continuing => {
                 let pending = condukt::find_pending(&cwd);
-                if pending.is_empty() {
-                    s.phase = Phase::Done;
-                    state::save(&cfg.state_dir, &session_id, &s);
-                } else {
+                if !pending.is_empty() {
                     s.condukt_prompts += 1;
                     s.phase = Phase::Continuing;
                     state::save(&cfg.state_dir, &session_id, &s);
@@ -103,6 +105,32 @@ fn stop_command() -> ! {
                             s.condukt_prompts,
                             list
                         ));
+                    }
+                } else {
+                    // condukt 完了 → backlog を確認
+                    let open = backlog::find_open(&cwd);
+                    if open.is_empty() {
+                        s.phase = Phase::Done;
+                        state::save(&cfg.state_dir, &session_id, &s);
+                    } else {
+                        s.condukt_prompts += 1;
+                        s.phase = Phase::Continuing;
+                        state::save(&cfg.state_dir, &session_id, &s);
+
+                        let next = &open[0];
+                        let remaining = open.len();
+                        let msg = if s.condukt_prompts <= 4 {
+                            format!(
+                                "残課題バックログに {} 件の未完了課題があります。\n\n次の課題 [{}]: {}\n\n/condukt で処理してください。",
+                                remaining, next.id, next.text
+                            )
+                        } else {
+                            format!(
+                                "残課題バックログに {} 件の未完了課題があります ({}回目):\n次の課題 [{}]: {}\n\n自動実行を停止しています。続けるかどうかユーザーに確認してください。",
+                                remaining, s.condukt_prompts, next.id, next.text
+                            )
+                        };
+                        block(&msg);
                     }
                 }
             }
