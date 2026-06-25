@@ -106,6 +106,16 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Sync the record store with a remote git repository (configured via sync_repo).
+    /// Default: pull from remote first, then commit & push local changes.
+    Sync {
+        /// Only pull from remote (git clone/pull); do not push.
+        #[arg(long)]
+        pull_only: bool,
+        /// Only commit & push local changes; do not pull first.
+        #[arg(long)]
+        push_only: bool,
+    },
     /// Merge another machine's store file(s) into the local stores, deduplicating
     /// by content hash. At least one of --episodes or --playbooks must be given.
     /// With --dedup (and no source path), deduplicates the LOCAL stores in place.
@@ -307,6 +317,7 @@ fn run_user(cmd: Command) -> Result<()> {
             dry_run,
             dedup,
         } => cmd_import(&cfg, episodes, playbooks, dry_run, dedup),
+        Command::Sync { pull_only, push_only } => cmd_sync(&cfg, pull_only, push_only),
         Command::Prompt => unreachable!("handled in main"),
     }
 }
@@ -419,6 +430,79 @@ fn cmd_import(
         );
     }
 
+    Ok(())
+}
+
+fn cmd_sync(cfg: &config::Config, pull_only: bool, push_only: bool) -> Result<()> {
+    let repo_url = cfg
+        .sync_repo
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("sync_repo is not configured in ~/.fugu-router/config.toml"))?;
+    let sync_dir = cfg.sync_dir_path();
+
+    // --- pull phase ---
+    if !push_only {
+        if sync_dir.join(".git").exists() {
+            eprintln!("pulling from remote…");
+            let status = std::process::Command::new("git")
+                .args(["-C", &sync_dir.to_string_lossy(), "pull", "--ff-only"])
+                .status()
+                .context("running git pull")?;
+            anyhow::ensure!(status.success(), "git pull failed");
+        } else {
+            eprintln!("cloning {} → {}…", repo_url, sync_dir.display());
+            if let Some(parent) = sync_dir.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let status = std::process::Command::new("git")
+                .args(["clone", repo_url, &sync_dir.to_string_lossy()])
+                .status()
+                .context("running git clone")?;
+            anyhow::ensure!(status.success(), "git clone failed");
+        }
+        eprintln!("pull done.");
+    }
+
+    if pull_only {
+        return Ok(());
+    }
+
+    // --- push phase: commit any new records ---
+    // The store files are already inside sync_dir (store_path() points there when
+    // sync_repo is set), so we just need to add & commit anything that changed.
+    let status_out = std::process::Command::new("git")
+        .args(["-C", &sync_dir.to_string_lossy(), "status", "--porcelain"])
+        .output()
+        .context("running git status")?;
+    let dirty = !status_out.stdout.is_empty();
+
+    if !dirty {
+        eprintln!("nothing to push (store unchanged).");
+        return Ok(());
+    }
+
+    let ts = store::now_secs();
+    let commit_msg = format!("fugu-router sync {ts}");
+
+    let add = std::process::Command::new("git")
+        .args(["-C", &sync_dir.to_string_lossy(), "add", "episodes.jsonl", "playbooks.jsonl"])
+        .status()
+        .context("running git add")?;
+    anyhow::ensure!(add.success(), "git add failed");
+
+    let commit = std::process::Command::new("git")
+        .args(["-C", &sync_dir.to_string_lossy(), "commit", "-m", &commit_msg])
+        .status()
+        .context("running git commit")?;
+    anyhow::ensure!(commit.success(), "git commit failed");
+
+    let push = std::process::Command::new("git")
+        .args(["-C", &sync_dir.to_string_lossy(), "push"])
+        .status()
+        .context("running git push")?;
+    anyhow::ensure!(push.success(), "git push failed");
+
+    eprintln!("pushed: {commit_msg}");
     Ok(())
 }
 
