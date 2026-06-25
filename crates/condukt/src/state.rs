@@ -442,6 +442,166 @@ fn auto_detect_test_command(cwd: &Path) -> String {
     "cargo test".to_string()
 }
 
+// ── Loop: test→fix→test cycle ─────────────────────────────────────────────
+
+/// Result of a single loop iteration (one full cycle).
+#[derive(Debug, Serialize)]
+pub struct CycleResult {
+    /// Number of test failures detected (0 = all pass).
+    pub failure_count: usize,
+    /// Combined stdout+stderr from the cycle steps.
+    pub output: String,
+    /// Whether the cycle as a whole succeeded (exit 0 on all steps).
+    pub success: bool,
+}
+
+/// Run a single shell command, capturing combined output. Returns (exit_ok, output).
+fn run_command_capture(cmd_str: &str, cwd: &Path) -> (bool, String) {
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd_str)
+        .current_dir(cwd)
+        .output();
+    match result {
+        Ok(out) => {
+            let mut combined = String::new();
+            combined.push_str(&String::from_utf8_lossy(&out.stdout));
+            combined.push_str(&String::from_utf8_lossy(&out.stderr));
+            (out.status.success(), combined)
+        }
+        Err(e) => (false, format!("failed to spawn '{cmd_str}': {e}")),
+    }
+}
+
+/// Count failures in test output using common framework patterns.
+/// Falls back to 1 when failures exist but count can't be parsed.
+pub fn count_test_failures(output: &str, exit_ok: bool) -> usize {
+    if exit_ok {
+        return 0;
+    }
+    // Cargo: "test result: FAILED. N passed; M failed"
+    for line in output.lines() {
+        let l = line.trim();
+        if l.starts_with("test result: FAILED") || l.starts_with("test result: ok") {
+            // "N passed; M failed; ..."
+            for part in l.split(';') {
+                let p = part.trim();
+                if let Some(rest) = p.strip_suffix(" failed") {
+                    if let Ok(n) = rest.trim().parse::<usize>() {
+                        return n;
+                    }
+                }
+            }
+        }
+        // pytest: "N failed, M passed"
+        if l.contains("failed") && l.contains("passed") {
+            let words: Vec<&str> = l.split_whitespace().collect();
+            for (i, w) in words.iter().enumerate() {
+                if *w == "failed," || *w == "failed" {
+                    if i > 0 {
+                        if let Ok(n) = words[i - 1].parse::<usize>() {
+                            return n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // npm/jest: count lines starting with "FAIL "
+    let jest_fails = output.lines().filter(|l| l.trim_start().starts_with("FAIL ")).count();
+    if jest_fails > 0 {
+        return jest_fails;
+    }
+    // Unknown format but exit non-0: report as 1 so stop-detection can track it
+    1
+}
+
+/// Whether the loop should stop given previous and current failure counts.
+/// Returns `(stop, reason)`.
+pub fn loop_should_stop(prev: Option<usize>, current: usize) -> (bool, &'static str) {
+    if current == 0 {
+        return (true, "all tests pass");
+    }
+    if prev == Some(current) {
+        return (true, "no progress: failure count unchanged");
+    }
+    (false, "")
+}
+
+/// Run one full test cycle according to `module` (deploy/build/test in the right order).
+/// Returns a [`CycleResult`] with the failure count and combined output.
+pub fn run_cycle(
+    cfg: &Config,
+    cwd: &Path,
+    module: crate::config::ModuleCycle,
+) -> Result<CycleResult> {
+    use crate::config::ModuleCycle;
+    let root = repo_root(cwd);
+    let test_cmd = cfg
+        .test_command
+        .clone()
+        .unwrap_or_else(|| auto_detect_test_command(&root));
+    if test_cmd.trim().is_empty() {
+        bail!("empty test command");
+    }
+
+    let mut output = String::new();
+    let mut all_ok = true;
+
+    // build step (client and e2e)
+    if matches!(module, ModuleCycle::Client | ModuleCycle::E2e) {
+        let build = cfg.build_command.as_deref().unwrap_or("");
+        if build.trim().is_empty() {
+            bail!("build_command not set in [loop] config (required for {module:?})");
+        }
+        eprintln!("condukt loop: build — {build}");
+        let (ok, out) = run_command_capture(build, &root);
+        output.push_str(&out);
+        if !ok {
+            all_ok = false;
+            // build failure: skip remaining steps and report as non-zero failures
+            return Ok(CycleResult {
+                failure_count: count_test_failures(&output, false),
+                output,
+                success: false,
+            });
+        }
+    }
+
+    // deploy step (server and e2e)
+    if matches!(module, ModuleCycle::Server | ModuleCycle::E2e) {
+        let deploy = cfg.deploy_command.as_deref().unwrap_or("");
+        if deploy.trim().is_empty() {
+            bail!("deploy_command not set in [loop] config (required for {module:?})");
+        }
+        eprintln!("condukt loop: deploy — {deploy}");
+        let (ok, out) = run_command_capture(deploy, &root);
+        output.push_str(&out);
+        if !ok {
+            all_ok = false;
+            return Ok(CycleResult {
+                failure_count: count_test_failures(&output, false),
+                output,
+                success: false,
+            });
+        }
+    }
+
+    // test step (always)
+    eprintln!("condukt loop: test — {test_cmd}");
+    let (test_ok, test_out) = run_command_capture(&test_cmd, &root);
+    output.push_str(&test_out);
+    if !test_ok {
+        all_ok = false;
+    }
+    let failure_count = count_test_failures(&output, test_ok);
+    Ok(CycleResult {
+        failure_count,
+        output,
+        success: all_ok,
+    })
+}
+
 // ── Cross-run conflict detection ──────────────────────────────────────────
 
 const GOAL_SIMILARITY_THRESHOLD: f64 = 0.3;
@@ -1185,5 +1345,63 @@ mod tests {
         ]);
         let ids = stuck_task_ids(&run, ttl);
         assert!(ids.is_empty(), "only Running tasks should be candidates for stuck detection");
+    }
+
+    // ── loop core tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn loop_should_stop_all_pass() {
+        let (stop, reason) = loop_should_stop(Some(3), 0);
+        assert!(stop);
+        assert_eq!(reason, "all tests pass");
+    }
+
+    #[test]
+    fn loop_should_stop_no_progress() {
+        let (stop, reason) = loop_should_stop(Some(5), 5);
+        assert!(stop);
+        assert_eq!(reason, "no progress: failure count unchanged");
+    }
+
+    #[test]
+    fn loop_should_continue_when_decreasing() {
+        let (stop, _) = loop_should_stop(Some(5), 3);
+        assert!(!stop);
+    }
+
+    #[test]
+    fn loop_should_continue_on_first_iter() {
+        let (stop, _) = loop_should_stop(None, 4);
+        assert!(!stop);
+    }
+
+    #[test]
+    fn count_failures_cargo_format() {
+        let output = "test result: FAILED. 10 passed; 3 failed; 0 ignored";
+        assert_eq!(count_test_failures(output, false), 3);
+    }
+
+    #[test]
+    fn count_failures_zero_on_success() {
+        let output = "test result: ok. 10 passed; 0 failed";
+        assert_eq!(count_test_failures(output, true), 0);
+    }
+
+    #[test]
+    fn count_failures_pytest_format() {
+        let output = "===== 2 failed, 8 passed in 1.23s =====";
+        assert_eq!(count_test_failures(output, false), 2);
+    }
+
+    #[test]
+    fn count_failures_jest_format() {
+        let output = "FAIL src/foo.test.ts\nFAIL src/bar.test.ts\nTests: 2 failed, 5 passed";
+        assert_eq!(count_test_failures(output, false), 2);
+    }
+
+    #[test]
+    fn count_failures_unknown_format_returns_one() {
+        let output = "Something went wrong";
+        assert_eq!(count_test_failures(output, false), 1);
     }
 }
