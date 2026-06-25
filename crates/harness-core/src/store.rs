@@ -130,10 +130,42 @@ impl Store {
     }
 
     /// Write a note under an exact filename (no slug sanitizing). Test/utility helper.
+    ///
+    /// `name` must not contain path separators or `..` components — if it does, those
+    /// characters are replaced with `-` so the write always lands inside the project dir.
     pub fn write_note_named(&self, cwd: &Path, name: &str, body: &str) -> std::io::Result<PathBuf> {
         let dir = self.project_dir(cwd);
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{name}.md"));
+        // Sanitise: strip any path-separator or dot-dot so the caller cannot escape the
+        // project dir via a crafted `name` (e.g. "../../etc/passwd").
+        let safe_name: String = name
+            .chars()
+            .map(|c| if c == '/' || c == '\\' { '-' } else { c })
+            .collect();
+        // Collapse remaining `..` segments that could survive as part of a file-stem.
+        // A lone ".." or "." in the name is also replaced.
+        let safe_name = safe_name
+            .split("--")
+            .flat_map(|seg| seg.split('-'))
+            .filter(|seg| !seg.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        // Use only the final path component (after any remaining separator) as the name.
+        let safe_name = Path::new(&safe_name)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("note")
+            .to_string();
+        let path = dir.join(format!("{safe_name}.md"));
+        // Verify the resolved path is actually inside `dir` (defence-in-depth).
+        let canonical_dir = dir.canonicalize().unwrap_or(dir.clone());
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| dir.join(format!("{safe_name}.md")));
+        if !canonical_path.starts_with(&canonical_dir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("write_note_named: path would escape store root: {canonical_path:?}"),
+            ));
+        }
         std::fs::write(&path, body)?;
         Ok(path)
     }
@@ -369,6 +401,103 @@ mod tests {
             remaining.iter().any(|p| is_distill(p)),
             "the distill note must survive: {remaining:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── path-traversal safety tests ──────────────────────────────────────────
+
+    /// project_key must never embed `/`, `\`, or `..` even when the cwd itself
+    /// contains traversal sequences like `/home/user/../../../etc`.
+    #[test]
+    fn project_key_is_path_safe() {
+        let cwd = Path::new("/home/user/../../../etc");
+        let key = project_key(cwd);
+        assert!(
+            !key.contains('/'),
+            "project_key must not contain '/': {key}"
+        );
+        assert!(
+            !key.contains('\\'),
+            "project_key must not contain '\\': {key}"
+        );
+        assert!(
+            !key.contains(".."),
+            "project_key must not contain '..': {key}"
+        );
+        // The key must be a single path component (no directory separators).
+        assert_eq!(
+            Path::new(&key).components().count(),
+            1,
+            "project_key must be a single path component: {key}"
+        );
+    }
+
+    /// Even when the cwd uses `..` in non-trailing position the resulting key
+    /// must still be a safe, single-component string.
+    #[test]
+    fn project_key_dotdot_in_basename() {
+        let cwd = Path::new("/tmp/../tmp/foo");
+        let key = project_key(cwd);
+        assert!(
+            !key.contains('/'),
+            "project_key must not contain '/': {key}"
+        );
+        assert!(
+            !key.contains(".."),
+            "project_key must not contain '..': {key}"
+        );
+        assert_eq!(
+            Path::new(&key).components().count(),
+            1,
+            "project_key must be a single path component: {key}"
+        );
+    }
+
+    /// write_note_named must keep the output path inside the store root even
+    /// when `name` contains traversal sequences like `../../escape`.
+    #[test]
+    fn write_note_named_stays_in_root() {
+        let (store, root) = temp_store("traversal");
+        let cwd = Path::new("/some/project");
+
+        // Ensure the project dir exists before canonicalize can work.
+        let project_dir = store.project_dir(cwd);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let result = store.write_note_named(cwd, "../../escape", "body");
+        // The call must either succeed with a path inside the root or return an error.
+        // It must NOT successfully write a file outside the store root.
+        match result {
+            Ok(path) => {
+                assert!(
+                    path.starts_with(&root),
+                    "returned path {path:?} escapes store root {root:?}"
+                );
+                // Confirm the file actually landed inside the root.
+                let canonical = path.canonicalize().unwrap_or(path.clone());
+                let canonical_root = root.canonicalize().unwrap_or(root.clone());
+                assert!(
+                    canonical.starts_with(&canonical_root),
+                    "canonical path {canonical:?} escapes store root {canonical_root:?}"
+                );
+            }
+            Err(e) => {
+                // An error is also acceptable (permission denied / path blocked).
+                assert!(
+                    e.kind() == std::io::ErrorKind::PermissionDenied
+                        || e.kind() == std::io::ErrorKind::NotFound,
+                    "unexpected error kind: {e}"
+                );
+            }
+        }
+
+        // Additionally verify no file was created outside the root.
+        let escaped = root.parent().unwrap_or(&root).join("escape.md");
+        assert!(
+            !escaped.exists(),
+            "a file was created outside the store root: {escaped:?}"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
