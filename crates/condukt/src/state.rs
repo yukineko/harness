@@ -558,7 +558,6 @@ pub fn run_cycle(
         let (ok, out) = run_command_capture(build, &root);
         output.push_str(&out);
         if !ok {
-            all_ok = false;
             // build failure: skip remaining steps and report as non-zero failures
             return Ok(CycleResult {
                 failure_count: count_test_failures(&output, false),
@@ -578,7 +577,6 @@ pub fn run_cycle(
         let (ok, out) = run_command_capture(deploy, &root);
         output.push_str(&out);
         if !ok {
-            all_ok = false;
             return Ok(CycleResult {
                 failure_count: count_test_failures(&output, false),
                 output,

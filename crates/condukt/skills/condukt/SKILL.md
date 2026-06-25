@@ -154,9 +154,53 @@ condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 のタスクは、`AskUserQuestion` の計画提示で明示的に強調し、done_criteria や scope の確認を促す。
 ユーザーが合意すれば通常通り進む (実装・検証のゲートは Phase 6 で行う)。
 
-### Phase 4 — run 初期化
+### Phase 3.5 — 競合チェック (conflict check)
+
+`state init` の前に、同プロジェクトで実行中の他セッションと衝突しないかを確認する。
+チェックは 2 種類あり、JSON の `conflicts` と `similar_goal_runs` の両方を見る。
+
+```bash
+LABEL=$(tty 2>/dev/null || echo "pid-$$")
+CONFLICT_JSON=$(condukt state conflict-check --file <json.routed> 2>/dev/null)
+CONFLICT_EXIT=$?
 ```
-RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、run id を返す
+
+`condukt state conflict-check` が存在しないバージョンの場合 (`exit 127` や "unknown subcommand"
+エラー) はチェックをスキップして Phase 4 へ進む。
+
+`CONFLICT_EXIT` の値で分岐する:
+
+| exit | `auto_proceed` | 対応 |
+|---|---|---|
+| 0 | — | 衝突なし。そのまま Phase 4 へ |
+| 1 | `true` | 衝突あり (全て inactive/paused)。ログに警告を出して Phase 4 へ自動進行 |
+| 1 | `false` | 衝突あり (active な run が存在)。`AskUserQuestion` でユーザーに確認 |
+
+**衝突種別の判別**:
+- `conflicts` が空でない → ファイル競合（同じファイルを別セッションが触っている）
+- `similar_goal_runs` が空でない → 目的競合（似た目的のセッションが実行中）
+- 両方あることもある
+
+`AskUserQuestion` でユーザーに提示するメッセージ:
+- ファイル競合: 「別セッション `<run_id>` (@`<terminal_label>`) が同じファイルを変更中: `<overlapping_files>`」
+- 目的競合: 「別セッション `<run_id>` (@`<terminal_label>`) が似た目的 (類似度 `<similarity>`) で実行中: `<goal>`」
+
+`CONFLICT_EXIT == 1 && auto_proceed == false` のとき、`AskUserQuestion` の選択肢:
+
+| 選択肢 | 動作 |
+|---|---|
+| このまま進む | Phase 4 へ進む |
+| 衝突 run を先に pause する | `condukt state pause --run <conflict_run_id>` を実行してから Phase 4 へ |
+| abort する | condukt セッションを終了 |
+
+衝突 run が複数ある場合は一覧を提示し、まとめて pause するか個別に選ぶかを確認する。
+`similar_goal_runs` のみで `conflicts` が空の場合も同じ選択肢を提示する。
+
+### Phase 4 — run 初期化
+`--label` に端末識別子 (tty の出力など) を渡すことで、`state list` で端末ごとに実行中の run を
+識別できるようになる。
+```
+RID=$(condukt state init --file <json> --label "$LABEL")   # tasks=pending で run を作成、run id を返す
 ```
 
 ### Phase 4.5 — ベースライン取得
@@ -293,6 +337,52 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 
 ### Phase 8 — クローズ
 `commit`/`push` はユーザー指示時のみ。GATED タスク (deploy 等) はユーザー承認を得てから別途実行。
+
+## ユーティリティ操作
+
+### タスクのキャンセル (interactive)
+
+実行中またはpausedのrunに含まれる特定のタスクをキャンセルしたいときに使う。
+キャンセルされたタスクは `cancelled` (terminal) 状態になり、そのrunの全タスクが
+terminal (verified/cancelled/failed) になるとrunが `state list` から消える。
+
+#### 手順
+
+```bash
+# 1. キャンセル可能なタスクを一覧取得 (pending/running/done のみ)
+TASKS_JSON=$(condukt state list-tasks)
+```
+
+`TASKS_JSON` の各要素:
+```json
+[{
+  "run_id": "run-20260625-...",
+  "goal": "...",
+  "terminal_label": "/dev/pts/1",
+  "is_paused": true,
+  "task_id": "t1",
+  "task_title": "タスクのタイトル",
+  "status": "pending"
+}]
+```
+
+空配列 (`[]`) の場合は「キャンセル可能なタスクがありません」と伝えてフローを終了する。
+
+```bash
+# 2. AskUserQuestion でユーザーに選択させる
+# オプション: 各エントリから "{task_title} [{status}] (run: {run_id}@{terminal_label})" を生成
+```
+
+選択後:
+```bash
+# 3. キャンセル実行
+condukt state cancel --run <run_id> --task <task_id>
+```
+
+#### 注意事項
+- `status: "running"` のタスクはstateのみ変更され、in-flight worker (別セッションの Claude agent) は止まらない。ユーザーにそのセッションの手動停止 (ctrl-C / TaskStop) を案内する。
+- `verified` タスクはキャンセル不可 (エラーになる)。
+- キャンセル後に run が `state list` から消えた場合 → 全タスクがterminal状態になったため正常。
 
 ## 失敗モード
 - バイナリ不在 → README の導入手順を案内 (plugin install)。

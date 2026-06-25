@@ -305,7 +305,7 @@ fn run_user(cmd: Command) -> Result<()> {
             prev_failures,
         } => {
             use crate::config::ModuleCycle;
-            use crate::state::{count_test_failures, loop_should_stop, run_cycle};
+            use crate::state::{loop_should_stop, run_cycle};
             let cycle = ModuleCycle::from_str(&module)
                 .ok_or_else(|| anyhow!("unknown module '{module}'; use server, client, or e2e"))?;
             let result = run_cycle(&cfg, &cwd, cycle)?;
