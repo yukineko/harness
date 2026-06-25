@@ -1,6 +1,7 @@
 mod config;
 mod hooks;
 mod install;
+mod lock;
 mod store;
 mod task;
 
@@ -119,6 +120,32 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Manage the ~/.backlog/run.lock exclusive lock
+    Lock {
+        #[command(subcommand)]
+        action: LockAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LockAction {
+    /// Acquire the lock (errors if already active)
+    Acquire {
+        /// Session ID
+        #[arg(long)]
+        session_id: String,
+
+        /// Project path
+        #[arg(long)]
+        project: String,
+    },
+
+    /// Release the lock (no-op if none)
+    Release,
+
+    /// Print lock status as JSON, or "none"
+    Status,
 }
 
 fn main() {
@@ -241,6 +268,37 @@ fn run(cli: Cli) -> Result<()> {
         Command::Uninstall { dry_run } => {
             install::uninstall(dry_run)?;
         }
+
+        Command::Lock { action } => match action {
+            LockAction::Acquire {
+                session_id,
+                project,
+            } => {
+                let pid = std::process::id();
+                lock::acquire(&session_id, pid, &project)?;
+                println!("lock acquired");
+            }
+            LockAction::Release => {
+                lock::release()?;
+                println!("lock released");
+            }
+            LockAction::Status => {
+                match lock::status() {
+                    lock::LockStatus::None => println!("none"),
+                    lock::LockStatus::Active(info) => {
+                        println!("{}", serde_json::to_string_pretty(&info)?);
+                    }
+                    lock::LockStatus::Stale(info) => {
+                        // Print the info with an extra stale field
+                        let mut v = serde_json::to_value(&info)?;
+                        v.as_object_mut()
+                            .unwrap()
+                            .insert("stale".to_string(), serde_json::Value::Bool(true));
+                        println!("{}", serde_json::to_string_pretty(&v)?);
+                    }
+                }
+            }
+        },
     }
 
     Ok(())
