@@ -5,10 +5,19 @@
 enabled = true
 
 # Episode store (the learning signal). One JSON object per line.
+# When sync_repo is set and this is unset, defaults to <sync_dir>/episodes.jsonl.
 # store_file = "~/.fugu-router/episodes.jsonl"
 
 # Playbook store (verified task procedures). One JSON object per line.
+# When sync_repo is set and this is unset, defaults to <sync_dir>/playbooks.jsonl.
 # playbook_file = "~/.fugu-router/playbooks.jsonl"
+
+# GitHub repo URL for syncing records across machines.
+# When set, store_file and playbook_file default to <sync_dir>/{episodes,playbooks}.jsonl.
+# sync_repo = "https://github.com/you/fugu-router-record"
+
+# Local clone path for sync_repo. Default: ~/.fugu-router/record-repo
+# sync_dir = "~/.fugu-router/record-repo"
 
 # How many nearest past tasks to consider when routing.
 k = 6

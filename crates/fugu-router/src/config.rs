@@ -7,9 +7,15 @@ use std::path::PathBuf;
 pub struct Config {
     pub enabled: bool,
     /// Override the episode store path. Default: ~/.fugu-router/episodes.jsonl
+    /// When sync_repo is set and this is unset, defaults to <sync_dir>/episodes.jsonl.
     pub store_file: Option<String>,
     /// Override the playbook store path. Default: ~/.fugu-router/playbooks.jsonl
+    /// When sync_repo is set and this is unset, defaults to <sync_dir>/playbooks.jsonl.
     pub playbook_file: Option<String>,
+    /// GitHub repo URL for syncing records across machines (e.g. https://github.com/you/fugu-router-record).
+    pub sync_repo: Option<String>,
+    /// Local clone path for sync_repo. Default: ~/.fugu-router/record-repo
+    pub sync_dir: Option<String>,
     /// Neighbours to retrieve per task.
     pub k: usize,
     /// Minimum similarity for a neighbour to count.
@@ -30,6 +36,8 @@ impl Default for Config {
             enabled: true,
             store_file: None,
             playbook_file: None,
+            sync_repo: None,
+            sync_dir: None,
             k: 6,
             sim_threshold: 0.15,
             pass_threshold: 0.7,
@@ -56,14 +64,27 @@ impl Config {
     pub fn store_path(&self) -> PathBuf {
         match &self.store_file {
             Some(p) => harness_core::config::expand_tilde(p),
-            None => home_dir().join(".fugu-router").join("episodes.jsonl"),
+            None => match self.sync_repo {
+                Some(_) => self.sync_dir_path().join("episodes.jsonl"),
+                None => home_dir().join(".fugu-router").join("episodes.jsonl"),
+            },
         }
     }
 
     pub fn playbook_path(&self) -> PathBuf {
         match &self.playbook_file {
             Some(p) => harness_core::config::expand_tilde(p),
-            None => home_dir().join(".fugu-router").join("playbooks.jsonl"),
+            None => match self.sync_repo {
+                Some(_) => self.sync_dir_path().join("playbooks.jsonl"),
+                None => home_dir().join(".fugu-router").join("playbooks.jsonl"),
+            },
+        }
+    }
+
+    pub fn sync_dir_path(&self) -> PathBuf {
+        match &self.sync_dir {
+            Some(p) => harness_core::config::expand_tilde(p),
+            None => home_dir().join(".fugu-router").join("record-repo"),
         }
     }
 }
