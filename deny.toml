@@ -1,0 +1,66 @@
+# cargo-deny 0.19.x configuration for harness security auditing
+# Run: cargo deny check advisories bans sources licenses
+# Install: cargo install cargo-deny
+
+[graph]
+# Audit all crates in the workspace (default: all)
+
+[advisories]
+# RustSec Advisory DB is fetched automatically from https://github.com/rustsec/advisory-db
+# Stale DB older than 90 days will produce an error
+maximum-db-staleness = "P90D"
+
+# Scope for unmaintained crate warnings: workspace crates only (not transitive deps)
+unmaintained = "workspace"
+
+# Scope for unsound (unsafe code violating safety invariants) advisories
+unsound = "workspace"
+
+# Advisories to ignore (add RUSTSEC-YYYY-NNNN IDs here with a reason comment)
+# Example:
+# ignore = [
+#   { id = "RUSTSEC-2020-0071", reason = "only affects Windows targets, not used in CI" },
+# ]
+ignore = []
+
+# yanked crates produce an error by default
+yanked = "deny"
+
+[licenses]
+# Allow common permissive and weak-copyleft licenses used by the Rust ecosystem
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "Unicode-DFS-2016",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "CC0-1.0",
+    "OpenSSL",
+]
+# Warn (not deny) on unknown/unlisted license expressions
+unlicensed = "warn"
+allow-osi-fsf-free = "neither"
+default = "deny"
+copyleft = "warn"
+
+[[licenses.exceptions]]
+# serde and related crates use MIT/Apache dual-license — explicitly allowed above
+allow = ["Unicode-DFS-2016"]
+name = "unicode-ident"
+
+[bans]
+# Deny duplicate versions of the same crate where avoidable
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+# Only allow crates from crates.io (no git deps or unknown registries)
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
