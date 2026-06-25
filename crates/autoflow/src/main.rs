@@ -1,9 +1,12 @@
 //! autoflow — session-end auto-flow gate for Claude Code.
 //!
-//! Stop hook state machine (per session, one-shot each step):
-//!   idle → [enough work?] → block: please run /record  → record_requested
-//!   record_requested → [pending condukt tasks?] → block: please run /condukt → done
-//!   done → allow (no more blocking)
+//! Stop hook state machine (per session):
+//!   idle → [enough work?] → block: /record → record_requested
+//!   record_requested | continuing → [pending tasks?]
+//!     no pending  → done (allow)
+//!     pending, condukt_prompts < 5  → block: /condukt (auto) → continuing
+//!     pending, condukt_prompts ≥ 5  → block: ask user → continuing (stay, ask each stop)
+//!   done → allow
 
 mod config;
 mod condukt;
@@ -67,21 +70,36 @@ fn stop_command() -> ! {
                     block("/session-insights:record を実行してセッションを記録してください。");
                 }
             }
-            Phase::RecordRequested => {
+            Phase::RecordRequested | Phase::Continuing => {
                 let pending = condukt::find_pending(&cwd);
-                s.phase = Phase::Done;
-                state::save(&cfg.state_dir, &session_id, &s);
-                if !pending.is_empty() {
+                if pending.is_empty() {
+                    s.phase = Phase::Done;
+                    state::save(&cfg.state_dir, &session_id, &s);
+                } else {
+                    s.condukt_prompts += 1;
+                    s.phase = Phase::Continuing;
+                    state::save(&cfg.state_dir, &session_id, &s);
+
                     let list = pending
                         .iter()
                         .map(|t| format!("- {} ({})", t.id, t.status))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    block(&format!(
-                        "condukt に残課題が {} 件あります:\n{}\n\n/condukt で続きを処理してください。",
-                        pending.len(),
-                        list
-                    ));
+
+                    if s.condukt_prompts <= 4 {
+                        block(&format!(
+                            "condukt に残課題が {} 件あります:\n{}\n\n/condukt で続きを処理してください。",
+                            pending.len(),
+                            list
+                        ));
+                    } else {
+                        block(&format!(
+                            "condukt に残課題が {} 件あります ({}回目):\n{}\n\n自動実行を停止しています。続けるかどうかユーザーに確認してください。",
+                            pending.len(),
+                            s.condukt_prompts,
+                            list
+                        ));
+                    }
                 }
             }
             Phase::Done => {}
