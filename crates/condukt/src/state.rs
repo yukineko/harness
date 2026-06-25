@@ -58,12 +58,16 @@ pub fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunState {
     pub run_id: String,
     #[serde(default)]
     pub goal: String,
+    #[serde(default)]
     pub tasks: Vec<TaskState>,
+    /// When true the run is paused: no new workers should be dispatched.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 fn project_dir(cfg: &Config, cwd: &Path) -> PathBuf {
@@ -180,6 +184,34 @@ pub fn load_decomposition(cfg: &Config, cwd: &Path, run_id: &str) -> Result<Stri
     let path = decomposition_path(cfg, cwd, run_id);
     std::fs::read_to_string(&path)
         .with_context(|| format!("no decomposition for run '{run_id}' at {}", path.display()))
+}
+
+// ── Pause / Resume ────────────────────────────────────────────────────────
+
+/// Mark a run as paused. No-op (but succeeds) if already paused.
+pub fn pause_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+    let mut rs = RunState::load(cfg, cwd, run_id)?;
+    if rs.paused {
+        eprintln!("run '{run_id}' is already paused");
+        return Ok(());
+    }
+    rs.paused = true;
+    rs.save(cfg, cwd)?;
+    eprintln!("run '{run_id}' paused");
+    Ok(())
+}
+
+/// Mark a run as resumed (not paused). No-op (but succeeds) if already active.
+pub fn resume_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+    let mut rs = RunState::load(cfg, cwd, run_id)?;
+    if !rs.paused {
+        eprintln!("run '{run_id}' is not paused");
+        return Ok(());
+    }
+    rs.paused = false;
+    rs.save(cfg, cwd)?;
+    eprintln!("run '{run_id}' resumed");
+    Ok(())
 }
 
 // ── Reconcile ─────────────────────────────────────────────────────────────
@@ -447,6 +479,7 @@ mod tests {
                     updated_at: None,
                 },
             ],
+            paused: false,
         };
         assert_eq!(rs.counts(), (1, 2));
     }
@@ -510,6 +543,7 @@ mod tests {
             run_id: "run-atomic".into(),
             goal: "test atomic write".into(),
             tasks: vec![],
+            paused: false,
         };
         // save must succeed
         let saved_path = rs.save(&cfg, &tmp).unwrap();
@@ -546,6 +580,7 @@ mod tests {
                 branch: None,
                 updated_at: None,
             }],
+            paused: false,
         };
         rs.save(&cfg, &tmp).unwrap();
         let loaded = RunState::load(&cfg, &tmp, "run-rt").unwrap();
@@ -619,6 +654,7 @@ mod tests {
                 branch: None,
                 updated_at: None,
             }],
+            paused: false,
         };
         rs.save(&cfg, &tmp).unwrap();
 
@@ -645,6 +681,7 @@ mod tests {
             run_id: "run-stuck-test".into(),
             goal: "stuck detection".into(),
             tasks,
+            paused: false,
         }
     }
 
