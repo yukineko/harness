@@ -63,6 +63,7 @@ pub fn normalise_paths(paths: &[String], repo_root: Option<&Path>) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn strips_repo_root_from_absolute_path() {
@@ -120,5 +121,47 @@ mod tests {
         assert_eq!(result[2], "/other/place.rs");
         // /repo/src/main.rs -> src/main.rs (non-existent path → deterministic strip)
         assert_eq!(result[0], "src/main.rs");
+    }
+
+    /// Absolute path outside repo_root must be returned unchanged (traversal safety).
+    #[test]
+    fn traversal_input_outside_repo() {
+        let root = PathBuf::from("/tmp/myrepo");
+        let raw = "/etc/passwd";
+        assert_eq!(normalise_path(raw, Some(&root)), "/etc/passwd");
+    }
+
+    /// Relative dotdot traversal path must be returned unchanged (not inside repo).
+    #[test]
+    fn traversal_dotdot() {
+        let root = PathBuf::from("/tmp/myrepo");
+        let raw = "../../../etc/passwd";
+        assert_eq!(normalise_path(raw, Some(&root)), "../../../etc/passwd");
+    }
+
+    // normalise_path is idempotent: applying it twice yields the same result.
+    proptest! {
+        #[test]
+        fn normalise_path_idempotent(s in ".*") {
+            // Use a non-existent repo root so canonicalize is identity.
+            let root = PathBuf::from("/no/such/proptest/repo");
+            let once = normalise_path(&s, Some(&root));
+            let twice = normalise_path(&once, Some(&root));
+            prop_assert_eq!(once, twice);
+        }
+    }
+
+    /// Absolute path inside repo_root has the prefix stripped; no absolute prefix remains.
+    #[test]
+    fn absolute_prefix_stripped() {
+        let root = PathBuf::from("/tmp/myrepo");
+        let raw = "/tmp/myrepo/src/main.rs";
+        let result = normalise_path(raw, Some(&root));
+        assert_eq!(result, "src/main.rs");
+        // The output must not start with the repo root absolute prefix.
+        assert!(
+            !result.starts_with('/'),
+            "output should be repo-relative, got: {result}"
+        );
     }
 }
