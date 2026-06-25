@@ -20,6 +20,19 @@
       }
     },
     {
+      "name": "backlog",
+      "description": "Cross-project task queue with cycle-type tags for Claude Code: a /backlog skill that loops through open items (lock → pick → /condukt → done), a SessionStart hook that surfaces pending work at session open, and a backlog binary with list/next/done/fail/lock subcommands. Subscription-native (skill + hook + bundled Rust binary, no API key).",
+      "author": {
+        "name": "yukineko"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/yukineko/harness.git",
+        "path": "crates/backlog",
+        "ref": "main"
+      }
+    },
+    {
       "name": "budgetguard",
       "description": "Real-time cost budget gate for Claude Code: on Stop, read the session transcript, compute USD cost, and block the turn when session or daily limits are exceeded — feeding the overage back so the agent winds down gracefully. Subscription-native (one Stop hook + bundled Rust binary, no API key).",
       "author": {
