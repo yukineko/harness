@@ -39,12 +39,16 @@ condukt state list
 
 | open run 数 | $ARGUMENTS | 対応 |
 |---|---|---|
-| 0 件 | あり | 通常フロー（Phase 0.5 へ） |
+| 0 件 | **「次は何をする」系** | **Phase 0-next へ（プロジェクト状態から次の一手を探索）** |
+| 0 件 | その他あり | 通常フロー（Phase 0.5 へ） |
 | 0 件 | 空 | 直前の会話から課題を取る |
 | **1 件** | **空** | **AskUserQuestion なしで自動的に Phase 0-alt（resume）へ移行** |
 | 1 件 | あり | 新規課題として扱う（既存 run は放置） |
 | 2 件以上 | 空 | `AskUserQuestion` でどれを再開するか確認 |
 | 2 件以上 | あり | 新規課題として扱う |
+
+**「次は何をする」系引数の判定**: 引数が具体的な実装指示でなく「次に何をすべきか分からない」意図を
+示すとき。例: 「次は何をする」「次は何をしてください」「次」「何から始める」「what's next」等。
 
 引数が `--resume <RID>` または `resume <RID>` の形式でも **Phase 0-alt** へ進む。
 
@@ -78,6 +82,34 @@ condukt state resume-context --run <RID>
 
 `failed_tasks` の `failure_context` は以前の verifier 理由が state に無い場合は省略し、
 `done_criteria` と `touched_files` のみを渡す。再開後は通常の Phase 5→6→7 フローに合流する。
+
+### Phase 0-next — 次の一手の探索 (post-completion / "次は何をする" 系)
+
+open run が 0 件かつ引数が「次は何をする」系のとき。**残タスク問題ではない**（stuck/pending タスクの
+回収ではなく、完了後の空白を埋める探索）。以下の順でプロジェクト状態を確認し、次の一手を導く:
+
+```bash
+# 1. バックログを確認
+BACKLOG=$(session-insights backlog list 2>/dev/null | grep "^\[open\]" | head -10 || true)
+
+# 2. compass の gap を確認（charter があれば）
+COMPASS_GAP=$(compass gap 2>/dev/null | head -30 || true)
+
+# 3. 直近の変更を確認
+GIT_LOG=$(git log --oneline -10 2>/dev/null || true)
+```
+
+上記を総合して次の一手を LLM として自分で判断する。
+
+| 状態 | 対応 |
+|---|---|
+| バックログに open 項目あり | 最優先の 1 件を課題文として Phase 0.5 へ進む |
+| compass gap が明確な next_action を示す | それを課題文として Phase 0.5 へ進む |
+| どちらもなく直近コミットから自明な続きがある | それを課題文として Phase 0.5 へ進む |
+| 判断できない・選択肢が複数ある | `AskUserQuestion` でユーザーに候補を提示して選ばせる |
+
+**注意**: このフェーズで課題を自律決定して進む場合でも、Phase 3 の合意（`AskUserQuestion`）は
+省略しない。「次の一手の探索」は課題の *発見* であり、実装の *承認* は別物。
 
 ### Phase 0.5 — リサーチ (researcher agent, 条件付き)
 以下のいずれかを満たす場合に `condukt-researcher` を起動する:
