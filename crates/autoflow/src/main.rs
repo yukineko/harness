@@ -80,6 +80,10 @@ fn stop_command() -> ! {
                     s.phase = Phase::Continuing;
                     state::save(&cfg.state_dir, &session_id, &s);
 
+                    // Mark tasks as running so interruptions can be detected.
+                    let ids: Vec<&str> = pending.iter().map(|t| t.id.as_str()).collect();
+                    condukt::mark_running(&cwd, &ids);
+
                     let list = pending
                         .iter()
                         .map(|t| format!("- {} ({})", t.id, t.status))
