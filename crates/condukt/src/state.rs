@@ -20,6 +20,10 @@ pub enum Status {
     Done,
     Failed,
     Verified,
+    /// Deliberately cancelled by the user. Terminal like Verified; does not
+    /// block the completion gate and causes the run to disappear from `state list`
+    /// when all tasks reach a terminal state.
+    Cancelled,
 }
 
 impl std::str::FromStr for Status {
@@ -31,7 +35,10 @@ impl std::str::FromStr for Status {
             "done" => Status::Done,
             "failed" => Status::Failed,
             "verified" => Status::Verified,
-            other => bail!("unknown status '{other}' (pending|running|done|failed|verified)"),
+            "cancelled" => Status::Cancelled,
+            other => bail!(
+                "unknown status '{other}' (pending|running|done|failed|verified|cancelled)"
+            ),
         })
     }
 }
@@ -66,6 +73,11 @@ pub struct RunState {
     pub tasks: Vec<TaskState>,
     #[serde(default)]
     pub paused: bool,
+    /// Terminal or session label set at `state init` time (e.g. `/dev/pts/1`).
+    /// Used to identify which terminal/session owns a run in `state list` output
+    /// and in cross-run conflict reports.
+    #[serde(default)]
+    pub terminal_label: Option<String>,
 }
 
 fn project_dir(cfg: &Config, cwd: &Path) -> PathBuf {
@@ -109,7 +121,7 @@ impl RunState {
         let done = self
             .tasks
             .iter()
-            .filter(|t| t.status == Status::Verified)
+            .filter(|t| matches!(t.status, Status::Verified | Status::Cancelled))
             .count();
         (done, self.tasks.len())
     }
@@ -231,7 +243,7 @@ pub fn reconcile_run(
     let mut changes = Vec::new();
 
     for t in run.tasks.iter_mut() {
-        if t.status == Status::Verified {
+        if matches!(t.status, Status::Verified | Status::Cancelled) {
             continue;
         }
 
@@ -357,7 +369,7 @@ pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     let repo = repo_root(cwd);
 
     for t in &run.tasks {
-        if t.status != Status::Verified {
+        if !matches!(t.status, Status::Verified | Status::Cancelled) {
             reasons.push(format!("task '{}' is {:?}, not verified", t.id, t.status));
         }
         // A finished task must not leave its worktree behind, dirty or not.
@@ -430,13 +442,211 @@ fn auto_detect_test_command(cwd: &Path) -> String {
     "cargo test".to_string()
 }
 
+// ── Cross-run conflict detection ──────────────────────────────────────────
+
+const GOAL_SIMILARITY_THRESHOLD: f64 = 0.3;
+
+/// Character bigram Jaccard similarity between two strings.
+/// Works for both Japanese and ASCII without external dependencies.
+fn bigram_jaccard(a: &str, b: &str) -> f64 {
+    use std::collections::HashSet;
+    let make_bigrams = |s: &str| -> HashSet<(char, char)> {
+        let chars: Vec<char> = s.chars().collect();
+        chars.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let bg_a = make_bigrams(a);
+    let bg_b = make_bigrams(b);
+    if bg_a.is_empty() && bg_b.is_empty() {
+        return 0.0;
+    }
+    let intersection = bg_a.intersection(&bg_b).count();
+    let union_count = bg_a.union(&bg_b).count();
+    if union_count == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union_count as f64
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConflictEntry {
+    pub run_id: String,
+    pub goal: String,
+    pub terminal_label: Option<String>,
+    /// Files from the incoming decomposition that overlap with this run.
+    pub overlapping_files: Vec<String>,
+    /// True when the run has tasks that are not yet settled (pending/running/done)
+    /// and is not paused. A false value means it is safe to proceed automatically.
+    pub is_active: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SimilarGoalEntry {
+    pub run_id: String,
+    pub goal: String,
+    pub terminal_label: Option<String>,
+    /// Bigram Jaccard similarity score between goals (0.0–1.0).
+    pub similarity: f64,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConflictReport {
+    /// True when file conflicts or similar-goal runs exist.
+    pub has_conflicts: bool,
+    /// True when every conflicting/similar run is inactive (paused or all tasks settled).
+    /// The skill can auto-proceed without asking the user.
+    pub auto_proceed: bool,
+    /// File-overlap conflicts.
+    pub conflicts: Vec<ConflictEntry>,
+    /// Runs with similar goals but no file overlap (potential duplicate work).
+    pub similar_goal_runs: Vec<SimilarGoalEntry>,
+}
+
+/// A non-terminal task eligible for cancellation, with its run context.
+/// Returned by `list_cancellable_tasks` for the skill's AskUserQuestion list.
+#[derive(Debug, Serialize)]
+pub struct CancellableTask {
+    pub run_id: String,
+    pub goal: String,
+    pub terminal_label: Option<String>,
+    pub is_paused: bool,
+    pub task_id: String,
+    /// From the decomposition sidecar; falls back to task_id when unavailable.
+    pub task_title: String,
+    pub status: String,
+}
+
+/// All non-terminal tasks across open runs that can be cancelled.
+/// Loads decomposition sidecars to include task titles.
+pub fn list_cancellable_tasks(cfg: &Config, cwd: &Path) -> Vec<CancellableTask> {
+    let mut result = Vec::new();
+    for run in open_runs(cfg, cwd) {
+        let titles: std::collections::HashMap<String, String> =
+            if let Ok(raw) = load_decomposition(cfg, cwd, &run.run_id) {
+                if let Ok(dec) = serde_json::from_str::<crate::model::Decomposition>(&raw) {
+                    dec.tasks.iter().map(|t| (t.id.clone(), t.title.clone())).collect()
+                } else {
+                    Default::default()
+                }
+            } else {
+                Default::default()
+            };
+
+        for task in &run.tasks {
+            if !matches!(task.status, Status::Pending | Status::Running | Status::Done) {
+                continue;
+            }
+            result.push(CancellableTask {
+                run_id: run.run_id.clone(),
+                goal: run.goal.clone(),
+                terminal_label: run.terminal_label.clone(),
+                is_paused: run.paused,
+                task_id: task.id.clone(),
+                task_title: titles
+                    .get(&task.id)
+                    .cloned()
+                    .unwrap_or_else(|| task.id.clone()),
+                status: format!("{:?}", task.status).to_lowercase(),
+            });
+        }
+    }
+    result
+}
+
+/// Check whether the incoming decomposition's touched_files overlap with any
+/// currently open run for this project, and whether any open run has a similar goal.
+///
+/// - Paused runs are included in the report but marked `is_active: false`.
+/// - Runs whose decomposition file is missing are skipped for file-conflict checks
+///   but still checked for goal similarity.
+/// - Runs where both sides have empty touched_files are skipped for file conflicts.
+/// - Runs already reported in `conflicts` (file overlap) are excluded from
+///   `similar_goal_runs` to avoid double-reporting.
+pub fn cross_run_conflicts(
+    cfg: &Config,
+    cwd: &Path,
+    new_dec: &crate::model::Decomposition,
+) -> ConflictReport {
+    let new_files: Vec<String> = new_dec
+        .tasks
+        .iter()
+        .flat_map(|t| t.touched_files.iter().cloned())
+        .collect();
+    let new_goal = &new_dec.goal;
+
+    let mut conflicts = Vec::new();
+    let mut similar_goal_runs = Vec::new();
+    let mut file_conflict_run_ids = std::collections::HashSet::new();
+
+    for run in open_runs(cfg, cwd) {
+        let all_settled = run.tasks.iter().all(|t| {
+            matches!(t.status, Status::Verified | Status::Failed | Status::Cancelled)
+        });
+        let is_active = !run.paused && !all_settled;
+
+        // File-overlap check (requires decomposition).
+        if let Ok(dec_raw) = load_decomposition(cfg, cwd, &run.run_id) {
+            if let Ok(dec) = serde_json::from_str::<crate::model::Decomposition>(&dec_raw) {
+                let run_files: Vec<String> = dec
+                    .tasks
+                    .iter()
+                    .flat_map(|t| t.touched_files.iter().cloned())
+                    .collect();
+
+                if !new_files.is_empty() && !run_files.is_empty() {
+                    let overlapping: Vec<String> = new_files
+                        .iter()
+                        .filter(|f| crate::schedule::files_conflict(&[(*f).clone()], &run_files))
+                        .cloned()
+                        .collect();
+
+                    if !overlapping.is_empty() {
+                        file_conflict_run_ids.insert(run.run_id.clone());
+                        conflicts.push(ConflictEntry {
+                            run_id: run.run_id.clone(),
+                            goal: run.goal.clone(),
+                            terminal_label: run.terminal_label.clone(),
+                            overlapping_files: overlapping,
+                            is_active,
+                        });
+                        continue; // already reported as file conflict
+                    }
+                }
+            }
+        }
+
+        // Goal-similarity check (runs without file overlap).
+        let similarity = bigram_jaccard(new_goal, &run.goal);
+        if similarity >= GOAL_SIMILARITY_THRESHOLD {
+            similar_goal_runs.push(SimilarGoalEntry {
+                run_id: run.run_id,
+                goal: run.goal,
+                terminal_label: run.terminal_label,
+                similarity,
+                is_active,
+            });
+        }
+    }
+
+    let all_file_inactive = conflicts.iter().all(|c| !c.is_active);
+    let all_goal_inactive = similar_goal_runs.iter().all(|s| !s.is_active);
+    let auto_proceed = all_file_inactive && all_goal_inactive;
+    let has_conflicts = !conflicts.is_empty() || !similar_goal_runs.is_empty();
+    ConflictReport {
+        has_conflicts,
+        auto_proceed,
+        conflicts,
+        similar_goal_runs,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn status_roundtrip() {
-        for s in ["pending", "running", "done", "failed", "verified"] {
+        for s in ["pending", "running", "done", "failed", "verified", "cancelled"] {
             let st: Status = s.parse().unwrap();
             let json = serde_json::to_string(&st).unwrap();
             assert_eq!(json, format!("\"{s}\""));
@@ -466,8 +676,25 @@ mod tests {
                 },
             ],
             paused: false,
+            terminal_label: None,
         };
         assert_eq!(rs.counts(), (1, 2));
+    }
+
+    #[test]
+    fn counts_cancelled_also_counts_as_done() {
+        let rs = RunState {
+            run_id: "r1".into(),
+            goal: "g".into(),
+            tasks: vec![
+                TaskState { id: "a".into(), status: Status::Verified, worktree: None, branch: None, updated_at: None },
+                TaskState { id: "b".into(), status: Status::Cancelled, worktree: None, branch: None, updated_at: None },
+                TaskState { id: "c".into(), status: Status::Pending, worktree: None, branch: None, updated_at: None },
+            ],
+            paused: false,
+            terminal_label: None,
+        };
+        assert_eq!(rs.counts(), (2, 3));
     }
 
     fn make_tmp_dir(name: &str) -> PathBuf {
@@ -518,6 +745,9 @@ mod tests {
             state_dir: tmp.to_path_buf(),
             test_command: None,
             stuck_ttl_secs: 1800,
+            build_command: None,
+            deploy_command: None,
+            loop_max_iters: 10,
         }
     }
 
@@ -530,6 +760,7 @@ mod tests {
             goal: "test atomic write".into(),
             tasks: vec![],
             paused: false,
+            terminal_label: None,
         };
         // save must succeed
         let saved_path = rs.save(&cfg, &tmp).unwrap();
@@ -567,6 +798,7 @@ mod tests {
                 updated_at: None,
             }],
             paused: false,
+            terminal_label: None,
         };
         rs.save(&cfg, &tmp).unwrap();
         let loaded = RunState::load(&cfg, &tmp, "run-rt").unwrap();
@@ -641,6 +873,7 @@ mod tests {
                 updated_at: None,
             }],
             paused: false,
+            terminal_label: None,
         };
         rs.save(&cfg, &tmp).unwrap();
 
@@ -668,6 +901,7 @@ mod tests {
             goal: "stuck detection".into(),
             tasks,
             paused: false,
+            terminal_label: None,
         }
     }
 
@@ -864,6 +1098,61 @@ mod tests {
         }]);
         let found = run.tasks.iter().find(|t| t.id == "no-such-task");
         assert!(found.is_none(), "non-existent task id must not be found");
+    }
+
+    // ── bigram_jaccard tests ──────────────────────────────────────────────
+
+    #[test]
+    fn bigram_jaccard_identical_strings() {
+        let s = "ログインバグを修正する";
+        assert!((bigram_jaccard(s, s) - 1.0).abs() < 1e-6, "identical strings must score 1.0");
+    }
+
+    #[test]
+    fn bigram_jaccard_empty_strings_return_zero() {
+        assert_eq!(bigram_jaccard("", ""), 0.0);
+        assert_eq!(bigram_jaccard("hello", ""), 0.0);
+        assert_eq!(bigram_jaccard("", "hello"), 0.0);
+    }
+
+    #[test]
+    fn bigram_jaccard_single_char_returns_zero() {
+        // Single char → no bigrams → score must be 0.
+        assert_eq!(bigram_jaccard("あ", "あ"), 0.0);
+    }
+
+    #[test]
+    fn bigram_jaccard_similar_japanese_goals_above_threshold() {
+        // Two phrasings of "fix the login bug" — should exceed the threshold 0.3.
+        let a = "ログインバグを修正する";
+        let b = "ログインのバグ修正";
+        let score = bigram_jaccard(a, b);
+        assert!(
+            score >= GOAL_SIMILARITY_THRESHOLD,
+            "similar Japanese goals must score >= threshold; got {score:.3}"
+        );
+    }
+
+    #[test]
+    fn bigram_jaccard_unrelated_strings_below_threshold() {
+        let a = "ログインバグを修正する";
+        let b = "Cargo.toml の依存バージョンを更新する";
+        let score = bigram_jaccard(a, b);
+        assert!(
+            score < GOAL_SIMILARITY_THRESHOLD,
+            "unrelated goals must score < threshold; got {score:.3}"
+        );
+    }
+
+    #[test]
+    fn bigram_jaccard_english_same_problem_above_threshold() {
+        let a = "fix the authentication bug in login flow";
+        let b = "fix auth bug in the login page";
+        let score = bigram_jaccard(a, b);
+        assert!(
+            score >= GOAL_SIMILARITY_THRESHOLD,
+            "related English goals must score >= threshold; got {score:.3}"
+        );
     }
 
     /// Non-Running tasks must never appear, even if their timestamp is ancient.

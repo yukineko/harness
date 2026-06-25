@@ -26,11 +26,54 @@ pub struct Config {
     /// How many seconds a Running task may be silent before being considered STUCK.
     /// Defaults to 1800 (30 minutes).
     pub stuck_ttl_secs: u64,
+    /// Loop feature: command to build artifacts before testing (client/e2e cycles).
+    pub build_command: Option<String>,
+    /// Loop feature: command to deploy before testing (server/e2e cycles).
+    pub deploy_command: Option<String>,
+    /// Loop feature: max iterations before the loop gives up. Defaults to 10.
+    pub loop_max_iters: usize,
+}
+
+/// Which test-fix cycle sequence to use for a module type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleCycle {
+    /// deploy → test
+    Server,
+    /// build → test
+    Client,
+    /// build → deploy → test
+    E2e,
+}
+
+impl ModuleCycle {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "server" => Some(Self::Server),
+            "client" => Some(Self::Client),
+            "e2e" => Some(Self::E2e),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Server => "server",
+            Self::Client => "client",
+            Self::E2e => "e2e",
+        }
+    }
 }
 
 #[derive(Default, Deserialize)]
 struct FileTestConfig {
     command: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct FileLoopConfig {
+    build_command: Option<String>,
+    deploy_command: Option<String>,
+    max_iters: Option<usize>,
 }
 
 #[derive(Default, Deserialize)]
@@ -42,6 +85,8 @@ struct FileConfig {
     state_dir: Option<String>,
     test: Option<FileTestConfig>,
     stuck_ttl_secs: Option<u64>,
+    #[serde(rename = "loop")]
+    loop_cfg: Option<FileLoopConfig>,
 }
 
 /// `~/.condukt` (falls back to `./.condukt` if there is no home dir). Thin
@@ -61,6 +106,9 @@ impl Config {
             state_dir: base.join("state"),
             test_command: None,
             stuck_ttl_secs: 1800,
+            build_command: None,
+            deploy_command: None,
+            loop_max_iters: 10,
         };
 
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
@@ -85,6 +133,17 @@ impl Config {
                 }
                 if let Some(v) = fc.stuck_ttl_secs {
                     cfg.stuck_ttl_secs = v;
+                }
+                if let Some(lc) = fc.loop_cfg {
+                    if let Some(v) = lc.build_command {
+                        cfg.build_command = Some(v);
+                    }
+                    if let Some(v) = lc.deploy_command {
+                        cfg.deploy_command = Some(v);
+                    }
+                    if let Some(v) = lc.max_iters {
+                        cfg.loop_max_iters = v;
+                    }
                 }
             }
         }
@@ -111,5 +170,54 @@ impl Config {
     /// Global kill switch for the hooks (`CONDUKT_DISABLE=1`).
     pub fn disabled() -> bool {
         std::env::var("CONDUKT_DISABLE").map(|v| v == "1").unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_cycle_roundtrip() {
+        for (s, expected) in [
+            ("server", ModuleCycle::Server),
+            ("client", ModuleCycle::Client),
+            ("e2e", ModuleCycle::E2e),
+        ] {
+            let got = ModuleCycle::from_str(s).expect("should parse");
+            assert_eq!(got, expected);
+            assert_eq!(got.as_str(), s);
+        }
+    }
+
+    #[test]
+    fn module_cycle_unknown_returns_none() {
+        assert!(ModuleCycle::from_str("unknown").is_none());
+        assert!(ModuleCycle::from_str("").is_none());
+    }
+
+    #[test]
+    fn loop_config_parses_from_toml() {
+        let toml = r#"
+[loop]
+build_command = "npm run build"
+deploy_command = "kubectl rollout restart deployment/api"
+max_iters = 5
+"#;
+        let fc: FileConfig = toml::from_str(toml).expect("should parse");
+        let lc = fc.loop_cfg.expect("loop section present");
+        assert_eq!(lc.build_command.as_deref(), Some("npm run build"));
+        assert_eq!(
+            lc.deploy_command.as_deref(),
+            Some("kubectl rollout restart deployment/api")
+        );
+        assert_eq!(lc.max_iters, Some(5));
+    }
+
+    #[test]
+    fn loop_config_defaults_when_absent() {
+        let toml = "";
+        let fc: FileConfig = toml::from_str(toml).expect("should parse");
+        assert!(fc.loop_cfg.is_none());
     }
 }
