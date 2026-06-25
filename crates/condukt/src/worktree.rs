@@ -131,7 +131,7 @@ pub fn merge(repo: &Path, branch: &str, default_branch: &str) -> Result<()> {
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+mod worktree_remove_tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;

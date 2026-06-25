@@ -174,6 +174,16 @@ enum StateAction {
         #[arg(long)]
         all_stuck: bool,
     },
+    /// Pause a run: no new workers will be dispatched until resumed.
+    Pause {
+        #[arg(long)]
+        run: String,
+    },
+    /// Resume a paused run, allowing new workers to be dispatched again.
+    Resume {
+        #[arg(long)]
+        run: String,
+    },
 }
 
 fn main() {
@@ -325,6 +335,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 run_id: run_id.clone(),
                 goal: dec.goal.clone(),
                 tasks,
+                paused: false,
             };
             let path = rs.save(cfg, cwd)?;
             // Persist the decomposition so `state resume-context` can reconstruct tasks.
@@ -417,7 +428,8 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
         StateAction::List => {
             for rs in state::open_runs(cfg, cwd) {
                 let (done, total) = rs.counts();
-                println!("{}\t{}/{}\t{}", rs.run_id, done, total, rs.goal);
+                let paused_tag = if rs.paused { " [paused]" } else { "" };
+                println!("{}\t{}/{}\t{}{}", rs.run_id, done, total, rs.goal, paused_tag);
             }
         }
         StateAction::Stats => {
@@ -544,6 +556,12 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 eprintln!("abandoned {} task(s): {}", ids.len(), ids.join(", "));
             }
         }
+        StateAction::Pause { run } => {
+            state::pause_run(cfg, cwd, &run)?;
+        }
+        StateAction::Resume { run } => {
+            state::resume_run(cfg, cwd, &run)?;
+        }
     }
     Ok(())
 }
@@ -626,6 +644,7 @@ mod state_set_tests {
                 branch: branch.map(str::to_string),
                 updated_at: None,
             }],
+            paused: false,
         }
     }
 
