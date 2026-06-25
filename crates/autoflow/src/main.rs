@@ -36,12 +36,15 @@ struct Cli {
 enum Command {
     /// Stop hook: run the record→condukt state machine.
     Stop,
+    /// SessionStart hook: injects /backlog prompt if open items exist.
+    SessionStart,
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Stop => stop_command(),
+        Command::SessionStart => sessionstart_command(),
     }
 }
 
@@ -113,21 +116,21 @@ fn stop_command() -> ! {
                         s.phase = Phase::Done;
                         state::save(&cfg.state_dir, &session_id, &s);
                     } else {
-                        s.condukt_prompts += 1;
+                        s.backlog_prompts += 1;
                         s.phase = Phase::Continuing;
                         state::save(&cfg.state_dir, &session_id, &s);
 
                         let next = &open[0];
                         let remaining = open.len();
-                        let msg = if s.condukt_prompts <= 4 {
+                        let msg = if s.backlog_prompts <= 4 {
                             format!(
-                                "残課題バックログに {} 件の未完了課題があります。\n\n次の課題 [{}]: {}\n\n/condukt で処理してください。",
+                                "残課題バックログに {} 件の未完了課題があります。\n\n次の課題 [{}]: {}\n\n/backlog を実行してください。",
                                 remaining, next.id, next.text
                             )
                         } else {
                             format!(
                                 "残課題バックログに {} 件の未完了課題があります ({}回目):\n次の課題 [{}]: {}\n\n自動実行を停止しています。続けるかどうかユーザーに確認してください。",
-                                remaining, s.condukt_prompts, next.id, next.text
+                                remaining, s.backlog_prompts, next.id, next.text
                             )
                         };
                         block(&msg);
@@ -136,6 +139,32 @@ fn stop_command() -> ! {
             }
             Phase::Done => {}
         }
+    })
+}
+
+fn sessionstart_command() -> ! {
+    run_hook(|| {
+        let raw = read_stdin();
+        let input = HookInput::parse(&raw).unwrap_or_default();
+
+        let cfg = Config::load();
+        if !cfg.enabled || Config::disabled_env() {
+            return;
+        }
+
+        let cwd = input.cwd_or_current();
+        let open = backlog::find_open(&cwd);
+        if open.is_empty() {
+            return;
+        }
+
+        let next = &open[0];
+        let count = open.len();
+        let context = format!(
+            "バックログに {} 件の未完了課題があります。/backlog を実行してください。\n次の課題: [{}] {}",
+            count, next.id, next.text
+        );
+        println!("{}", json!({ "additionalContext": context }));
     })
 }
 
