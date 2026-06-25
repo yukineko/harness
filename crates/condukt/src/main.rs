@@ -714,7 +714,17 @@ fn init(cfg: &Config) -> Result<()> {
          # Command `condukt state test` runs (via `sh -c`, from the repo root).\n\
          # Omit to auto-detect (cargo test / npm test / pytest).\n\
          # [test]\n\
-         # command = \"cargo test\"\n",
+         # command = \"cargo test\"\n\
+         \n\
+         # Loop feature: commands for `condukt loop` test-fix cycles.\n\
+         # Use with /condukt-loop skill to run test→fix→test until all tests pass.\n\
+         #   server cycle: deploy → test\n\
+         #   client cycle: build  → test\n\
+         #   e2e    cycle: build  → deploy → test\n\
+         # [loop]\n\
+         # build_command  = \"npm run build\"\n\
+         # deploy_command = \"kubectl rollout restart deployment/api && kubectl rollout status deployment/api\"\n\
+         # max_iters      = 10\n",
         cfg.worktree_base.display(),
         cfg.default_branch,
         cfg.max_parallel

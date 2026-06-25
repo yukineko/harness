@@ -109,6 +109,50 @@ All config file keys can be overridden at runtime with environment variables.
 | `CONDUKT_MAX_PARALLEL` | `4` | Advisory soft cap on concurrent workers. |
 | `CONDUKT_DISABLE` | _(unset)_ | Set to `1` to make the SessionStart/statusline hooks no-op (useful in CI). |
 
+### `condukt loop` — test-fix cycle
+
+Runs one iteration of a test-fix cycle for a given module type and prints a JSON
+result. The `/condukt-loop` skill calls this repeatedly, inserting a fix step
+between iterations, until all tests pass or no progress is detected.
+
+```
+condukt loop --module <server|client|e2e> [--iteration N] [--prev-failures N]
+```
+
+**Cycle sequences** (configured via `[loop]` in `config.toml`):
+
+| `--module` | Steps |
+|---|---|
+| `server` | deploy → test |
+| `client` | build → test |
+| `e2e` | build → deploy → test |
+
+**JSON output** (one object per invocation):
+
+```json
+{
+  "iteration": 1,
+  "module": "client",
+  "failure_count": 3,
+  "success": false,
+  "stop": false,
+  "stop_reason": "",
+  "output": "<combined stdout+stderr>"
+}
+```
+
+`stop=true` when `failure_count == 0` (`stop_reason: "all tests pass"`) or when
+`failure_count == prev_failures` (`stop_reason: "no progress: failure count unchanged"`).
+
+**Config:**
+
+```toml
+[loop]
+build_command  = "npm run build"
+deploy_command = "kubectl rollout restart deployment/api && kubectl rollout status deployment/api"
+max_iters      = 10   # safety cap; the skill enforces it
+```
+
 ### `condukt state test`
 
 Runs the project's test suite from the repo root and propagates its exit code.
