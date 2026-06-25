@@ -94,6 +94,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "backlog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "harness-core",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "beacon"
 version = "0.1.0"
 dependencies = [
