@@ -20,18 +20,27 @@ pub fn run(cwd: &str) {
     let repo = repo_root(&cwd_path);
     let orphans = worktree::orphans(&repo, &cfg.worktree_base).unwrap_or_default();
 
-    if runs.is_empty() && orphans.is_empty() {
+    let active_runs: Vec<_> = runs.iter().filter(|r| !r.paused).collect();
+    let paused_runs: Vec<_> = runs.iter().filter(|r| r.paused).collect();
+
+    if active_runs.is_empty() && paused_runs.is_empty() && orphans.is_empty() {
         return;
     }
 
     let mut lines = vec![String::from(
         "[condukt] Unfinished orchestration state for this project:",
     )];
-    for r in &runs {
+    for r in &active_runs {
         let (done, total) = r.counts();
         lines.push(format!(
             "  - run '{}' ({}): {done}/{total} tasks verified",
             r.run_id, r.goal
+        ));
+    }
+    for r in &paused_runs {
+        lines.push(format!(
+            "  - run '{}' ({}): PAUSED — resume with `condukt state resume --run {}`",
+            r.run_id, r.goal, r.run_id
         ));
     }
     for o in &orphans {
