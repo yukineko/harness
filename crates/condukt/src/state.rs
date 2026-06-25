@@ -64,6 +64,8 @@ pub struct RunState {
     #[serde(default)]
     pub goal: String,
     pub tasks: Vec<TaskState>,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 fn project_dir(cfg: &Config, cwd: &Path) -> PathBuf {
@@ -123,6 +125,22 @@ pub fn open_runs(cfg: &Config, cwd: &Path) -> Vec<RunState> {
             done < total
         })
         .collect()
+}
+
+/// Mark a run as paused. Returns Err if the run does not exist.
+pub fn pause_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+    let mut rs = RunState::load(cfg, cwd, run_id)?;
+    rs.paused = true;
+    rs.save(cfg, cwd)?;
+    Ok(())
+}
+
+/// Clear the paused flag on a run. Returns Err if the run does not exist.
+pub fn resume_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+    let mut rs = RunState::load(cfg, cwd, run_id)?;
+    rs.paused = false;
+    rs.save(cfg, cwd)?;
+    Ok(())
 }
 
 /// All runs (complete and incomplete) for this project, sorted by run_id.
