@@ -22,6 +22,9 @@ pub struct SessionState {
     /// How many times we have prompted to run /condukt this session.
     #[serde(default)]
     pub condukt_prompts: u32,
+    /// How many times we have prompted to run /backlog this session.
+    #[serde(default)]
+    pub backlog_prompts: u32,
 }
 
 fn state_path(state_dir: &Path, session_id: &str) -> PathBuf {
