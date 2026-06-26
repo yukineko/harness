@@ -98,8 +98,10 @@ Or install via the marketplace (persists across sessions):
 /plugin install specguard@specguard           # install the plugin
 ```
 
-Either way the `specguard` binary must be on PATH (`./install.sh`). **macOS / Linux /
-WSL2** are supported (the binary is Rust, the hook/commands are bash).
+In **standalone mode** the `specguard` binary must be on PATH (`./install.sh`).
+In **plugin mode** the pre-compiled binary is bundled under `bin/` and the hook
+uses `${CLAUDE_PLUGIN_ROOT}/bin/specguard` — no PATH setup required.
+**macOS / Linux / WSL2** are supported (the binary is Rust, the hook/commands are bash).
 
 ```
 /specguard:run

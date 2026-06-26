@@ -135,6 +135,8 @@ Stop フックはエージェントがターンを終えようとする前に実
 仕様（正典ドキュメント）と実装のドリフトを監査する。shard に分割して read-only subagent が逐語引用つきで差異を報告する。
 
 - **スキル**: `/specguard:run`（監査実行）、`/specguard:brief`（着手前ブリーフィング）、`/specguard:decide`（ADR 記録）など
+- **フック**: SessionStart（`specguard pending` — 未処理 sentinel をセッション開始時に提示）
+- **condukt 連携**: condukt の Phase 8 (gate PASS 後) が自動で `specguard ingest` を呼ぶ。結果が condukt の完了を阻害しない非ブロッキング設計 (Human-on-the-loop)
 
 ---
 
