@@ -85,9 +85,11 @@ fn run() -> Result<()> {
             install::uninstall()?;
         }
         Command::SessionStart => {
-            if let Some(output) = hooks::session_start::run(&cfg)? {
-                print!("{output}");
-            }
+            harness_core::hook::run_hook(|| {
+                if let Some(ctx) = hooks::session_start::run() {
+                    println!("{}", serde_json::json!({ "additionalContext": ctx }));
+                }
+            });
         }
     }
 
