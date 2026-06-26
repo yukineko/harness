@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "shell": "bash",
-            "command": "specguard pending 2>/dev/null || true"
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/specguard pending 2>/dev/null || true",
+            "timeout": 10
           }
         ]
       }
