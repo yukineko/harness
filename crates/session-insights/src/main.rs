@@ -255,6 +255,10 @@ fn stop() {
     s.record_turn();
     metrics::save(&cfg, &session, &s);
     obsidian::write_note(&cfg, &s);
+    if cfg.record {
+        let transcript_path = find_transcript(&s.session_id);
+        record::write_from_session(&cfg, &s, &transcript_path, s.turns);
+    }
 }
 
 /// SessionEnd hook: write/update the AEGIS-style record note. Uses the
