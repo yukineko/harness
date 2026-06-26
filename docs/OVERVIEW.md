@@ -235,3 +235,4 @@ claude plugin validate crates/<plugin>
 ```
 
 各プラグインの詳細は `crates/<plugin>/README.md` を参照。
+典型的な使い方パターン（compass・backlog・condukt 直接指定・再開など）は **[USAGE.md](USAGE.md)** を参照。
