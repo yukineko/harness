@@ -38,10 +38,12 @@ SessionStart hook.
 | `condukt statusline` | one-line run progress for the `statusLine` setting. |
 | `condukt init / install / uninstall` | create `~/.condukt`; manual hook wiring (plugin users don't need these). |
 
-The decomposition schema (what the interpreter agent emits / `schedule` consumes):
+The decomposition schema (what the interpreter agent emits / `schedule` consumes).
+Canonical definition: `agents/condukt-interpreter.md`.
 
 ```json
-{ "goal": "...", "tasks": [
+{ "goal": "...", "linked_hypotheses": ["hid1"],
+  "tasks": [
   { "id": "t1", "title": "...", "touched_files": ["path/or/glob"],
     "deps": ["t0"], "class": "parallel|serial|gated",
     "suggested_model": "sonnet|opus|haiku", "done_criteria": "observable pass condition" }

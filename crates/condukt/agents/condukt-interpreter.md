@@ -24,6 +24,7 @@ model: opus
 ```json
 {
   "goal": "一文の到達目標",
+  "linked_hypotheses": ["関連する仮説の id (省略可。hypothesis プラグイン非存在時は省略)"],
   "tasks": [
     {
       "id": "短い一意の識別子 (英数とハイフン)",
