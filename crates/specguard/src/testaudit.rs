@@ -35,6 +35,17 @@ pub enum TestFindingKind {
     IntegrationTest,
 }
 
+impl TestFindingKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TestFindingKind::Ignored => "ignored",
+            TestFindingKind::CfgGated => "cfg_gated",
+            TestFindingKind::UnincludedMod => "unincluded_mod",
+            TestFindingKind::IntegrationTest => "integration_test",
+        }
+    }
+}
+
 /// A single finding produced by the audit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestFinding {
@@ -696,6 +707,14 @@ fn ignored_integration() {}
                 && f.name == "test_foo"),
             "expected UnincludedMod for test_foo.rs: {findings:?}"
         );
+    }
+
+    #[test]
+    fn finding_kind_as_str_covers_all_variants() {
+        assert_eq!(TestFindingKind::Ignored.as_str(), "ignored");
+        assert_eq!(TestFindingKind::CfgGated.as_str(), "cfg_gated");
+        assert_eq!(TestFindingKind::UnincludedMod.as_str(), "unincluded_mod");
+        assert_eq!(TestFindingKind::IntegrationTest.as_str(), "integration_test");
     }
 
     #[test]
