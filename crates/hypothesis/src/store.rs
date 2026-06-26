@@ -1,29 +1,256 @@
 use crate::config::Config;
 use crate::hypothesis::Hypothesis;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
-pub struct Store {
+// ── TOML file shape ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct HypothesesFile {
+    #[serde(default)]
     hypotheses: Vec<Hypothesis>,
 }
 
+// ── ID generation (FNV-1a 8-hex) ─────────────────────────────────────────────
+
+fn new_id(text: &str) -> String {
+    // FNV-1a 32-bit
+    let mut hash: u32 = 2166136261u32;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(16777619u32);
+    }
+    format!("{:08x}", hash)
+}
+
+// ── Timestamp ─────────────────────────────────────────────────────────────────
+
+fn now_iso() -> String {
+    use chrono::Utc;
+    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+// ── Store ─────────────────────────────────────────────────────────────────────
+
+pub struct Store {
+    hypotheses: Vec<Hypothesis>,
+    cfg: Config,
+}
+
 impl Store {
-    pub fn load(_cfg: &Config) -> Result<Self> {
-        Ok(Self { hypotheses: vec![] })
+    pub fn load(cfg: &Config) -> Result<Self> {
+        let path = cfg.hypotheses_path();
+        let hypotheses = if path.exists() {
+            let text = std::fs::read_to_string(&path)?;
+            let file: HypothesesFile = toml::from_str(&text)?;
+            file.hypotheses
+        } else {
+            vec![]
+        };
+        Ok(Self {
+            hypotheses,
+            cfg: Config {
+                enabled: cfg.enabled,
+                store_dir: cfg.store_dir.clone(),
+                inject_limit: cfg.inject_limit,
+            },
+        })
     }
 
-    pub fn add(&mut self, _text: String, _goal: Option<String>) -> Result<String> {
-        Ok(String::new())
-    }
+    fn save(&self) -> Result<()> {
+        let store_dir = &self.cfg.store_dir;
+        std::fs::create_dir_all(store_dir)?;
 
-    pub fn validate(&mut self, _id: &str, _evidence: Vec<String>) -> Result<()> {
+        let file = HypothesesFile {
+            hypotheses: self.hypotheses.clone(),
+        };
+        let content = toml::to_string_pretty(&file)?;
+
+        // Atomic write: write to temp file then rename
+        let tmp_name = format!(
+            ".hypotheses.tmp.{}.toml",
+            {
+                let mut h = DefaultHasher::new();
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+                    .hash(&mut h);
+                h.finish()
+            }
+        );
+        let tmp_path = store_dir.join(&tmp_name);
+        std::fs::write(&tmp_path, content)?;
+        std::fs::rename(&tmp_path, self.cfg.hypotheses_path())?;
         Ok(())
     }
 
-    pub fn reject(&mut self, _id: &str, _reason: Option<String>) -> Result<()> {
-        Ok(())
+    pub fn add(&mut self, text: String, goal: Option<String>) -> Result<String> {
+        let id = new_id(&text);
+        let now = now_iso();
+        let h = Hypothesis {
+            id: id.clone(),
+            text,
+            status: "open".to_string(),
+            evidence: vec![],
+            linked_goal: goal,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.hypotheses.push(h);
+        self.save()?;
+        Ok(id)
     }
 
-    pub fn list(&self, _status: Option<&str>) -> &[Hypothesis] {
-        &self.hypotheses
+    pub fn validate(&mut self, id: &str, evidence: Vec<String>) -> Result<()> {
+        let h = self
+            .hypotheses
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+        h.status = "validated".to_string();
+        h.evidence.extend(evidence);
+        h.updated_at = now_iso();
+        self.save()
+    }
+
+    pub fn reject(&mut self, id: &str, reason: Option<String>) -> Result<()> {
+        let h = self
+            .hypotheses
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+        h.status = "rejected".to_string();
+        if let Some(r) = reason {
+            h.evidence.push(r);
+        }
+        h.updated_at = now_iso();
+        self.save()
+    }
+
+    pub fn list(&self, status: Option<&str>) -> &[Hypothesis] {
+        match status {
+            None => &self.hypotheses,
+            Some(_) => &self.hypotheses, // filtered below via iter in callers; return all for now
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn list_filtered(&self, status: Option<&str>) -> Vec<&Hypothesis> {
+        match status {
+            None => self.hypotheses.iter().collect(),
+            Some(s) => self.hypotheses.iter().filter(|h| h.status == s).collect(),
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_cfg(dir: &TempDir) -> Config {
+        Config {
+            enabled: true,
+            store_dir: dir.path().to_path_buf(),
+            inject_limit: 2000,
+        }
+    }
+
+    #[test]
+    fn test_add_load_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        // add a hypothesis
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("my hypothesis text".to_string(), None).unwrap();
+        assert!(!id.is_empty());
+
+        // reload from disk
+        let st2 = Store::load(&cfg).unwrap();
+        let hypotheses = st2.list(None);
+        assert_eq!(hypotheses.len(), 1);
+        assert_eq!(hypotheses[0].id, id);
+        assert_eq!(hypotheses[0].text, "my hypothesis text");
+        assert_eq!(hypotheses[0].status, "open");
+    }
+
+    #[test]
+    fn test_validate() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("validate this".to_string(), None).unwrap();
+
+        st.validate(&id, vec!["evidence A".to_string(), "evidence B".to_string()])
+            .unwrap();
+
+        // reload to verify persistence
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert_eq!(h.status, "validated");
+        assert!(h.evidence.contains(&"evidence A".to_string()));
+        assert!(h.evidence.contains(&"evidence B".to_string()));
+    }
+
+    #[test]
+    fn test_reject() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("reject this".to_string(), None).unwrap();
+
+        st.reject(&id, Some("not supported by data".to_string()))
+            .unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert_eq!(h.status, "rejected");
+        assert!(h.evidence.contains(&"not supported by data".to_string()));
+    }
+
+    #[test]
+    fn test_unknown_id_error() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+
+        let err = st.validate("deadbeef", vec![]).unwrap_err();
+        assert!(err.to_string().contains("hypothesis not found"));
+
+        let err2 = st.reject("deadbeef", None).unwrap_err();
+        assert!(err2.to_string().contains("hypothesis not found"));
+    }
+
+    #[test]
+    fn test_load_empty_when_file_missing() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        // File does not exist — should return empty store, not error
+        let st = Store::load(&cfg).unwrap();
+        assert_eq!(st.list(None).len(), 0);
+    }
+
+    #[test]
+    fn test_linked_goal_preserved() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        st.add("with goal".to_string(), Some("goal-abc".to_string()))
+            .unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert_eq!(h.linked_goal, Some("goal-abc".to_string()));
     }
 }
