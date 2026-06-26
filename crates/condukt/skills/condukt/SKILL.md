@@ -97,7 +97,12 @@ COMPASS_GAP=$(compass gap 2>/dev/null | head -30 || true)
 
 # 3. 直近の変更を確認
 GIT_LOG=$(git log --oneline -10 2>/dev/null || true)
+
+# 4. 未検証仮説を確認（hypothesis プラグインがあれば）
+OPEN_HYPOS=$(hypothesis list --status open 2>/dev/null | head -10 || true)
 ```
+
+取得した `$OPEN_HYPOS`（open 仮説一覧）も文脈として活用する。未検証仮説があり、それを解消する実装が次の一手として自然であれば、その仮説 ID を記録して `phase 8 で hypothesis validate --run $RID` を促す。
 
 上記を総合して次の一手を LLM として自分で判断する。
 
@@ -368,6 +373,15 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 
 ### Phase 8 — クローズ
 `commit`/`push` はユーザー指示時のみ。GATED タスク (deploy 等) はユーザー承認を得てから別途実行。
+
+**仮説との連携 (soft 依存)**: `hypothesis` プラグインがインストールされていれば、gate PASS 後に open 仮説を確認し、このタスクで検証した仮説があれば更新を促す:
+```bash
+# 検証に成功した仮説を閉じる
+hypothesis validate <id> --run $RID  # --run で condukt run ID を根拠として記録
+# または棄却する場合
+hypothesis reject <id> --run $RID
+```
+仮説の確認は `hypothesis list --status open` で行う。関連仮説がなければスキップ。
 
 ## ユーティリティ操作
 
