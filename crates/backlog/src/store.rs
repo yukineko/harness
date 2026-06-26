@@ -74,15 +74,18 @@ pub fn add(
 /// pending/failed タスクを優先度順 (priority() 昇順、同優先度は created_at 昇順) で返す。
 /// tag_filter: Some(tag) なら tags にそのタグを含むものだけ。
 /// project_filter: Some(project) ならプロジェクトが一致するものだけ (repo_root との比較)。
+/// defer_until が未来のタスク (is_deferred) はスキップする。
 pub fn next(
     path: &Path,
     tag_filter: Option<&str>,
     project_filter: Option<&str>,
 ) -> Result<Option<Task>> {
+    let now = now_unix();
     let tasks = load(path)?;
     let mut candidates: Vec<&Task> = tasks
         .iter()
         .filter(|t| t.is_pending())
+        .filter(|t| !t.is_deferred(now))
         .filter(|t| match tag_filter {
             Some(tag) => t.tags.iter().any(|tg| tg == tag),
             None => true,
@@ -95,6 +98,27 @@ pub fn next(
 
     candidates.sort_by_key(|t| (t.priority(), t.created_at));
     Ok(candidates.first().map(|t| (*t).clone()))
+}
+
+/// defer_until <= now のタスクの defer_until を None にクリアして status を "pending" に戻す。
+/// 変更したタスクの件数を返す。
+pub fn requeue_expired(path: &Path, now: i64) -> Result<usize> {
+    let mut tasks = load(path)?;
+    let mut count = 0usize;
+    for task in tasks.iter_mut() {
+        if let Some(defer_until) = task.defer_until {
+            if defer_until <= now {
+                task.defer_until = None;
+                task.status = "pending".to_string();
+                task.updated_at = now;
+                count += 1;
+            }
+        }
+    }
+    if count > 0 {
+        save(path, &tasks)?;
+    }
+    Ok(count)
 }
 
 /// id で特定のタスクを done に更新して保存。見つからなければエラー。
@@ -111,6 +135,7 @@ pub fn mark_done(path: &Path, id: &str) -> Result<()> {
 }
 
 /// id で特定のタスクを failed に更新。reason を notes に追記。
+/// defer_until を now + 172800 (2日) に設定してタスクを一時保留にする。
 pub fn mark_failed(path: &Path, id: &str, reason: Option<&str>) -> Result<()> {
     let mut tasks = load(path)?;
     let task = tasks
@@ -126,7 +151,9 @@ pub fn mark_failed(path: &Path, id: &str, reason: Option<&str>) -> Result<()> {
             task.notes.push_str(r);
         }
     }
-    task.updated_at = now_unix();
+    let now = now_unix();
+    task.defer_until = Some(now + 172_800);
+    task.updated_at = now;
     save(path, &tasks)
 }
 
@@ -355,5 +382,66 @@ mod tests {
         add(&path, "Other", "/other/proj", vec![], "", 100).unwrap();
         let t = next(&path, None, Some("/repo/proj")).unwrap().unwrap();
         assert_eq!(t.title, "In repo");
+    }
+
+    #[test]
+    fn mark_failed_sets_defer_until() {
+        let path = tmp_path();
+        let id = add(&path, "Task", "/repo", vec![], "", 100).unwrap();
+        mark_failed(&path, &id, Some("error")).unwrap();
+        let tasks = load(&path).unwrap();
+        assert_eq!(tasks[0].status, "failed");
+        // defer_until は Some で、now より未来であること
+        let defer = tasks[0].defer_until.expect("defer_until should be set");
+        // 172800 秒 (2日) 後を設定しているため now + 172800 付近であること
+        assert!(defer > now_unix());
+    }
+
+    #[test]
+    fn next_skips_deferred_task() {
+        let path = tmp_path();
+        let id = add(&path, "Will fail", "/repo", vec![], "", 1000).unwrap();
+        // mark_failed でタスクが defer される
+        mark_failed(&path, &id, None).unwrap();
+        // deferred なので next は None を返す
+        let result = next(&path, None, None).unwrap();
+        assert!(result.is_none(), "deferred task should not be returned by next");
+    }
+
+    #[test]
+    fn requeue_expired_restores_pending() {
+        let path = tmp_path();
+        let id = add(&path, "Task", "/repo", vec![], "", 1000).unwrap();
+        mark_failed(&path, &id, None).unwrap();
+
+        // defer 直後は next がスキップ
+        assert!(next(&path, None, None).unwrap().is_none());
+
+        // 期限を過去に設定するため、直接 load → edit → save する
+        let mut tasks = load(&path).unwrap();
+        tasks[0].defer_until = Some(500); // 過去のタイムスタンプ
+        save(&path, &tasks).unwrap();
+
+        // requeue_expired(now=1000) で期限切れタスクが復帰
+        let count = requeue_expired(&path, 1000).unwrap();
+        assert_eq!(count, 1);
+
+        let tasks = load(&path).unwrap();
+        assert_eq!(tasks[0].status, "pending");
+        assert!(tasks[0].defer_until.is_none());
+
+        // next でも取得できるようになる
+        let t = next(&path, None, None).unwrap();
+        assert!(t.is_some());
+    }
+
+    #[test]
+    fn requeue_expired_returns_zero_when_none_expired() {
+        let path = tmp_path();
+        let id = add(&path, "Task", "/repo", vec![], "", 1000).unwrap();
+        mark_failed(&path, &id, None).unwrap();
+        // now を小さい値にして期限切れタスクがない状態でテスト
+        let count = requeue_expired(&path, 0).unwrap();
+        assert_eq!(count, 0);
     }
 }
