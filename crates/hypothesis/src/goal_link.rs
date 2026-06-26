@@ -107,7 +107,7 @@ pub fn check_goal_link(hypotheses: &[Hypothesis], repo_root: &Path) -> Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hypothesis::Hypothesis;
+    use crate::hypothesis::{Hypothesis, Status};
     use std::fs;
     use tempfile::TempDir;
 
@@ -115,7 +115,7 @@ mod tests {
         Hypothesis {
             id: id.to_string(),
             text: format!("hypothesis {id}"),
-            status: "open".to_string(),
+            status: Status::Open,
             evidence: vec![],
             linked_goal: linked_goal.map(|s| s.to_string()),
             created_at: "2026-01-01T00:00:00Z".to_string(),

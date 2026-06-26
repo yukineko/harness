@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::hypothesis::Hypothesis;
+use crate::hypothesis::{Hypothesis, Status};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -93,7 +93,7 @@ impl Store {
         let h = Hypothesis {
             id: id.clone(),
             text,
-            status: "open".to_string(),
+            status: Status::Open,
             evidence: vec![],
             linked_goal: goal,
             created_at: now.clone(),
@@ -110,7 +110,7 @@ impl Store {
             .iter_mut()
             .find(|h| h.id == id)
             .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
-        h.status = "validated".to_string();
+        h.status = Status::Validated;
         h.evidence.extend(evidence);
         h.updated_at = now_iso();
         self.save()
@@ -122,7 +122,7 @@ impl Store {
             .iter_mut()
             .find(|h| h.id == id)
             .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
-        h.status = "rejected".to_string();
+        h.status = Status::Rejected;
         if let Some(r) = reason {
             h.evidence.push(r);
         }
@@ -141,7 +141,7 @@ impl Store {
     pub fn list_filtered(&self, status: Option<&str>) -> Vec<&Hypothesis> {
         match status {
             None => self.hypotheses.iter().collect(),
-            Some(s) => self.hypotheses.iter().filter(|h| h.status == s).collect(),
+            Some(s) => self.hypotheses.iter().filter(|h| h.status.to_string() == s).collect(),
         }
     }
 }
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(hypotheses.len(), 1);
         assert_eq!(hypotheses[0].id, id);
         assert_eq!(hypotheses[0].text, "my hypothesis text");
-        assert_eq!(hypotheses[0].status, "open");
+        assert!(hypotheses[0].status.is_open());
     }
 
     #[test]
@@ -194,7 +194,7 @@ mod tests {
         // reload to verify persistence
         let st2 = Store::load(&cfg).unwrap();
         let h = &st2.list(None)[0];
-        assert_eq!(h.status, "validated");
+        assert!(h.status.is_validated());
         assert!(h.evidence.contains(&"evidence A".to_string()));
         assert!(h.evidence.contains(&"evidence B".to_string()));
     }
@@ -212,7 +212,7 @@ mod tests {
 
         let st2 = Store::load(&cfg).unwrap();
         let h = &st2.list(None)[0];
-        assert_eq!(h.status, "rejected");
+        assert!(h.status.is_rejected());
         assert!(h.evidence.contains(&"not supported by data".to_string()));
     }
 
