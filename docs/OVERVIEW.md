@@ -190,8 +190,9 @@ budgetguard の支出台帳 + gauge のセッション記録 + taskprog の prog
       ├─ [前段] playbook / run-book / ctxrot / taskprog が context を整備
       ├─ [Phase 5 並列実装] fugu-router がモデルを選ぶ
       │    stuckguard / ctxrot / budgetguard / gauge が並走監視
-      ├─ [Phase 6 検証] donegate / tdd / precommit-audit / reviewgate / specguard
-      └─ [Phase 7 完了] beacon で通知
+      ├─ [Phase 6 検証] donegate / tdd / precommit-audit / reviewgate
+      ├─ [Phase 7 完了] beacon で通知
+      └─ [Phase 8 クローズ] specguard（drift 監査・non-blocking）
 [横断]
   gauge → budgetguard, harness-status, session-insights が数値を読む
   harness-status → budgetguard + gauge + taskprog の集約ビュー
