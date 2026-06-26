@@ -25,5 +25,9 @@ anyhow = "1"
 globset = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+[[test]]
+name = "testaudit"
+path = "src/testaudit.rs"
+
 [dev-dependencies]
 tempfile = "3"
