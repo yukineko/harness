@@ -1,0 +1,26 @@
+[package]
+license.workspace = true
+name = "hypothesis"
+version = "0.1.0"
+edition = "2021"
+description = "PDO hypothesis lifecycle management for Claude Code — create, validate, and track discovery hypotheses."
+
+[[bin]]
+name = "hypothesis"
+path = "src/main.rs"
+
+[dependencies]
+harness-core = { path = "../harness-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"
