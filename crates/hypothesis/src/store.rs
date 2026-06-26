@@ -13,19 +13,7 @@ struct HypothesesFile {
     hypotheses: Vec<Hypothesis>,
 }
 
-// ── ID generation (FNV-1a 8-hex) ─────────────────────────────────────────────
-
-fn new_id(text: &str) -> String {
-    // FNV-1a 32-bit
-    let mut hash: u32 = 2166136261u32;
-    for byte in text.as_bytes() {
-        hash ^= *byte as u32;
-        hash = hash.wrapping_mul(16777619u32);
-    }
-    format!("{:08x}", hash)
-}
-
-// ── Timestamp ─────────────────────────────────────────────────────────────────
+// ── Timestamp (for validate/reject updated_at) ────────────────────────────────
 
 fn now_iso() -> String {
     use chrono::Utc;
@@ -88,17 +76,8 @@ impl Store {
     }
 
     pub fn add(&mut self, text: String, goal: Option<String>) -> Result<String> {
-        let id = new_id(&text);
-        let now = now_iso();
-        let h = Hypothesis {
-            id: id.clone(),
-            text,
-            status: Status::Open,
-            evidence: vec![],
-            linked_goal: goal,
-            created_at: now.clone(),
-            updated_at: now,
-        };
+        let h = Hypothesis::new(text, goal);
+        let id = h.id.clone();
         self.hypotheses.push(h);
         self.save()?;
         Ok(id)

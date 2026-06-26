@@ -68,10 +68,12 @@ impl Status {
         matches!(self, Status::Open)
     }
 
+    #[allow(dead_code)]
     pub fn is_validated(&self) -> bool {
         matches!(self, Status::Validated)
     }
 
+    #[allow(dead_code)]
     pub fn is_rejected(&self) -> bool {
         matches!(self, Status::Rejected)
     }
