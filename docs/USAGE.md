@@ -226,6 +226,21 @@ context が膨らんできたとき:
 `.deepwiki/*.md` を生成または鮮度更新する。大きなリファクタリング後や新メンバーへの説明前に。
 condukt Phase 8 でも自動実行されるが、任意のタイミングで手動更新も可。
 
+### セッション記録 (/record)
+
+セッション終了後、Obsidian vault に AEGIS 形式のセッション記録ノートを書く:
+
+```
+/session-insights:record
+```
+
+1. `session-insights record-now` が数値ブロック（コスト・トークン・ターン数・ファイル数）を自動生成し、ノートパスを返す。
+2. 散文セクション（完了サマリ・つまずき・振り返り・残課題・関連）を Sonnet サブエージェントがこのセッションの transcript から埋める。
+3. `session-insights backlog` でバックログを自動更新（完了項目を resolve、新規残課題を add）。
+
+`record = true` が `session-insights.toml` に設定されていれば **SessionEnd フックで自動実行**（数値ブロックのみ）。
+`/record` は散文セクションまで埋める追加ステップ。
+
 ### 観測・振り返り
 
 ```
@@ -274,6 +289,7 @@ hypothesis reject <id> --run <RID>   # 仮説を棄却
 | 実装前に仕様確認 | `/specguard:brief <課題>` |
 | drift 監査を手動実行 | `/specguard:run` |
 | drift sentinel を解除 | `/specguard:ack` |
+| セッション記録を書く | `/session-insights:record` |
 | コスト・進捗を確認 | `/harness-status:status` |
 | 全 run の統計を見る | `condukt state stats` |
 | context を蒸留 | `/distill` |
