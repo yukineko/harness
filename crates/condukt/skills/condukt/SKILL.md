@@ -162,6 +162,15 @@ OPEN_HYPOS=$(hypothesis list --status open 2>/dev/null | head -5 || true)
 # 関連仮説がなければ linked_hypotheses は省略する（空配列も不要）。
 ```
 
+**deepwiki コンテキスト注入 (soft 依存)**: `.deepwiki/` があればアーキテクチャ wiki のページ一覧を
+interpreter に渡す。interpreter は必要なページを個別に Read できる:
+```bash
+DEEPWIKI_PAGES=$(ls .deepwiki/*.md 2>/dev/null | tr '\n' ' ' || true)
+# DEEPWIKI_PAGES が空でなければ interpreter プロンプトに以下を含める:
+# deepwiki_pages: $DEEPWIKI_PAGES
+# interpreter への指示: 課題に関連するページがあれば Read して設計背景を把握すること。
+```
+
 `Task` で `condukt-interpreter` 相当 (subagent_type を持たない環境では `Explore` を model:opus で)
 を起動し、課題を **Decomposition JSON** にさせる。スキーマは `agents/condukt-interpreter.md` 準拠:
 ```json
@@ -422,6 +431,16 @@ fi
 specguard の手順詳細は `/specguard:run` コマンドに準拠する (shard 取得 → 並列 subagent → ingest)。
 findings があれば sentinel が立ち次セッション冒頭に提示される (Human-on-the-loop)。
 **spec-drift findings は condukt 完了を阻害しない** — ユーザーが `/specguard:ack` または別タスクで対処する。
+
+**deepwiki 更新 (soft 依存)**: gate PASS 後、変更箇所を反映してアーキテクチャ wiki を鮮度追跡する。
+`deepwiki` バイナリが PATH 上にある場合のみ実行する:
+```bash
+if command -v deepwiki >/dev/null 2>&1; then
+  deepwiki refresh 2>/dev/null || true
+  echo "deepwiki: アーキテクチャ wiki を更新"
+fi
+```
+wiki 更新の失敗は condukt 完了を阻害しない。
 
 ## ユーティリティ操作
 
