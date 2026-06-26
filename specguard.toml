@@ -1,0 +1,50 @@
+# specguard config: harness workspace-level spec↔implementation drift audit.
+# Run `specguard run` (or `/specguard:run`) to audit areas touched since the last baseline.
+# The SessionStart hook (`specguard pending`) surfaces any unhandled sentinel.
+[project]
+name = "harness"
+root = "."
+
+[output]
+report_dir = "reports/spec-audit"
+sentinel = ".specguard-pending"
+
+# condukt: task decomposition / worktree orchestrator
+[[area]]
+name = "condukt"
+globs = [
+    "crates/condukt/src/**",
+    "crates/condukt/skills/**",
+    "crates/condukt/agents/**",
+    "crates/condukt/hooks/**",
+]
+canon = [
+    "crates/condukt/README.md",
+    "crates/condukt/skills/condukt/SKILL.md",
+]
+
+# specguard: spec↔impl drift audit harness (dogfood)
+[[area]]
+name = "specguard"
+globs = [
+    "crates/specguard/src/**",
+    "crates/specguard/templates/**",
+    "crates/specguard/commands/**",
+]
+canon = [
+    "crates/specguard/README.md",
+    "crates/specguard/DESIGN.md",
+    "crates/specguard/DESIGN-VERIFY.md",
+    "crates/specguard/INSTALL.md",
+]
+
+# harness-core: shared hook/pricing/transcript/config foundation
+[[area]]
+name = "harness-core"
+globs = ["crates/harness-core/src/**"]
+canon = ["docs/OVERVIEW.md"]
+
+[[invariant]]
+name = "hook never panics"
+description = "harness-core::hook::run_hook must catch panics and always exit 0 (docs/OVERVIEW.md §フック不変条件)"
+canon = ["crates/harness-core/src/hook.rs", "docs/OVERVIEW.md"]
