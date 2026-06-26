@@ -194,6 +194,7 @@ fn run(cli: Cli) -> Result<()> {
             if tasks.is_empty() {
                 println!("no tasks");
             } else {
+                let now = now_unix();
                 println!("{:<10} {:<10} {:<10} {}", "ID", "PRIORITY", "STATUS", "TITLE");
                 for t in &tasks {
                     let priority_str = match t.priority() {
@@ -202,9 +203,14 @@ fn run(cli: Cli) -> Result<()> {
                         2 => "p2",
                         _ => "-",
                     };
+                    let status_str = if t.is_deferred(now) {
+                        "deferred".to_string()
+                    } else {
+                        t.status.clone()
+                    };
                     println!(
                         "{:<10} {:<10} {:<10} {}",
-                        t.id, priority_str, t.status, t.title
+                        t.id, priority_str, status_str, t.title
                     );
                 }
             }
@@ -229,7 +235,22 @@ fn run(cli: Cli) -> Result<()> {
 
         Command::Fail { id, reason } => {
             store::mark_failed(&tasks_path, &id, reason.as_deref())?;
-            println!("failed: {id}");
+            // mark_failed は defer_until を now + 172800 (2日後) に設定する。
+            // 設定した defer_until を読み取って表示する。
+            let tasks = store::load(&tasks_path)?;
+            if let Some(task) = tasks.iter().find(|t| t.id == id) {
+                if let Some(defer_until) = task.defer_until {
+                    // defer_until を人が読める日時文字列に変換する
+                    let secs = defer_until as u64;
+                    let dt = format_unix_datetime(secs);
+                    println!("failed: {id}");
+                    println!("deferred until {dt} (2 日後に再実行されます)");
+                } else {
+                    println!("failed: {id}");
+                }
+            } else {
+                println!("failed: {id}");
+            }
         }
 
         Command::Edit {
@@ -310,4 +331,29 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Unix タイムスタンプ (秒) を "YYYY-MM-DD HH:MM UTC" 形式の文字列に変換する。
+/// 標準ライブラリのみで実装 (外部クレート不使用)。
+fn format_unix_datetime(secs: u64) -> String {
+    // グレゴリオ暦変換 (ユリウス通日ベース)
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hh = time_of_day / 3600;
+    let mm = (time_of_day % 3600) / 60;
+
+    // 1970-01-01 からの日数を年月日に変換 (Fliegel-Van Flandern algorithm)
+    let jd = days + 2440588; // Julian Day Number for 1970-01-01
+    let l = jd + 68569;
+    let n = 4 * l / 146097;
+    let l = l - (146097 * n + 3) / 4;
+    let i = 4000 * (l + 1) / 1461001;
+    let l = l - 1461 * i / 4 + 31;
+    let j = 80 * l / 2447;
+    let day = l - 2447 * j / 80;
+    let l = j / 11;
+    let month = j + 2 - 12 * l;
+    let year = 100 * (n - 49) + i + l;
+
+    format!("{:04}-{:02}-{:02} {:02}:{:02} UTC", year, month, day, hh, mm)
 }
