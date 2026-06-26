@@ -5,3 +5,7 @@ Cargo.lock.bak
 
 # precommit-audit runtime telemetry (append-only, machine-local)
 .claude/audit-log.jsonl
+
+# ephemeral session/tool state
+.claude/progress.md
+.compass/carve-state.json

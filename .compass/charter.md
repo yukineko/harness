@@ -10,10 +10,10 @@ Claude Code 用 developer productivity プラグイン集。condukt・compass・
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
-session-record の SessionEnd 自動生成フローが未完了（harness-core への pricing/usage 昇格 → session-insights SessionEnd フック強化 → 動作確認）。cargo test --workspace による全件 pass の確認も未実施。
+全 DoD 達成済み。cargo test --workspace 全件 pass・全プラグイン導入可能・session-insights SessionEnd 自動生成フロー完成（record = true 確認）。次の拡張課題の洗い出しが未実施。
 
 ## next_action
-harness-core に pricing/usage モジュールを昇格する（gauge の transcript.rs・pricing.rs を harness-core へ移動し、gauge はそれを参照するようにリファクタ）
+compass で次の拡張ゴールを定義する（/compass で north_star を更新し新たな gap を導出）
 
 ## parked
 
