@@ -501,16 +501,23 @@ fn cmd_sync(cfg: &config::Config, pull_only: bool, push_only: bool) -> Result<()
     }
 
     let commit = std::process::Command::new("git")
-        .args(["-C", &sync_dir.to_string_lossy(), "commit", "-m", &commit_msg])
-        .status()
+        .args(["-C", &sync_dir.to_string_lossy(), "commit", "--no-verify", "-m", &commit_msg])
+        .output()
         .context("running git commit")?;
-    anyhow::ensure!(commit.success(), "git commit failed");
+    if !commit.status.success() {
+        let stderr = String::from_utf8_lossy(&commit.stderr);
+        let stdout = String::from_utf8_lossy(&commit.stdout);
+        anyhow::bail!("git commit failed:\nstdout: {stdout}\nstderr: {stderr}");
+    }
 
     let push = std::process::Command::new("git")
         .args(["-C", &sync_dir.to_string_lossy(), "push"])
-        .status()
+        .output()
         .context("running git push")?;
-    anyhow::ensure!(push.success(), "git push failed");
+    if !push.status.success() {
+        let stderr = String::from_utf8_lossy(&push.stderr);
+        anyhow::bail!("git push failed:\nstderr: {stderr}");
+    }
 
     eprintln!("pushed: {commit_msg}");
     Ok(())
