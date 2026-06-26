@@ -369,6 +369,119 @@ fn is_self_or_ignored_stem(stem: &str, parent_path: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// I/O layer — repo scan
+// ---------------------------------------------------------------------------
+
+/// Walk the repository and collect all TestFindings by:
+/// 1. Running `scan_source` on every `.rs` file.
+/// 2. For each directory that contains a `lib.rs`, `main.rs`, or `mod.rs`,
+///    running `find_unincluded_mods` against the sibling `.rs` files.
+pub fn scan_repo(repo_root: &std::path::Path) -> Vec<TestFinding> {
+    let rs_files = collect_rs_files(repo_root);
+    let mut findings = Vec::new();
+
+    // Pass 1: per-file scan (ignore/cfg-gate/integration-test).
+    for path in &rs_files {
+        let rel = path
+            .strip_prefix(repo_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if let Ok(src) = std::fs::read_to_string(path) {
+            findings.extend(scan_source(&src, &rel));
+        }
+    }
+
+    // Pass 2: mod-include graph per directory.
+    let mod_graph = collect_mod_graph(repo_root, &rs_files);
+    for (parent_path, parent_src, candidates) in &mod_graph {
+        let refs: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+        findings.extend(find_unincluded_mods(parent_src, parent_path, &refs));
+    }
+
+    findings
+}
+
+type ModGraphEntry = (String, String, Vec<String>);
+
+/// For each directory under `repo_root` that has a `lib.rs`, `main.rs`, or
+/// `mod.rs`, return `(parent_rel_path, parent_src, [sibling_rel_paths])`.
+pub fn collect_mod_graph(
+    repo_root: &std::path::Path,
+    rs_files: &[std::path::PathBuf],
+) -> Vec<ModGraphEntry> {
+    use std::collections::HashMap;
+
+    // Group .rs files by directory.
+    let mut by_dir: HashMap<std::path::PathBuf, Vec<std::path::PathBuf>> = HashMap::new();
+    for f in rs_files {
+        if let Some(dir) = f.parent() {
+            by_dir.entry(dir.to_path_buf()).or_default().push(f.clone());
+        }
+    }
+
+    let mut result = Vec::new();
+    for (dir, files) in &by_dir {
+        // Find the parent file (lib.rs, main.rs, or mod.rs).
+        let parent = ["lib.rs", "main.rs", "mod.rs"]
+            .iter()
+            .find_map(|name| {
+                let p = dir.join(name);
+                if files.contains(&p) { Some(p) } else { None }
+            });
+        let Some(parent_path) = parent else { continue };
+        let Ok(parent_src) = std::fs::read_to_string(&parent_path) else { continue };
+        let parent_rel = parent_path
+            .strip_prefix(repo_root)
+            .unwrap_or(&parent_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        // Candidate siblings = all .rs files in the same dir except the parent.
+        let candidates: Vec<String> = files
+            .iter()
+            .filter(|f| *f != &parent_path)
+            .map(|f| {
+                f.strip_prefix(repo_root)
+                    .unwrap_or(f)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        if !candidates.is_empty() {
+            result.push((parent_rel, parent_src, candidates));
+        }
+    }
+    result
+}
+
+/// Recursively collect all `.rs` files under `root`, skipping `target/`.
+fn collect_rs_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    collect_rs_files_inner(root, &mut out);
+    out
+}
+
+fn collect_rs_files_inner(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip target/, .git/, and hidden dirs.
+        if name_str == "target" || name_str.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            collect_rs_files_inner(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -557,5 +670,49 @@ fn ignored_integration() {}
         let findings = scan_source(src, "tests/ignored_suite.rs");
         assert!(findings.iter().any(|f| f.kind == TestFindingKind::IntegrationTest));
         assert!(findings.iter().any(|f| f.kind == TestFindingKind::Ignored));
+    }
+
+    // ------------------------------------------------------------------
+    // scan_repo: I/O integration
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn scan_repo_detects_unincluded_mod() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        // lib.rs doesn't declare `mod test_foo;`
+        fs::write(src_dir.join("lib.rs"), "pub fn foo() {}\n").unwrap();
+        fs::write(
+            src_dir.join("test_foo.rs"),
+            "#[test]\nfn it_works() {}\n",
+        ).unwrap();
+
+        let findings = scan_repo(tmp.path());
+        assert!(
+            findings.iter().any(|f| f.kind == TestFindingKind::UnincludedMod
+                && f.name == "test_foo"),
+            "expected UnincludedMod for test_foo.rs: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn scan_repo_no_findings_when_all_declared() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        fs::write(src_dir.join("lib.rs"), "mod helper;\npub fn foo() {}\n").unwrap();
+        fs::write(src_dir.join("helper.rs"), "pub fn bar() {}\n").unwrap();
+
+        let findings = scan_repo(tmp.path());
+        let unincluded: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == TestFindingKind::UnincludedMod)
+            .collect();
+        assert!(unincluded.is_empty(), "should be no unincluded mods: {unincluded:?}");
     }
 }
