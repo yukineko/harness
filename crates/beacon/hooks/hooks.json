@@ -1,6 +1,6 @@
 {
   "hooks": {
-    "Stop": [
+    "SessionEnd": [
       {
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/beacon notify", "timeout": 10 }
