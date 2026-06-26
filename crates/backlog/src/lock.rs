@@ -37,7 +37,23 @@ fn read_lock(path: &Path) -> Option<LockInfo> {
 }
 
 fn pid_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    // Fast path on Linux: /proc/<pid> exists iff the process is alive.
+    #[cfg(target_os = "linux")]
+    {
+        if Path::new(&format!("/proc/{pid}")).exists() {
+            return true;
+        }
+    }
+    // Portable fallback (macOS and any platform without /procfs): `kill -0 <pid>`
+    // exits 0 when the process exists and is signalable, non-zero (ESRCH) otherwise.
+    // Without this, /proc-only checks treat every live lock as stale off Linux.
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn now_unix() -> i64 {
@@ -150,6 +166,21 @@ mod tests {
 
     fn tmp() -> TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn pid_alive_is_cross_platform() {
+        // Regression guard: pid_alive must work off Linux too. A /proc-only check
+        // reports every live process as dead on macOS, which made fresh locks read
+        // as stale. The current process is definitely alive; a huge pid is not.
+        assert!(
+            pid_alive(std::process::id()),
+            "current process should be reported alive"
+        );
+        assert!(
+            !pid_alive(99_999_999),
+            "an unused high pid should be reported not alive"
+        );
     }
 
     #[test]

@@ -159,7 +159,15 @@ impl Store {
         let path = dir.join(format!("{safe_name}.md"));
         // Verify the resolved path is actually inside `dir` (defence-in-depth).
         let canonical_dir = dir.canonicalize().unwrap_or(dir.clone());
-        let canonical_path = path.canonicalize().unwrap_or_else(|_| dir.join(format!("{safe_name}.md")));
+        // The note file does not exist yet, so `path.canonicalize()` fails in the common
+        // case; fall back to joining onto the *canonical* dir (not the raw `dir`). On
+        // platforms where the store root is reached through a symlink (e.g. macOS temp
+        // dirs under /var -> /private/var), using the raw `dir` here would make the
+        // prefix check below spuriously fail. `safe_name` is already reduced to a single
+        // sanitised component, so this join cannot escape the root.
+        let canonical_path = path
+            .canonicalize()
+            .unwrap_or_else(|_| canonical_dir.join(format!("{safe_name}.md")));
         if !canonical_path.starts_with(&canonical_dir) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -455,6 +463,33 @@ mod tests {
 
     /// write_note_named must keep the output path inside the store root even
     /// when `name` contains traversal sequences like `../../escape`.
+    #[cfg(unix)]
+    #[test]
+    fn write_note_named_succeeds_through_symlinked_root() {
+        // Regression: when the store root is reached via a symlink (e.g. macOS temp
+        // dirs under /var -> /private/var), the escape check canonicalized the dir but
+        // fell back to the raw, non-canonical path for the not-yet-created note — so the
+        // prefix check spuriously failed and every write was rejected.
+        let base = std::env::temp_dir().join(format!("harness-store-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = base.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // Point the store root *through* the symlink.
+        let store = Store::new(link.clone());
+        let cwd = Path::new("/some/project");
+        let path = store
+            .write_note_named(cwd, "rescue-deadbeef-20260101-000000", "body")
+            .expect("write through symlinked root should succeed");
+        assert!(path.exists(), "note file should have been written: {path:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "body");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn write_note_named_stays_in_root() {
         let (store, root) = temp_store("traversal");
