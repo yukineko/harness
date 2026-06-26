@@ -117,22 +117,21 @@ fn stop_command() -> ! {
                         state::save(&cfg.state_dir, &session_id, &s);
                     } else {
                         s.backlog_prompts += 1;
+                        // If we've hit the limit, give up — the skill or command likely failed.
+                        if s.backlog_prompts > cfg.max_backlog_prompts {
+                            s.phase = Phase::Done;
+                            state::save(&cfg.state_dir, &session_id, &s);
+                            return;
+                        }
                         s.phase = Phase::Continuing;
                         state::save(&cfg.state_dir, &session_id, &s);
 
                         let next = &open[0];
                         let remaining = open.len();
-                        let msg = if s.backlog_prompts <= 4 {
-                            format!(
-                                "残課題バックログに {} 件の未完了課題があります。\n\n次の課題 [{}]: {}\n\n/backlog を実行してください。",
-                                remaining, next.id, next.text
-                            )
-                        } else {
-                            format!(
-                                "残課題バックログに {} 件の未完了課題があります ({}回目):\n次の課題 [{}]: {}\n\n自動実行を停止しています。続けるかどうかユーザーに確認してください。",
-                                remaining, s.backlog_prompts, next.id, next.text
-                            )
-                        };
+                        let msg = format!(
+                            "残課題バックログに {} 件の未完了課題があります。\n\n次の課題 [{}]: {}\n\n/backlog を実行してください。",
+                            remaining, next.id, next.text
+                        );
                         block(&msg);
                     }
                 }

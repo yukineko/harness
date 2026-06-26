@@ -10,6 +10,9 @@ pub struct Config {
     /// Minimum total tool events before triggering the record prompt.
     pub min_tool_events: u64,
     pub state_dir: PathBuf,
+    /// Max times to prompt /backlog before giving up (Phase::Done).
+    /// Prevents infinite loops when the skill or command fails.
+    pub max_backlog_prompts: u32,
 }
 
 #[derive(Default, Deserialize)]
@@ -18,6 +21,7 @@ struct FileConfig {
     min_turns: Option<u64>,
     min_tool_events: Option<u64>,
     state_dir: Option<String>,
+    max_backlog_prompts: Option<u32>,
 }
 
 impl Config {
@@ -28,6 +32,7 @@ impl Config {
             min_turns: 2,
             min_tool_events: 3,
             state_dir: base.join("state"),
+            max_backlog_prompts: 2,
         };
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
             if let Ok(fc) = toml::from_str::<FileConfig>(&txt) {
@@ -42,6 +47,9 @@ impl Config {
                 }
                 if let Some(v) = fc.state_dir {
                     cfg.state_dir = expand_tilde(&v);
+                }
+                if let Some(v) = fc.max_backlog_prompts {
+                    cfg.max_backlog_prompts = v;
                 }
             }
         }
