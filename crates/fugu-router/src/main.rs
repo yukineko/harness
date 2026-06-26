@@ -485,10 +485,20 @@ fn cmd_sync(cfg: &config::Config, pull_only: bool, push_only: bool) -> Result<()
     let commit_msg = format!("fugu-router sync {ts}");
 
     let add = std::process::Command::new("git")
-        .args(["-C", &sync_dir.to_string_lossy(), "add", "episodes.jsonl", "playbooks.jsonl"])
+        .args(["-C", &sync_dir.to_string_lossy(), "add", "-u"])
         .status()
         .context("running git add")?;
     anyhow::ensure!(add.success(), "git add failed");
+
+    // Check if anything is actually staged before committing.
+    let staged = std::process::Command::new("git")
+        .args(["-C", &sync_dir.to_string_lossy(), "diff", "--cached", "--quiet"])
+        .status()
+        .context("running git diff --cached")?;
+    if staged.success() {
+        eprintln!("nothing to push (no staged changes after add).");
+        return Ok(());
+    }
 
     let commit = std::process::Command::new("git")
         .args(["-C", &sync_dir.to_string_lossy(), "commit", "-m", &commit_msg])
