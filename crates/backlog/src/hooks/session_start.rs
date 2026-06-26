@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use harness_core::hook::HookInput;
 
 use crate::config::Config;
@@ -18,6 +20,17 @@ pub fn run(input: &HookInput) -> Option<String> {
     let cwd = input.cwd_or_current();
     let cwd_str = cwd.to_string_lossy().to_string();
     let root = repo_root(&cwd_str);
+
+    // 期限切れ deferred タスクをキューに戻す
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    if let Ok(count) = store::requeue_expired(&cfg.tasks_path(), now) {
+        if count >= 1 {
+            eprintln!("{} 件の保留タスクが再キューされました", count);
+        }
+    }
 
     let tasks = store::list(&cfg.tasks_path(), None, Some(&root), None).ok()?;
 
