@@ -31,12 +31,16 @@ enum Command {
         id: String,
         #[arg(long)]
         evidence: Vec<String>,
+        #[arg(long)]
+        run: Option<String>,
     },
     /// Mark a hypothesis as rejected
     Reject {
         id: String,
         #[arg(long)]
         reason: Option<String>,
+        #[arg(long)]
+        run: Option<String>,
     },
     /// List hypotheses
     List {
@@ -64,18 +68,21 @@ fn run() -> Result<()> {
             let id = st.add(text, goal)?;
             println!("{id}");
         }
-        Command::Validate { id, evidence } => {
+        Command::Validate { id, evidence, run } => {
             let mut st = store::Store::load(&cfg)?;
-            st.validate(&id, evidence)?;
+            st.validate(&id, evidence, run)?;
         }
-        Command::Reject { id, reason } => {
+        Command::Reject { id, reason, run } => {
             let mut st = store::Store::load(&cfg)?;
-            st.reject(&id, reason)?;
+            st.reject(&id, reason, run)?;
         }
         Command::List { status } => {
             let st = store::Store::load(&cfg)?;
             for h in st.list(status.as_deref()) {
-                println!("[{}] {} — {}", h.status, h.id, h.text);
+                let run_info = h.condukt_run.as_deref()
+                    .map(|r| format!(" (run: {})", r))
+                    .unwrap_or_default();
+                println!("[{}] {} — {}{}", h.status, h.id, h.text, run_info);
             }
         }
         Command::Install { dry_run } => {

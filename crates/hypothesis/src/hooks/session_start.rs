@@ -121,7 +121,7 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("already proven".to_string(), None).unwrap();
-        st.validate(&id, vec![]).unwrap();
+        st.validate(&id, vec![], None).unwrap();
 
         let result = run_with(&cfg, dir.path());
         // All open hypotheses gone → None

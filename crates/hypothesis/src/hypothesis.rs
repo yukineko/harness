@@ -98,6 +98,8 @@ pub struct Hypothesis {
     pub evidence: Vec<String>,
     #[serde(default)]
     pub linked_goal: Option<String>,
+    #[serde(default)]
+    pub condukt_run: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -113,6 +115,7 @@ impl Hypothesis {
             status: Status::Open,
             evidence: vec![],
             linked_goal,
+            condukt_run: None,
             created_at: now.clone(),
             updated_at: now,
         }

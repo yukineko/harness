@@ -83,7 +83,7 @@ impl Store {
         Ok(id)
     }
 
-    pub fn validate(&mut self, id: &str, evidence: Vec<String>) -> Result<()> {
+    pub fn validate(&mut self, id: &str, evidence: Vec<String>, run_id: Option<String>) -> Result<()> {
         let h = self
             .hypotheses
             .iter_mut()
@@ -91,11 +91,12 @@ impl Store {
             .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
         h.status = Status::Validated;
         h.evidence.extend(evidence);
+        h.condukt_run = run_id;
         h.updated_at = now_iso();
         self.save()
     }
 
-    pub fn reject(&mut self, id: &str, reason: Option<String>) -> Result<()> {
+    pub fn reject(&mut self, id: &str, reason: Option<String>, run_id: Option<String>) -> Result<()> {
         let h = self
             .hypotheses
             .iter_mut()
@@ -105,6 +106,7 @@ impl Store {
         if let Some(r) = reason {
             h.evidence.push(r);
         }
+        h.condukt_run = run_id;
         h.updated_at = now_iso();
         self.save()
     }
@@ -167,7 +169,7 @@ mod tests {
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("validate this".to_string(), None).unwrap();
 
-        st.validate(&id, vec!["evidence A".to_string(), "evidence B".to_string()])
+        st.validate(&id, vec!["evidence A".to_string(), "evidence B".to_string()], None)
             .unwrap();
 
         // reload to verify persistence
@@ -186,7 +188,7 @@ mod tests {
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("reject this".to_string(), None).unwrap();
 
-        st.reject(&id, Some("not supported by data".to_string()))
+        st.reject(&id, Some("not supported by data".to_string()), None)
             .unwrap();
 
         let st2 = Store::load(&cfg).unwrap();
@@ -202,10 +204,10 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
 
-        let err = st.validate("deadbeef", vec![]).unwrap_err();
+        let err = st.validate("deadbeef", vec![], None).unwrap_err();
         assert!(err.to_string().contains("hypothesis not found"));
 
-        let err2 = st.reject("deadbeef", None).unwrap_err();
+        let err2 = st.reject("deadbeef", None, None).unwrap_err();
         assert!(err2.to_string().contains("hypothesis not found"));
     }
 
@@ -217,6 +219,36 @@ mod tests {
         // File does not exist — should return empty store, not error
         let st = Store::load(&cfg).unwrap();
         assert_eq!(st.list(None).len(), 0);
+    }
+
+    #[test]
+    fn test_validate_with_run_id() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("validate with run".to_string(), None).unwrap();
+        st.validate(&id, vec![], Some("run-abc123".to_string())).unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert!(h.status.is_validated());
+        assert_eq!(h.condukt_run, Some("run-abc123".to_string()));
+    }
+
+    #[test]
+    fn test_reject_with_run_id() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("reject with run".to_string(), None).unwrap();
+        st.reject(&id, None, Some("run-xyz789".to_string())).unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert!(h.status.is_rejected());
+        assert_eq!(h.condukt_run, Some("run-xyz789".to_string()));
     }
 
     #[test]
