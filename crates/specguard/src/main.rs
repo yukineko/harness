@@ -408,7 +408,7 @@ fn finish(
         // the unfixed drift in the next run's diff so it is re-detected; a human
         // releases it with `specguard ack` once handled.
         let summary = merge_summary(&parsed);
-        report::write_sentinel(&paths, &l.date, &report_rel, &summary)?;
+        report::write_sentinel(&paths, &l.date, &report_rel, &summary, &head)?;
         println!(
             "specguard: 修正候補あり -> {} (report: {}); baseline は据え置き (ack するまで再検出)",
             paths.sentinel.display(),

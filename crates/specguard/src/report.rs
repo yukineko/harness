@@ -58,7 +58,15 @@ pub fn sentinel_pending(paths: &Paths) -> bool {
 
 /// Raise the sentinel (findings need human review). Mirrors the reference
 /// runner's format so existing SessionStart hooks can parse it.
-pub fn write_sentinel(paths: &Paths, date: &str, report_rel: &str, summary: &str) -> Result<()> {
+/// `raised_at` is the git HEAD at the time of the raise; `ack` uses it to
+/// verify a fix commit was made before clearing the sentinel.
+pub fn write_sentinel(
+    paths: &Paths,
+    date: &str,
+    report_rel: &str,
+    summary: &str,
+    raised_at: &str,
+) -> Result<()> {
     if let Some(dir) = paths.sentinel.parent() {
         std::fs::create_dir_all(dir).ok();
     }
@@ -67,10 +75,31 @@ pub fn write_sentinel(paths: &Paths, date: &str, report_rel: &str, summary: &str
     } else {
         summary.trim()
     };
-    let body = format!("date: {date}\nreport: {report_rel}\nsummary: {summary}\n");
+    let body = format!(
+        "date: {date}\nreport: {report_rel}\nsummary: {summary}\nraised_at: {raised_at}\n"
+    );
     std::fs::write(&paths.sentinel, body)
         .with_context(|| format!("writing sentinel {}", paths.sentinel.display()))?;
     Ok(())
+}
+
+/// Extract the `raised_at` commit from a sentinel file's contents.
+pub fn sentinel_raised_at(content: &str) -> Option<String> {
+    for line in content.lines() {
+        if let Some(val) = line.strip_prefix("raised_at:") {
+            let v = val.trim().to_string();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// True when `current_head` differs from `raised_at`, meaning at least one new
+/// commit was made after the sentinel was raised (i.e., a fix was committed).
+pub fn has_new_commits(raised_at: &str, current_head: &str) -> bool {
+    !raised_at.trim().is_empty() && raised_at.trim() != current_head.trim()
 }
 
 #[cfg(test)]
@@ -113,18 +142,50 @@ mod tests {
     fn sentinel_has_expected_fields() {
         let tmp = tempfile::tempdir().unwrap();
         let p = paths(&cfg(), tmp.path(), "2026-06-17");
-        write_sentinel(&p, "2026-06-17", "reports/spec-audit/2026-06-17.md", "fix X").unwrap();
+        write_sentinel(&p, "2026-06-17", "reports/spec-audit/2026-06-17.md", "fix X", "abc123").unwrap();
         let s = fs::read_to_string(&p.sentinel).unwrap();
         assert!(s.contains("date: 2026-06-17"));
         assert!(s.contains("report: reports/spec-audit/2026-06-17.md"));
         assert!(s.contains("summary: fix X"));
+        assert!(s.contains("raised_at: abc123"));
     }
 
     #[test]
     fn empty_summary_becomes_placeholder() {
         let tmp = tempfile::tempdir().unwrap();
         let p = paths(&cfg(), tmp.path(), "2026-06-17");
-        write_sentinel(&p, "2026-06-17", "r.md", "   ").unwrap();
+        write_sentinel(&p, "2026-06-17", "r.md", "   ", "deadbeef").unwrap();
         assert!(fs::read_to_string(&p.sentinel).unwrap().contains("(要約なし)"));
+    }
+
+    #[test]
+    fn sentinel_raised_at_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = paths(&cfg(), tmp.path(), "2026-06-26");
+        write_sentinel(&p, "2026-06-26", "r.md", "drift", "abc123def").unwrap();
+        let s = fs::read_to_string(&p.sentinel).unwrap();
+        assert_eq!(sentinel_raised_at(&s), Some("abc123def".to_string()));
+    }
+
+    #[test]
+    fn has_new_commits_true_when_head_differs() {
+        assert!(has_new_commits("abc123", "def456"));
+    }
+
+    #[test]
+    fn has_new_commits_false_when_same() {
+        assert!(!has_new_commits("abc123", "abc123"));
+    }
+
+    #[test]
+    fn has_new_commits_false_when_raised_at_empty() {
+        assert!(!has_new_commits("", "abc123"));
+    }
+
+    #[test]
+    fn sentinel_raised_at_missing_returns_none() {
+        // Old sentinel without raised_at field
+        let old_sentinel = "date: 2026-06-01\nreport: r.md\nsummary: drift\n";
+        assert_eq!(sentinel_raised_at(old_sentinel), None);
     }
 }
