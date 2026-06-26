@@ -11,6 +11,7 @@
 //! config/metrics *fields* stay in each plugin crate and compose these.
 
 pub mod config;
+pub mod daily;
 pub mod hook;
 pub mod install;
 pub mod interrogate;

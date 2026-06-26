@@ -1,0 +1,22 @@
+[package]
+name = "daily"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Daily-once task runner for Claude Code SessionStart: runs cargo deny check once per calendar day."
+license = "MIT"
+
+[[bin]]
+name = "daily"
+path = "src/main.rs"
+
+[dependencies]
+harness-core = { path = "../harness-core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["clock"], default-features = false }
+dirs = "5"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

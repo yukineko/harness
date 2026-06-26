@@ -14,3 +14,6 @@ regex = "1"
 dirs = "5"
 chrono = { version = "0.4", features = ["clock"], default-features = false }
 anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

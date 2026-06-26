@@ -308,6 +308,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "daily"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "dirs",
+ "harness-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "deepwiki"
 version = "0.1.0"
 dependencies = [
@@ -528,6 +541,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
