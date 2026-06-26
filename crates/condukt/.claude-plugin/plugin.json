@@ -1,6 +1,6 @@
 {
   "name": "condukt",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Deterministic orchestration engine for Claude Code: interpreter/researcher/worker/verifier skill pipeline plus a Rust binary that schedules tasks into parallel/serial batches by file-conflict analysis, manages the git-worktree lifecycle, tracks run state, and gates completion. v0.3: run resume across sessions (state resume-context + Phase 0-alt), stale-run reconcile (state reconcile auto-promotes merged branches to verified), benchmark stats (state stats), baseline test capture (Phase 4.5), pipeline verifier launch (no batch-wait), verifier-skip for mechanical done_criteria, auto-resume when 1 open run. v0.3.1: pause/resume (state pause/resume), paused-run indicator in state list, paused runs excluded from SessionStart notifications. Subscription-native (skill + agents + hook, no API key).",
   "author": { "name": "yukineko" },
   "keywords": ["orchestration", "worktree", "parallel", "hooks", "subagent", "rust", "tdd", "research", "websearch"]

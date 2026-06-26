@@ -1,6 +1,6 @@
 {
   "name": "session-insights",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Per-session work metrics for Claude Code: PostToolUse + Stop hooks roll up tool calls, turns, files touched, a size class (XS–XL) and a work category per session, viewable with `session-insights report` and optionally logged as a dated note to an Obsidian vault. v0.2: cross-session backlog (session-insights backlog add/resolve/render/brief) — /record step 5 auto-registers 残課題 and resolves completed items into a global backlog.md in the Obsidian vault, surfaced at SessionStart. Subscription-native (two hooks + bundled Rust binary, no API key).",
   "author": { "name": "yukineko" },
   "keywords": ["hooks", "metrics", "insights", "obsidian", "rust"]
