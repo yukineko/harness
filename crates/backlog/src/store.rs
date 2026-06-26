@@ -64,6 +64,7 @@ pub fn add(
         notes: notes.to_string(),
         created_at: now,
         updated_at: now,
+        defer_until: None,
     };
     tasks.push(task);
     save(path, &tasks)?;

@@ -12,6 +12,10 @@ pub struct Task {
     pub notes: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Unix timestamp (seconds) before which this task is deferred.
+    /// Absent in older tasks.toml files; treated as None (not deferred).
+    #[serde(default)]
+    pub defer_until: Option<i64>,
 }
 
 impl Task {
@@ -37,8 +41,16 @@ impl Task {
     }
 
     /// Returns true if status is "pending" or "failed".
+    /// Note: does NOT consider defer_until. Callers combine with is_deferred()
+    /// to decide whether to surface a task.
     pub fn is_pending(&self) -> bool {
         matches!(self.status.as_str(), "pending" | "failed")
+    }
+
+    /// Returns true when the task is deferred past the given unix timestamp.
+    /// A task with defer_until = None is never considered deferred.
+    pub fn is_deferred(&self, now: i64) -> bool {
+        matches!(self.defer_until, Some(t) if t > now)
     }
 }
 
@@ -72,6 +84,7 @@ mod tests {
             notes: String::new(),
             created_at: 0,
             updated_at: 0,
+            defer_until: None,
         }
     }
 
@@ -135,5 +148,63 @@ mod tests {
     fn new_id_differs_for_different_inputs() {
         assert_ne!(new_id("task-a", 100), new_id("task-b", 100));
         assert_ne!(new_id("task", 100), new_id("task", 101));
+    }
+
+    // --- is_deferred tests ---
+
+    #[test]
+    fn is_deferred_none_is_never_deferred() {
+        let t = make_task(vec![], "pending");
+        assert!(!t.is_deferred(0));
+        assert!(!t.is_deferred(9_999_999_999));
+    }
+
+    #[test]
+    fn is_deferred_future_timestamp_returns_true() {
+        let mut t = make_task(vec![], "pending");
+        t.defer_until = Some(2_000);
+        // now = 1_000 < 2_000  →  deferred
+        assert!(t.is_deferred(1_000));
+    }
+
+    #[test]
+    fn is_deferred_past_timestamp_returns_false() {
+        let mut t = make_task(vec![], "pending");
+        t.defer_until = Some(500);
+        // now = 1_000 >= 500  →  not deferred
+        assert!(!t.is_deferred(1_000));
+    }
+
+    #[test]
+    fn is_deferred_equal_timestamp_returns_false() {
+        let mut t = make_task(vec![], "pending");
+        t.defer_until = Some(1_000);
+        // defer_until == now  →  not deferred (> is strict)
+        assert!(!t.is_deferred(1_000));
+    }
+
+    #[test]
+    fn is_pending_unaffected_by_defer_until() {
+        // is_pending must ignore defer_until; callers decide with is_deferred()
+        let mut t = make_task(vec![], "pending");
+        t.defer_until = Some(9_999_999_999);
+        assert!(t.is_pending());
+    }
+
+    #[test]
+    fn serde_roundtrip_without_defer_until() {
+        // Older tasks.toml records that lack defer_until must deserialize fine.
+        let json = r#"{
+            "id": "abcd1234",
+            "title": "old task",
+            "project": "/tmp/p",
+            "tags": [],
+            "status": "pending",
+            "notes": "",
+            "created_at": 0,
+            "updated_at": 0
+        }"#;
+        let t: Task = serde_json::from_str(json).expect("deserialize without defer_until");
+        assert!(t.defer_until.is_none());
     }
 }
