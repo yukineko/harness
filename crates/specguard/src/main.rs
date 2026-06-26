@@ -37,6 +37,9 @@ const EXIT_AGENT_FAILED: u8 = 4;
 /// The prompt (meta-canon) is unratified or changed since ratification, and
 /// `[prompt].require_ratification` is on — a human must `accept-prompt` first.
 const EXIT_UNRATIFIED: u8 = 5;
+/// `specguard ack` was called but no new commit was found since the sentinel
+/// was raised. Pass `--force` to override.
+const EXIT_NO_FIX_COMMIT: u8 = 6;
 
 #[derive(Parser)]
 #[command(name = "specguard", version, about = "Spec/implementation drift audit harness")]
@@ -88,7 +91,14 @@ enum Command {
     /// config etc.) prints nothing and exits 0.
     Pending,
     /// Clear the sentinel after a human has handled the pending findings.
-    Ack,
+    ///
+    /// By default, requires at least one new git commit since the sentinel was
+    /// raised (proving a fix was made). Use `--force` to bypass that check.
+    Ack {
+        /// Skip the "no fix commit found" guard and clear the sentinel anyway.
+        #[arg(long)]
+        force: bool,
+    },
     /// Scaffold specguard into a repo: starter config + Claude Code SessionStart
     /// hook. Idempotent; existing config kept unless `--force`.
     Init {
@@ -179,8 +189,8 @@ fn run(cli: &Cli) -> Result<u8> {
     let paths = report::paths(&l.cfg, &l.repo_root, &l.date);
 
     // `ack` only touches the sentinel; no scope/agent work needed.
-    if let Some(Command::Ack) = cli.command {
-        return ack(&paths);
+    if let Some(Command::Ack { force }) = cli.command {
+        return ack(&paths, &l.repo_root, force);
     }
 
     // `decide` scaffolds a decision record pinned to the current canon commit.
@@ -234,7 +244,7 @@ fn run(cli: &Cli) -> Result<u8> {
             let outs = read_ingest(from.as_deref(), &l, &scope, &shards)?;
             return finish(&l, &scope, &shards, &paths, outs);
         }
-        Some(Command::Ack)
+        Some(Command::Ack { .. })
         | Some(Command::Pending)
         | Some(Command::Brief { .. })
         | Some(Command::Init { .. })
@@ -613,7 +623,21 @@ fn pending(cli: &Cli) -> u8 {
 }
 
 /// Clear the sentinel (C). Idempotent: succeeds whether or not one was present.
-fn ack(paths: &report::Paths) -> Result<u8> {
+fn ack(paths: &report::Paths, repo_root: &std::path::Path, force: bool) -> Result<u8> {
+    // If the sentinel exists, check whether a fix commit was made since it was raised.
+    if !force && paths.sentinel.exists() {
+        let content = std::fs::read_to_string(&paths.sentinel).unwrap_or_default();
+        if let Some(raised_at) = report::sentinel_raised_at(&content) {
+            let current = scope::current_head(repo_root).unwrap_or_default();
+            if !report::has_new_commits(&raised_at, &current) {
+                eprintln!(
+                    "specguard: 修正コミットが見当たらない (raised_at: {raised_at}, HEAD: {current})"
+                );
+                eprintln!("  修正をコミットしてから `specguard ack` を実行するか、意図的に解除するなら `specguard ack --force`");
+                return Ok(EXIT_NO_FIX_COMMIT);
+            }
+        }
+    }
     match std::fs::remove_file(&paths.sentinel) {
         Ok(()) => println!("specguard: sentinel をクリアした ({})", paths.sentinel.display()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -856,4 +880,83 @@ fn resolve_date(cli_date: Option<String>) -> String {
 /// Canonicalize a path, falling back to the joined path if it doesn't exist yet.
 fn canonicalize(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p).or_else(|_| Ok(p.to_path_buf()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_paths(sentinel: PathBuf) -> report::Paths {
+        report::Paths {
+            report: sentinel.with_extension("report.md"),
+            last_ref: sentinel.with_extension("last-ref"),
+            sentinel,
+        }
+    }
+
+    // repo_root for git operations — use the harness workspace root.
+    fn repo_root() -> PathBuf {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop(); // up from crates/specguard → crates/
+        p.pop(); // up from crates/ → workspace root
+        p
+    }
+
+    #[test]
+    fn ack_no_sentinel_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = make_paths(dir.path().join("sentinel.txt"));
+        let result = ack(&paths, &repo_root(), false).unwrap();
+        assert_eq!(result, EXIT_OK);
+    }
+
+    #[test]
+    fn ack_force_bypasses_commit_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = dir.path().join("sentinel.txt");
+        // Write a sentinel with raised_at = current HEAD so without force it would block.
+        let head = scope::current_head(&repo_root()).unwrap_or_else(|_| "abc123".to_string());
+        std::fs::write(&sentinel, format!("date: 2026-06-26\nraised_at: {head}\n")).unwrap();
+        let paths = make_paths(sentinel.clone());
+        let result = ack(&paths, &repo_root(), true).unwrap();
+        assert_eq!(result, EXIT_OK);
+        assert!(!sentinel.exists(), "sentinel should have been removed");
+    }
+
+    #[test]
+    fn ack_blocks_when_no_new_commits_since_raised() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = dir.path().join("sentinel.txt");
+        let head = scope::current_head(&repo_root()).unwrap_or_else(|_| "abc123".to_string());
+        std::fs::write(&sentinel, format!("date: 2026-06-26\nraised_at: {head}\n")).unwrap();
+        let paths = make_paths(sentinel.clone());
+        let result = ack(&paths, &repo_root(), false).unwrap();
+        assert_eq!(result, EXIT_NO_FIX_COMMIT);
+        assert!(sentinel.exists(), "sentinel should NOT have been removed");
+    }
+
+    #[test]
+    fn ack_succeeds_when_new_commit_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = dir.path().join("sentinel.txt");
+        // A different (old) commit sha → new commits exist.
+        std::fs::write(&sentinel, "date: 2026-06-25\nraised_at: 0000000000000000000000000000000000000000\n").unwrap();
+        let paths = make_paths(sentinel.clone());
+        let result = ack(&paths, &repo_root(), false).unwrap();
+        assert_eq!(result, EXIT_OK);
+        assert!(!sentinel.exists(), "sentinel should have been removed");
+    }
+
+    #[test]
+    fn ack_old_sentinel_without_raised_at_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = dir.path().join("sentinel.txt");
+        // Old-format sentinel with no raised_at field — guard is skipped.
+        std::fs::write(&sentinel, "date: 2026-01-01\nreport: reports/spec-audit/2026-01-01.md\nsummary: some drift\n").unwrap();
+        let paths = make_paths(sentinel.clone());
+        let result = ack(&paths, &repo_root(), false).unwrap();
+        assert_eq!(result, EXIT_OK);
+        assert!(!sentinel.exists(), "sentinel should have been removed");
+    }
 }

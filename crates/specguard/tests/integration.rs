@@ -202,9 +202,56 @@ fn ack_clears_the_sentinel() {
     assert!(out.status.success());
     assert!(repo.join(".pending").exists(), "sentinel raised");
 
+    // Make a fix commit so the ack guard passes.
+    fs::write(repo.join("src/main.rs").as_path(), "fn main() { /* fixed */ }\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "fix drift"]);
+
     let out = run_specguard(repo, &base, &["ack"]);
     assert!(out.status.success());
     assert!(!repo.join(".pending").exists(), "ack removed the sentinel");
+}
+
+#[test]
+fn ack_rejected_when_no_fix_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/main.rs").as_path(), "fn main() {}\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "add src"]);
+
+    write_config(repo, "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift");
+    let out = run_specguard(repo, &base, &["run"]);
+    assert!(out.status.success());
+    assert!(repo.join(".pending").exists(), "sentinel raised");
+
+    // ack without a new commit should be rejected
+    let out = run_specguard(repo, &base, &["ack"]);
+    assert!(!out.status.success(), "ack should be rejected without fix commit");
+    assert!(repo.join(".pending").exists(), "sentinel still present");
+}
+
+#[test]
+fn ack_force_bypasses_commit_guard() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let base = init_repo(repo);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/main.rs").as_path(), "fn main() {}\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "add src"]);
+
+    write_config(repo, "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift");
+    let out = run_specguard(repo, &base, &["run"]);
+    assert!(out.status.success());
+    assert!(repo.join(".pending").exists(), "sentinel raised");
+
+    // --force bypasses the guard
+    let out = run_specguard(repo, &base, &["ack", "--force"]);
+    assert!(out.status.success(), "ack --force should clear without commit");
+    assert!(!repo.join(".pending").exists(), "sentinel cleared by --force");
 }
 
 #[test]
@@ -231,6 +278,10 @@ fn pending_sentinel_holds_baseline_until_ack() {
     assert!(!repo.join("reports/.last-ref").exists(), "still held pre-ack");
 
     // 3. After ack, a clean run advances the baseline.
+    // Add a fix commit so the ack guard passes.
+    fs::write(repo.join("src/main.rs").as_path(), "fn main() { /* fixed */ }\n").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", "fix drift"]);
     assert!(run_specguard(repo, &base, &["ack"]).status.success());
     assert!(run_specguard(repo, &base, &["run"]).status.success());
     assert!(repo.join("reports/.last-ref").exists(), "advanced after ack + clean");
