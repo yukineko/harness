@@ -396,6 +396,33 @@ fi
 ```
 `linked_hypotheses` が空または `hypothesis`/`jq` が無ければスキップ。棄却したい場合は手動で `hypothesis reject <id> --run $RID` を実行する。
 
+**spec-drift チェック (soft 依存)**: gate PASS 後、変更が正典仕様と乖離していないかを specguard で監査する。
+`specguard` バイナリが PATH 上にあり、かつ CWD に `specguard.toml` が存在する場合のみ実行する。
+
+```bash
+if command -v specguard >/dev/null 2>&1 && test -f specguard.toml; then
+  # 1. shard プロンプトを取得 (scope 計算 + テンプレート描画)
+  SPECGUARD_JSON=$(specguard prompt --json 2>/dev/null || true)
+  SHARD_COUNT=$(echo "$SPECGUARD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('shards',[])))" 2>/dev/null || echo "0")
+
+  if [ "$SHARD_COUNT" -gt 0 ]; then
+    echo "specguard: $SHARD_COUNT shard(s) を監査中..."
+    # 2. 各 shard を read-only specguard-auditor subagent に並列投入 (Task ツール)
+    #    各 shard の prompt フィールドをそのまま subagent に渡す。
+    #    全 shard の stdout を集めて .specguard-ingest.json に書き出す。
+    # 3. ハーネスに結果を戻す
+    specguard ingest --from .specguard-ingest.json 2>/dev/null || true
+    rm -f .specguard-ingest.json
+  else
+    echo "specguard: 監査対象なし (scope 外)"
+  fi
+fi
+```
+
+specguard の手順詳細は `/specguard:run` コマンドに準拠する (shard 取得 → 並列 subagent → ingest)。
+findings があれば sentinel が立ち次セッション冒頭に提示される (Human-on-the-loop)。
+**spec-drift findings は condukt 完了を阻害しない** — ユーザーが `/specguard:ack` または別タスクで対処する。
+
 ## ユーティリティ操作
 
 ### タスクのキャンセル (interactive)
