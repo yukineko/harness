@@ -13,6 +13,7 @@ mod install;
 mod model;
 mod schedule;
 mod state;
+mod status;
 mod store;
 mod worktree;
 
@@ -69,6 +70,12 @@ enum Command {
     Uninstall,
     /// Print ~/.condukt/knowledge.md to stdout (empty output if absent).
     Knowledge,
+    /// Show open runs and their tasks as an ASCII tree.
+    Status {
+        /// Include all runs, not just open ones.
+        #[arg(long)]
+        all: bool,
+    },
     /// Run one iteration of the test-fix cycle for the given module type.
     ///
     /// Executes build/deploy/test in the sequence appropriate for the module:
@@ -325,6 +332,7 @@ fn run_user(cmd: Command) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Status { all } => status::render(&cfg, &cwd, all),
         Command::Restore | Command::Statusline => unreachable!("handled in main"),
     }
     Ok(())
