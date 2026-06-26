@@ -152,10 +152,20 @@ if command -v fugu-router >/dev/null 2>&1; then
 fi
 ```
 
+**仮説コンテキスト注入 (soft 依存)**: `hypothesis` プラグインがあれば open 仮説を取得し interpreter に渡す:
+```bash
+OPEN_HYPOS=$(hypothesis list --status open 2>/dev/null | head -5 || true)
+# OPEN_HYPOS が空でなければ interpreter プロンプトに以下を含める:
+# open_hypotheses: $OPEN_HYPOS
+# interpreter への指示: この課題と関連する仮説のみを JSON トップレベルの
+# linked_hypotheses: ["id1","id2"] フィールドに出力すること。無関係な仮説は含めない。
+# 関連仮説がなければ linked_hypotheses は省略する（空配列も不要）。
+```
+
 `Task` で `condukt-interpreter` 相当 (subagent_type を持たない環境では `Explore` を model:opus で)
 を起動し、課題を **Decomposition JSON** にさせる。スキーマは `agents/condukt-interpreter.md` 準拠:
 ```json
-{ "goal": "...", "tasks": [
+{ "goal": "...", "linked_hypotheses": ["hid1", "hid2"], "tasks": [
   { "id": "t1", "title": "...", "touched_files": ["path/or/glob", ...],
     "deps": ["他タスクid"], "class": "parallel|serial|gated",
     "suggested_model": "sonnet|opus|haiku", "done_criteria": "検証で確認する合格条件",
@@ -374,14 +384,17 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 ### Phase 8 — クローズ
 `commit`/`push` はユーザー指示時のみ。GATED タスク (deploy 等) はユーザー承認を得てから別途実行。
 
-**仮説との連携 (soft 依存)**: `hypothesis` プラグインがインストールされていれば、gate PASS 後に open 仮説を確認し、このタスクで検証した仮説があれば更新を促す:
+**仮説の自動クローズ (soft 依存)**: gate PASS 後、Phase 1 で interpreter が記録した `linked_hypotheses` を自動 validate する:
 ```bash
-# 検証に成功した仮説を閉じる
-hypothesis validate <id> --run $RID  # --run で condukt run ID を根拠として記録
-# または棄却する場合
-hypothesis reject <id> --run $RID
+if command -v hypothesis >/dev/null 2>&1; then
+  LINKED=$(jq -r '.linked_hypotheses // [] | .[]' <json.routed> 2>/dev/null || true)
+  for HID in $LINKED; do
+    hypothesis validate "$HID" --run "$RID" 2>/dev/null \
+      && echo "仮説 $HID を validate (condukt_run: $RID)" || true
+  done
+fi
 ```
-仮説の確認は `hypothesis list --status open` で行う。関連仮説がなければスキップ。
+`linked_hypotheses` が空または `hypothesis`/`jq` が無ければスキップ。棄却したい場合は手動で `hypothesis reject <id> --run $RID` を実行する。
 
 ## ユーティリティ操作
 
