@@ -1,0 +1,7 @@
+{
+  "name": "daily",
+  "version": "0.1.0",
+  "description": "Daily-once task runner for Claude Code: a SessionStart hook that runs a security audit (cargo deny check advisories/bans/sources/licenses) at most once per calendar day and feeds any findings back into the session. State lives in ~/.daily/; set enabled=false in ~/.daily/config.toml to disable. Subscription-native (one hook + bundled Rust binary, no API key).",
+  "author": { "name": "yukineko" },
+  "keywords": ["hooks", "session", "security", "cargo-deny", "audit", "rust"]
+}
