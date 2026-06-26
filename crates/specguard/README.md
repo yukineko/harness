@@ -117,6 +117,20 @@ uses `${CLAUDE_PLUGIN_ROOT}/bin/specguard` — no PATH setup required.
 Once a human handles a `needs_user=yes` finding, clear the sentinel (otherwise
 the SessionStart hook keeps nagging about the same issue).
 
+**`ack` fix-commit gate**: `specguard ack` records the git HEAD when the sentinel
+is raised and refuses to clear it until at least one new commit has been made —
+ensuring a fix is actually committed before the drift is acknowledged. Use
+`specguard ack --force` to bypass this check when the fix was applied without a
+new commit (e.g. a rebase or cherry-pick that landed before the sentinel was raised).
+
+**`testaudit` — detect tests that are implemented but not run**: `specguard testaudit`
+scans all `.rs` files and reports: (a) `#[ignore]`-annotated tests, (b) tests inside
+`#[cfg(…)]` blocks that are never compiled, (c) `.rs` files containing `#[test]`
+functions that are not `mod`-declared by any parent (so `cargo test` never picks them
+up), and (d) integration-test files under `tests/` that are not included by the
+workspace. Exit 0 means clean; exit 7 means findings were found. Add `--json` for
+machine-readable output.
+
 ### Slash commands (plugin)
 
 | Command | Backing binary | Description |
@@ -140,7 +154,10 @@ specguard ingest [--from <file>]   # feed pre-collected shard outputs (JSON/stdi
 specguard brief "<task>"           # read-only pre-task spec briefing (runs the agent)
 specguard brief "<task>" --prompt  # render the briefing prompt only (used by the plugin)
 specguard pending                  # print the active fix-offer if a sentinel is pending (SessionStart hook)
-specguard ack                      # clear a handled sentinel
+specguard ack                      # clear a handled sentinel (requires a fix commit since the sentinel was raised)
+specguard ack --force              # clear the sentinel unconditionally (skips the fix-commit check)
+specguard testaudit                # scan for tests implemented but not being run (exit 7 if findings)
+specguard testaudit --json         # same, but emit machine-readable JSON ({findings:[{kind,file,name,reason}]})
 specguard decide "<title>"         # scaffold a decision record (ADR)
 specguard accept-prompt -m "reason"  # ratify the prompt (meta-canon)
 specguard --baseline HEAD~5 run    # override the baseline
