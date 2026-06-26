@@ -17,6 +17,7 @@ mod prompt;
 mod ratify;
 mod report;
 mod scope;
+mod testaudit;
 mod verify;
 
 use anyhow::{Context, Result};
@@ -40,6 +41,8 @@ const EXIT_UNRATIFIED: u8 = 5;
 /// `specguard ack` was called but no new commit was found since the sentinel
 /// was raised. Pass `--force` to override.
 const EXIT_NO_FIX_COMMIT: u8 = 6;
+/// `specguard testaudit` found one or more tests that are not being run.
+const EXIT_TESTAUDIT_FINDINGS: u8 = 7;
 
 #[derive(Parser)]
 #[command(name = "specguard", version, about = "Spec/implementation drift audit harness")]
@@ -125,6 +128,17 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Scan the repository for tests that are implemented but not being run:
+    /// #[ignore]'d tests, cfg-gated tests that are always excluded, .rs files
+    /// with tests that are not `mod`-declared by a parent, and integration-test
+    /// files. Exits 0 when clean, 7 when findings are found.
+    #[command(name = "testaudit")]
+    TestAudit {
+        /// Emit machine-readable JSON ({findings:[{kind,file,name,reason}]})
+        /// instead of human text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Ratify the prompt templates (meta-canon) after reviewing them: contract-
     /// check, then pin the current version with a rationale. Required before a
     /// gated `run` when `[prompt].require_ratification = true`.
@@ -193,6 +207,11 @@ fn run(cli: &Cli) -> Result<u8> {
         return ack(&paths, &l.repo_root, force);
     }
 
+    // `testaudit` scans for tests not being run; no agent work.
+    if let Some(Command::TestAudit { json }) = cli.command {
+        return run_testaudit(&l.repo_root, json);
+    }
+
     // `decide` scaffolds a decision record pinned to the current canon commit.
     if let Some(Command::Decide { title, force }) = &cli.command {
         return decide(&l, title, *force);
@@ -249,7 +268,8 @@ fn run(cli: &Cli) -> Result<u8> {
         | Some(Command::Brief { .. })
         | Some(Command::Init { .. })
         | Some(Command::Decide { .. })
-        | Some(Command::AcceptPrompt { .. }) => unreachable!("handled above"),
+        | Some(Command::AcceptPrompt { .. })
+        | Some(Command::TestAudit { .. }) => unreachable!("handled above"),
         Some(Command::Run) | None => {}
     }
 
@@ -623,6 +643,49 @@ fn pending(cli: &Cli) -> u8 {
 }
 
 /// Clear the sentinel (C). Idempotent: succeeds whether or not one was present.
+fn run_testaudit(repo_root: &std::path::Path, json: bool) -> Result<u8> {
+    let findings = testaudit::scan_repo(repo_root);
+    if findings.is_empty() {
+        if json {
+            println!("{{\"findings\":[]}}");
+        } else {
+            println!("specguard testaudit: no issues found");
+        }
+        return Ok(EXIT_OK);
+    }
+    if json {
+        #[derive(serde::Serialize)]
+        struct Out<'a> {
+            findings: Vec<FindingOut<'a>>,
+        }
+        #[derive(serde::Serialize)]
+        struct FindingOut<'a> {
+            kind: &'a str,
+            file: &'a str,
+            name: &'a str,
+            reason: &'a str,
+        }
+        let out = Out {
+            findings: findings
+                .iter()
+                .map(|f| FindingOut {
+                    kind: f.kind.as_str(),
+                    file: &f.file,
+                    name: &f.name,
+                    reason: &f.reason,
+                })
+                .collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!("specguard testaudit: {} finding(s)\n", findings.len());
+        for f in &findings {
+            println!("  [{}] {}:{} — {}", f.kind.as_str(), f.file, f.name, f.reason);
+        }
+    }
+    Ok(EXIT_TESTAUDIT_FINDINGS)
+}
+
 fn ack(paths: &report::Paths, repo_root: &std::path::Path, force: bool) -> Result<u8> {
     // If the sentinel exists, check whether a fix commit was made since it was raised.
     if !force && paths.sentinel.exists() {
