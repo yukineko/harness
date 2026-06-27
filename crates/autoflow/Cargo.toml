@@ -1,7 +1,7 @@
 [package]
 license.workspace = true
 name = "autoflow"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Session-end auto-flow: record + condukt continuation gate for Claude Code."
 

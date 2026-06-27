@@ -1,6 +1,6 @@
 [package]
 name = "donegate"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 description = "Completion-verification gate for Claude Code. On Stop it runs your acceptance commands as subprocesses; the agent can't declare done until every applicable check is green. Failures are fed back for an auto-fix loop."
 license = "MIT"

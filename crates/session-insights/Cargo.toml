@@ -1,6 +1,6 @@
 [package]
 name = "session-insights"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
 description = "Per-session work metrics for Claude Code. PostToolUse + Stop hooks roll up tool calls, turns, files touched, a size class (XS–XL) and a work category per session, with an optional dated session log written to an Obsidian vault."
 license = "MIT"

@@ -1,6 +1,6 @@
 [package]
 name = "beacon"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Desktop & webhook notifications for Claude Code. Stop and Notification hooks that ping you (macOS/Linux desktop, Slack, generic webhook, or a custom command) when a turn finishes or Claude needs your input."
 license = "MIT"

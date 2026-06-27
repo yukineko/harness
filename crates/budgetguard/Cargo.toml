@@ -1,6 +1,6 @@
 [package]
 name = "budgetguard"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 description = "Real-time cost budget gate for Claude Code. On Stop it reads the session transcript, computes the USD cost, and blocks the turn if session or daily limits are exceeded — feeding the overage back so the agent winds down gracefully."
 license = "MIT"
