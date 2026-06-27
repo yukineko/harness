@@ -100,6 +100,25 @@ fugu-router record --title "<task title>" --files "<touched_files>" \
 `--status` other than a pass-word (`verified|pass|passed|ok|true`) counts as a
 non-pass. `--cost` is optional (read it from `gauge` if you want cost-aware routing).
 
+Pass `--skill-fingerprint "$(fugu-router fingerprint)"` to stamp the episode with
+the version of the SKILL.md corpus that produced it (stored as
+`Episode.skill_fingerprint`, omitted when absent). Without it, a silent SKILL.md
+edit that changes behaviour leaves the outcome unattributable to its cause; with
+it, outcomes can be stratified by skill version and `evalkit canary` can diff two
+versions' goldens.
+
+### `fingerprint` — version stamp for the SKILL.md corpus
+
+```bash
+fugu-router fingerprint                 # hash SKILL.md files under the cwd
+fugu-router fingerprint --dir crates    # hash a specific subtree
+```
+
+Walks `SKILL.md` files under `--dir` (default cwd), hashes their sorted
+relative-path + content with a std hasher, and prints a short stable hex.
+Deterministic: the same corpus → the same hex, a changed/added SKILL.md → a
+different hex. Feed it to `record --skill-fingerprint` (above).
+
 ### `label` — human teacher signal
 
 `record`'s `pass` comes from the verifier judging *its own* sibling's work, so a

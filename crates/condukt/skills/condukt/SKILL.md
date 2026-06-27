@@ -390,10 +390,18 @@ fugu-router record --title "<task.title>" --files "<task.touched_files をカン
   --class <task.class> --model <worker に使ったモデル> \
   --status verified|failed --cost <gauge から取れれば> \
   --done-criteria "<task.done_criteria>" \
+  --skill-fingerprint "$(fugu-router fingerprint 2>/dev/null || true)" \
   --notes "<worker サマリの要点 (任意)>"
 ```
 `--done-criteria` を渡すと、verified タスクの手順が `~/.fugu-router/playbooks.jsonl` に蓄積され
 次回 Phase 1 の playbook 検索に現れる (Devin Playbooks 相当)。failed の場合は無視される。
+
+`--skill-fingerprint` を渡すと、その outcome が **どの SKILL.md 版で出たか** で層別化できる
+(SKILL 改変による静かな挙動ドリフトを outcome から帰属可能にする)。`fugu-router fingerprint` は
+SKILL.md 群を hash した短い hex を返す決定論ヘルパで、古い fugu-router バイナリには無いため
+`2>/dev/null || true` で soft に握り潰す (記録自体は壊さない)。版間の pass率/コスト差は
+`evalkit canary --baseline <旧> --current <新>` が golden replay の delta として出す
+(promptfoo side-by-side 相当)。
 
 **golden 化の提案 (soft 依存・任意)**: verified タスクの `done_criteria` が**機械的** (`cargo test`・
 backtick で囲んだコマンド等) なら、その run を回帰 golden に固定できる。`curate` バイナリが

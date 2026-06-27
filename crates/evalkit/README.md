@@ -58,6 +58,34 @@ Exit codes — CI can tell a regression from a misconfigured path:
 `--bin-dir DIR` is prepended to `PATH` for `cmd` cases, so a just-built
 `target/release/<tool>` is exercised without installing it.
 
+## Canary: replay the same goldens across two versions
+
+`evalkit canary` diffs two `evalkit run --json` outputs — the same golden set
+replayed at two points (a PR's base vs head, an old vs new SKILL.md). It is the
+side-by-side half of the skill-fingerprint loop: when a prompt edit changes
+behaviour, the canary shows *which goldens moved*.
+
+```sh
+evalkit run --json > base.json        # at the old version
+evalkit run --json > head.json        # at the new version
+evalkit canary --baseline base.json --current head.json
+evalkit canary --baseline base.json --current head.json --json              # machine-readable delta
+evalkit canary --baseline base.json --current head.json --fail-on-regression # exit 1 on any pass→fail
+```
+
+It keys cases by `id` and classifies each as **regression** (pass→fail),
+**fix** (fail→pass), **added**, or **dropped**, and prints the pass-rate
+before → after with the delta.
+
+| code | meaning |
+|---|---|
+| `0` | reported (or no regressions when `--fail-on-regression`) |
+| `1` | `--fail-on-regression` set **and** ≥1 pass→fail transition |
+| `2` | harness error (unreadable / unparseable result file) |
+
+By default it is **informational** (exit 0) — `eval.yml`'s `canary` job annotates
+PRs without gating. Pass `--fail-on-regression` to turn it into a hard gate.
+
 ## Where the goldens live
 
 Repo-root `evals/`:
