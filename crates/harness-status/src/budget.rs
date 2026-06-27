@@ -1,36 +1,11 @@
 //! Read budgetguard's ledger for today's spend.
+//!
+//! Uses budgetguard's canonical [`Ledger`] type (shared via harness_core) so
+//! this view can't drift from the writer's schema.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use serde::Serialize;
 
-use serde::{Deserialize, Serialize};
-
-fn state_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".budgetguard")
-        .join("state")
-}
-
-fn ledger_path() -> PathBuf {
-    state_dir().join("ledger.json")
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct DayEntry {
-    sessions: BTreeMap<String, f64>,
-}
-
-impl DayEntry {
-    fn total(&self) -> f64 {
-        self.sessions.values().sum()
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Ledger {
-    days: BTreeMap<String, DayEntry>,
-}
+use harness_core::ledger::{self, Ledger};
 
 #[derive(Debug, Serialize)]
 pub struct BudgetStatus {
@@ -40,14 +15,11 @@ pub struct BudgetStatus {
 }
 
 pub fn read(today: &str) -> BudgetStatus {
-    let path = ledger_path();
-    if !path.exists() {
+    let state_dir = ledger::default_state_dir();
+    if !state_dir.join("ledger.json").exists() {
         return BudgetStatus { today_usd: 0.0, session_count_today: 0, ledger_present: false };
     }
-    let ledger: Ledger = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let ledger = Ledger::load(&state_dir);
     let day = ledger.days.get(today);
     BudgetStatus {
         today_usd: day.map(|d| d.total()).unwrap_or(0.0),

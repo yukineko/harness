@@ -8,7 +8,6 @@ mod config;
 mod gate;
 mod install;
 mod lock;
-mod state;
 
 use clap::{Parser, Subcommand};
 
@@ -113,7 +112,7 @@ fn status() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let cfg = Config::load(&cwd);
     let today = today_str();
-    let ledger = state::Ledger::load(&cfg.state_dir);
+    let ledger = harness_core::ledger::Ledger::load(&cfg.state_dir);
     let day_usd = ledger.day_total(&today);
 
     println!("enabled:            {}", cfg.enabled);

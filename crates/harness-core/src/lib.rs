@@ -16,6 +16,7 @@ pub mod gate;
 pub mod hook;
 pub mod install;
 pub mod interrogate;
+pub mod ledger;
 pub mod metrics;
 pub mod pricing;
 pub mod projkey;

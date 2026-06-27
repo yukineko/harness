@@ -1,9 +1,10 @@
-//! Persistent daily spend ledger.
+//! Persistent daily spend ledger, shared across the harness plugins.
 //!
 //! `~/.budgetguard/state/ledger.json` maps `YYYY-MM-DD` →
-//! `{ sessions: { <id>: <cost_usd> } }`. On each Stop we overwrite the current
-//! session's entry and recompute the day total, so the file is always consistent
-//! with the latest transcript. Old days accumulate naturally (prune if desired).
+//! `{ sessions: { <id>: <cost_usd> } }`. budgetguard owns the *write* path (its
+//! Stop hook overwrites the current session's entry and recomputes the day
+//! total); other plugins (harness-status) *read* the same type instead of
+//! re-declaring a mirror struct that could drift.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,12 @@ pub enum LoadError {
     /// must be PRESERVED (never overwritten with a reset/default), or one bad
     /// write would erase the whole spend history and fail the budget open.
     Corrupt,
+}
+
+/// budgetguard's default state directory (`~/.budgetguard/state`). Consumers
+/// that want to read the ledger locate it here without depending on budgetguard.
+pub fn default_state_dir() -> PathBuf {
+    crate::config::base_dir("budgetguard").join("state")
 }
 
 impl Ledger {
@@ -82,6 +89,16 @@ impl Ledger {
     pub fn day_total(&self, date: &str) -> f64 {
         self.days.get(date).map(|e| e.total()).unwrap_or(0.0)
     }
+
+    /// The most recently recorded cost for `session_id` across all days, if any.
+    /// Lets a reader reuse budgetguard's authoritative per-session USD instead
+    /// of recomputing cost from tokens with a different override set.
+    pub fn session_cost(&self, session_id: &str) -> Option<f64> {
+        self.days
+            .values()
+            .filter_map(|d| d.sessions.get(session_id).copied())
+            .next_back()
+    }
 }
 
 #[cfg(test)]
@@ -96,7 +113,7 @@ mod tests {
             static N: AtomicU32 = AtomicU32::new(0);
             let n = N.fetch_add(1, Ordering::Relaxed);
             let p = std::env::temp_dir()
-                .join(format!("budgetguard-{tag}-{}-{n}", std::process::id()));
+                .join(format!("harness-core-ledger-{tag}-{}-{n}", std::process::id()));
             std::fs::create_dir_all(&p).unwrap();
             TmpDir(p)
         }
@@ -120,6 +137,17 @@ mod tests {
         assert_eq!(l.record("s1", "2026-06-27", 4.0), 6.0);
         assert_eq!(l.day_total("2026-06-27"), 6.0);
         assert_eq!(l.day_total("2026-06-26"), 0.0);
+    }
+
+    #[test]
+    fn session_cost_looks_up_across_days() {
+        let mut l = Ledger::default();
+        l.record("s1", "2026-06-26", 1.0);
+        l.record("s1", "2026-06-27", 2.5); // later day wins
+        l.record("s2", "2026-06-27", 9.0);
+        assert_eq!(l.session_cost("s1"), Some(2.5));
+        assert_eq!(l.session_cost("s2"), Some(9.0));
+        assert_eq!(l.session_cost("missing"), None);
     }
 
     #[test]
@@ -147,10 +175,7 @@ mod tests {
         std::fs::write(&p, b"{ this is not valid json").unwrap();
 
         // load_checked surfaces corruption rather than silently resetting.
-        assert!(matches!(
-            Ledger::load_checked(d.path()),
-            Err(LoadError::Corrupt)
-        ));
+        assert!(matches!(Ledger::load_checked(d.path()), Err(LoadError::Corrupt)));
         // The caller (gate) must not have overwritten it — verify the bytes
         // are still the corrupt original (preserved, not reset to "{}").
         let after = std::fs::read_to_string(&p).unwrap();

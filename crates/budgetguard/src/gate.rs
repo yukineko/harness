@@ -9,7 +9,7 @@ use harness_core::{pricing, usage};
 use serde_json::json;
 
 use crate::config::Config;
-use crate::state::Ledger;
+use harness_core::ledger::Ledger;
 
 pub struct GateResult {
     pub session_usd: f64,
