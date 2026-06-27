@@ -60,6 +60,8 @@ enum Command {
     },
     /// Show the resolved config + which checks would run for the cwd.
     Status,
+    /// Trust the current project so its ./donegate.toml commands are honored.
+    Trust,
 }
 
 fn read_stdin() -> String {
@@ -76,7 +78,26 @@ fn main() {
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init { force } => exit_on_err(init(force)),
         Command::Status => status(),
+        Command::Trust => exit_on_err(trust_cmd()),
     }
+}
+
+/// Add the current project root to the shared workspace-trust list so its
+/// project-local `donegate.toml` commands are honored on Stop.
+fn trust_cmd() -> anyhow::Result<()> {
+    let root = std::env::current_dir()?;
+    let key = harness_core::trust::add(&root)?;
+    println!("trusted {}", key.display());
+    let proj = Config::project_path(&root);
+    if proj.exists() {
+        println!("donegate will now run the [[check]] commands in {}", proj.display());
+    } else {
+        println!(
+            "(no {} yet — run `donegate init` to create one)",
+            proj.display()
+        );
+    }
+    Ok(())
 }
 
 fn exit_on_err(r: anyhow::Result<()>) {
@@ -218,14 +239,22 @@ fn log_event(cfg: &Config, session: &str, verdict: &str, names: &[String], attem
 fn status() {
     let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let cfg = Config::load(&root);
-    let src = if Config::project_path(&root).exists() {
-        Config::project_path(&root)
+    let proj = Config::project_path(&root);
+    let trusted = harness_core::trust::is_trusted(&root);
+    let src = if proj.exists() && trusted {
+        proj.clone()
     } else if Config::home_path().exists() {
         Config::home_path()
     } else {
         Path::new("(defaults — no config file)").to_path_buf()
     };
     println!("config:        {}", src.display());
+    if proj.exists() && !trusted {
+        println!(
+            "trust:         UNTRUSTED — {} is ignored (run `donegate trust`)",
+            proj.display()
+        );
+    }
     println!("enabled:       {}", cfg.enabled);
     println!("max_attempts:  {}", cfg.max_attempts);
     println!("state_dir:     {}", cfg.state_dir.display());

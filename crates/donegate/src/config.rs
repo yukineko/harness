@@ -6,11 +6,13 @@
 //! hasn't opted in with at least one `[[check]]`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 
 // Re-exported so existing `crate::config::expand_tilde` call sites keep working.
 pub use harness_core::config::expand_tilde;
+use harness_core::trust;
 
 /// One acceptance command, run as a subprocess on Stop.
 #[derive(Debug, Clone, Deserialize)]
@@ -93,16 +95,32 @@ impl Config {
         base_dir().join("config.toml")
     }
 
-    /// Load config for a project root. A project `donegate.toml` wins outright;
-    /// otherwise the home config; otherwise built-in defaults. Any parse error
-    /// silently falls back (the gate must never crash a turn).
+    /// Load config for a project root. A project `donegate.toml` wins outright —
+    /// **but only when the project root is trusted** (`harness_core::trust`),
+    /// because a project `[[check]].cmd` is later run via `sh -c` and a hostile
+    /// repository could otherwise ship arbitrary commands. An untrusted project
+    /// file is ignored (treated as absent), falling back to the home config;
+    /// otherwise built-in defaults. Any parse error silently falls back (the gate
+    /// must never crash a turn).
     pub fn load(root: &Path) -> Self {
         let mut cfg = Config::default();
 
         let chosen = {
             let p = Config::project_path(root);
             if p.exists() {
-                Some(p)
+                if trust::is_trusted(root) {
+                    Some(p)
+                } else {
+                    warn_untrusted_once(root, &p);
+                    // Untrusted project config carries unvetted commands; ignore
+                    // it and fall back to the (trusted) home config / defaults.
+                    let h = Config::home_path();
+                    if h.exists() {
+                        Some(h)
+                    } else {
+                        None
+                    }
+                }
             } else {
                 let h = Config::home_path();
                 if h.exists() {
@@ -159,5 +177,114 @@ impl Config {
         std::env::var("DONEGATE_DISABLE")
             .map(|v| !v.is_empty() && v != "0")
             .unwrap_or(false)
+    }
+}
+
+/// Emit a one-shot notice (per process) that a project config was ignored
+/// because the project isn't trusted. Best effort — never panics, never blocks.
+fn warn_untrusted_once(root: &Path, project_path: &Path) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!(
+        "donegate: {} provides commands but this project is not trusted; ignoring it. \
+         Run 'donegate trust' to enable.",
+        project_path.display()
+    );
+    let _ = root;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(path: &Path, body: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    const PROJECT_TOML: &str = r#"
+[[check]]
+name = "proj"
+cmd = "echo project"
+"#;
+
+    const HOME_TOML: &str = r#"
+[[check]]
+name = "homecheck"
+cmd = "echo home"
+"#;
+
+    // Mutates process-global HOME / HARNESS_TRUST_ALL, so the whole trust-gate
+    // scenario runs in a single serialized #[test].
+    #[test]
+    fn project_config_is_gated_behind_workspace_trust() {
+        let home = tempfile::tempdir().unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        let root = proj.path();
+        write(&Config::project_path(root), PROJECT_TOML);
+
+        // 1. Untrusted project + no home config ⇒ project checks are NOT loaded;
+        //    we fall through to built-in defaults (which have no checks).
+        let cfg = Config::load(root);
+        assert!(
+            cfg.checks.is_empty(),
+            "untrusted project config must not contribute checks"
+        );
+
+        // 2. Untrusted project but a home config exists ⇒ home checks win, the
+        //    project's checks are still ignored.
+        write(&Config::home_path(), HOME_TOML);
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["homecheck"],
+            "untrusted project must fall back to the home config"
+        );
+
+        // 3. Trust the project ⇒ project config now wins outright (as before).
+        trust::add(root).unwrap();
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["proj"],
+            "trusted project config must win over the home config"
+        );
+
+        // 4. Removing trust reverts to the home fallback.
+        assert!(trust::remove(root).unwrap());
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["homecheck"],
+            "untrusting must drop the project config again"
+        );
+
+        // 5. HARNESS_TRUST_ALL is the global escape hatch: project wins without
+        //    an explicit trust entry.
+        std::env::set_var("HARNESS_TRUST_ALL", "1");
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["proj"],
+            "HARNESS_TRUST_ALL must honor the project config"
+        );
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        // 6. Home config needs no trust at all: a project with NO donegate.toml
+        //    loads the home checks directly.
+        let bare = tempfile::tempdir().unwrap();
+        let cfg = Config::load(bare.path());
+        assert_eq!(
+            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["homecheck"],
+            "home config must load without any trust"
+        );
     }
 }
