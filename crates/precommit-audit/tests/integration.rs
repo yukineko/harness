@@ -53,6 +53,10 @@ fn write(dir: &Path, rel: &str, content: &str) {
 /// Run the binary in `dir` with mode `precommit` (deterministic exit code 1).
 /// Returns (exit_code, stderr).
 fn run(dir: &Path) -> (i32, String) {
+    // Tests exercise config-driven behavior, so the temp repo's config must be
+    // honored: trust every root for these in-process runs (env-scoped to the
+    // spawned binary; never touches the real trust list). The untrusted path is
+    // covered separately by `untrusted_repo_config_is_ignored`.
     let bin = env!("CARGO_BIN_EXE_precommit-audit");
     let out = Command::new(bin)
         .arg("--mode")
@@ -60,6 +64,7 @@ fn run(dir: &Path) -> (i32, String) {
         .arg("--root")
         .arg(dir)
         .current_dir(dir)
+        .env("HARNESS_TRUST_ALL", "1")
         .output()
         .expect("binary runs");
     (
@@ -81,6 +86,7 @@ fn run_stop_event(dir: &Path, event: &str) -> (i32, String) {
         .arg("--root")
         .arg(dir)
         .current_dir(dir)
+        .env("HARNESS_TRUST_ALL", "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -264,6 +270,58 @@ fn swallowed_exception_blocks() {
     assert!(
         err.contains("SWALLOWED") || err.contains("FALL-THROUGH"),
         "stderr: {err}"
+    );
+}
+
+/// The security contract: an auto-discovered project `.precommit-audit.toml`
+/// in an UNTRUSTED repo must be ignored — its custom rules / linter knobs carry
+/// no weight, so a cloned hostile repo can't steer the audit. Same config as
+/// `custom_rule_blocks_with_glob_scope`, but run without `HARNESS_TRUST_ALL`.
+#[test]
+fn untrusted_repo_config_is_ignored() {
+    let dir = init_repo();
+    let cfg = r#"
+[checks]
+linters = false
+missing_test = false
+
+[[rule]]
+id = "no-todo-fixme"
+pattern = 'TODO|FIXME'
+include_globs = ["src/**"]
+message = "Resolve TODO/FIXME before committing."
+"#;
+    write(&dir, ".precommit-audit.toml", cfg);
+    // A scanned-but-not-source file (.conf): the custom rule would flag its TODO
+    // when the config is honored, but no built-in default check applies to it —
+    // so when the untrusted config is dropped the audit is clean (exit 0). This
+    // isolates the custom rule from the built-in missing-test default.
+    write(&dir, "src/a.conf", "key = value  # TODO later\n");
+
+    // Untrusted run: NO HARNESS_TRUST_ALL, so the project config is dropped and
+    // the custom rule never fires.
+    let bin = env!("CARGO_BIN_EXE_precommit-audit");
+    let out = Command::new(bin)
+        .arg("--mode")
+        .arg("precommit")
+        .arg("--root")
+        .arg(&dir)
+        .current_dir(&dir)
+        .output()
+        .expect("binary runs");
+    let code = out.status.code().unwrap_or(-1);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        code, 0,
+        "untrusted custom rule must NOT block; stderr: {err}"
+    );
+    assert!(
+        !err.contains("NO-TODO-FIXME"),
+        "custom rule from untrusted config must not fire; stderr: {err}"
+    );
+    assert!(
+        err.contains("not trusted"),
+        "should warn the config was ignored; stderr: {err}"
     );
 }
 

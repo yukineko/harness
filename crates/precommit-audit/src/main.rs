@@ -27,6 +27,10 @@ struct Args {
     config: Option<PathBuf>,
     mode: Option<String>,
     root: Option<PathBuf>,
+    /// `precommit-audit trust`: add the root to the shared workspace-trust list
+    /// so its `.precommit-audit.toml` (which can resolve repo-local linters) is
+    /// honored. Until then a repo-shipped config is ignored.
+    trust: bool,
 }
 
 fn parse_args() -> Args {
@@ -34,10 +38,12 @@ fn parse_args() -> Args {
         config: None,
         mode: None,
         root: None,
+        trust: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "trust" => a.trust = true,
             "--config" => a.config = it.next().map(PathBuf::from),
             "--mode" => a.mode = it.next(),
             "--root" => a.root = it.next().map(PathBuf::from),
@@ -62,7 +68,7 @@ fn print_help() {
     println!(
         "precommit-audit {ver}\n\
 Config-driven pre-commit static audit (cross-platform).\n\n\
-USAGE:\n  precommit-audit [--mode stop|precommit] [--config <file>] [--root <dir>]\n\n\
+USAGE:\n  precommit-audit [--mode stop|precommit] [--config <file>] [--root <dir>]\n  precommit-audit trust   (trust <root> so its .precommit-audit.toml is honored)\n\n\
 OPTIONS:\n  --mode <m>     stop (default) or precommit\n  --config <f>   config file (default: <root>/.precommit-audit.toml)\n  --root <d>     repo root (default: $CLAUDE_PROJECT_DIR, else git toplevel)\n  -V, --version  print version\n  -h, --help     this help\n\n\
 EXIT: 0 clean | 1 blocked (precommit) | 2 blocked (stop)",
         ver = env!("CARGO_PKG_VERSION")
@@ -90,6 +96,30 @@ fn resolve_mode(arg: Option<String>) -> String {
         .unwrap_or_else(|| "stop".to_string())
 }
 
+/// Whether the auto-discovered project `.precommit-audit.toml` must be ignored.
+/// Only the AUTO-DISCOVERED file is gated: an `explicit` `--config` is the
+/// operator's deliberate choice and is always honored. An absent file or a
+/// trusted root loads normally; an untrusted repo file is blocked (the one
+/// execution vector is `linters.node_projects` resolving repo-local binaries).
+fn project_config_blocked(explicit: bool, exists: bool, trusted: bool) -> bool {
+    !explicit && exists && !trusted
+}
+
+/// One-shot notice (per process) that the auto-discovered project config was
+/// ignored because the root isn't trusted. Best effort — never blocks.
+fn warn_untrusted_once(config_path: &Path) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!(
+        "precommit-audit: {} can resolve repo-local linters but this project is not trusted; \
+         ignoring it (using built-in checks only). Run 'precommit-audit trust' to enable.",
+        config_path.display()
+    );
+}
+
 fn main() {
     // never-break-a-turn: a panic while scanning changed files (unexpected bytes,
     // linter subprocess quirks, …) must not abort a commit or break the turn with
@@ -103,6 +133,27 @@ fn main() {
 fn run() {
     let args = parse_args();
 
+    // `precommit-audit trust`: register this root in the shared trust list, then
+    // exit. Honors the same `harness_core::trust` store as donegate/reviewgate/tdd.
+    // Handled before any stdin read so it works as a plain manual command.
+    if args.trust {
+        let root = resolve_root(args.root);
+        match harness_core::trust::add(&root) {
+            Ok(key) => {
+                println!("trusted {}", key.display());
+                println!(
+                    "precommit-audit will now honor {}.",
+                    root.join(".precommit-audit.toml").display()
+                );
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("precommit-audit: failed to trust {}: {e}", root.display());
+                exit(1);
+            }
+        }
+    }
+
     // Recursion guard: a Stop hook that re-fires within the same stop cycle.
     let hook = hookio::read_stdin();
     if hook.stop_hook_active {
@@ -110,6 +161,7 @@ fn run() {
     }
 
     let root = resolve_root(args.root);
+
     let mode = resolve_mode(args.mode);
     // Exit code that signals "blocking issues found". On the Stop hook, 2 blocks
     // the stop; on a git pre-commit invocation, 1 aborts the commit. But under
@@ -125,14 +177,31 @@ fn run() {
         2
     };
 
+    // The repo-shipped `.precommit-audit.toml` can resolve repo-local linter
+    // binaries (`linters.node_projects` → eslint/tsc), so a cloned untrusted
+    // checkout is an execution vector. Gate the AUTO-DISCOVERED project config
+    // behind `harness_core::trust` (same pattern as donegate/reviewgate/tdd):
+    // when the root isn't trusted, ignore the repo file and use built-in
+    // defaults. An explicit `--config` is the operator's deliberate choice and
+    // is always honored.
+    let explicit_config = args.config.is_some();
     let config_path = args
         .config
         .unwrap_or_else(|| root.join(".precommit-audit.toml"));
-    let cfg = match Config::load(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("precommit-audit: {e}");
-            exit(64);
+    let cfg = if project_config_blocked(
+        explicit_config,
+        config_path.exists(),
+        harness_core::trust::is_trusted(&root),
+    ) {
+        warn_untrusted_once(&config_path);
+        Config::default()
+    } else {
+        match Config::load(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("precommit-audit: {e}");
+                exit(64);
+            }
         }
     };
 
@@ -274,4 +343,21 @@ fn now_iso8601() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
     format!("{year:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+#[cfg(test)]
+mod trust_gate_tests {
+    use super::project_config_blocked;
+
+    #[test]
+    fn auto_config_blocked_only_when_untrusted_and_present() {
+        // auto-discovered, present, untrusted: blocked (the security case).
+        assert!(project_config_blocked(false, true, false));
+        // trusted root: honored.
+        assert!(!project_config_blocked(false, true, true));
+        // absent file: nothing to block.
+        assert!(!project_config_blocked(false, false, false));
+        // explicit --config is the operator's choice: always honored.
+        assert!(!project_config_blocked(true, true, false));
+    }
 }

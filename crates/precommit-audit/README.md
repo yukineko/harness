@@ -69,8 +69,13 @@ carries its own policy.
 
 ```sh
 precommit-audit [--mode stop|precommit] [--config <file>] [--root <dir>]
+precommit-audit trust   # trust <root> so its .precommit-audit.toml is honored
 ```
 
+- `trust` — add the resolved `--root` to the shared workspace-trust list
+  (`harness_core::trust`, the same list `donegate`/`reviewgate`/`tdd` use) so an
+  auto-discovered `.precommit-audit.toml` is honored. Until trusted, a
+  repo-shipped config is ignored (built-in checks still run on defaults).
 - `--mode precommit` — for a pre-commit-framework / git hook on a human commit.
   Exits **1** on failure. Skips the (Claude Code) review contract.
 - `--mode stop` (default) — for a Claude Code Stop hook. Honors the subagent
@@ -118,8 +123,10 @@ file is optional. Start from the documented template
 
 precommit-audit is **deliberately not** one of the JSON Stop-gates built on
 `harness_core::gate`. Those three (donegate, reviewgate, tdd) are *Claude-only*
-Stop hooks: they block by printing `{"decision":"block","reason":…}` and gate
-project-local config behind `harness_core::trust`.
+Stop hooks: they block by printing `{"decision":"block","reason":…}`. (Like
+them, precommit-audit also gates project-local config behind
+`harness_core::trust` — see **Trust gate** below — but it is not a JSON
+Stop-gate.)
 
 precommit-audit is a **dual-mode** hook and so keeps a different contract on
 purpose:
@@ -134,14 +141,17 @@ purpose:
 - It is therefore **excluded from the shared JSON-gate layer** — treat it as a
   sibling, not a fourth member of the trio.
 
-**Trust caveat (known difference).** Unlike the trio, precommit-audit currently
-loads project `.precommit-audit.toml` without a `harness_core::trust` check. The
-blast radius is narrower than donegate's (config only *toggles* hard-coded
-built-in linters and adds **regex** rules — it can't name an arbitrary command),
-but `linters.node_projects` can resolve repo-local `eslint`/`tsc` binaries, so a
-cloned untrusted repo is the one execution vector. Adding a trust gate around
-project-config loading is tracked as a follow-up; until then, the usual "don't
-run linters on untrusted checkouts" hygiene applies.
+**Trust gate.** Like the trio, precommit-audit now loads an auto-discovered
+project `.precommit-audit.toml` only when the root is trusted
+(`harness_core::trust`). The blast radius was always narrower than donegate's
+(config only *toggles* hard-coded built-in linters and adds **regex** rules — it
+can't name an arbitrary command), but `linters.node_projects` can resolve
+repo-local `eslint`/`tsc` binaries, so a cloned untrusted repo was the one
+execution vector. Now an untrusted repo's config is ignored (built-in checks
+still run on defaults) with a one-shot stderr notice; trust the root with
+`precommit-audit trust` (the shared list, so `donegate trust` / `tdd trust`
+work too) to honor it. An explicit `--config <file>` is the operator's
+deliberate choice and is always honored, trusted or not.
 
 ## Why a port
 
