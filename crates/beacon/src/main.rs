@@ -60,6 +60,8 @@ enum Command {
     },
     /// Show the resolved config and active channels.
     Status,
+    /// Trust the current project so its beacon.toml `command` is honored.
+    Trust,
 }
 
 fn main() {
@@ -71,7 +73,18 @@ fn main() {
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init { force } => exit_on_err(init(force)),
         Command::Status => status(),
+        Command::Trust => exit_on_err(trust_project()),
     }
+}
+
+/// Trust the current project root so a project-local `beacon.toml` may run its
+/// escape-hatch `command`. Mirrors VS Code Workspace Trust / git safe.directory.
+fn trust_project() -> anyhow::Result<()> {
+    let root = std::env::current_dir()?;
+    let key = harness_core::trust::add(&root)?;
+    println!("trusted {}", key.display());
+    println!("beacon.toml `command` from this project will now be honored.");
+    Ok(())
 }
 
 fn exit_on_err(r: anyhow::Result<()>) {
