@@ -2,9 +2,9 @@
 discovery(hypothesis) → flow → condukt → measure → learn のループを閉じ、harness を「build するだけ」から「validate する」基盤へ引き上げる。仮説を一級の source とし、実行結果を計測された学びとして書き戻す。
 
 ## definition_of_done
-- hypothesis が flow の3つ目の source として機能する（引数なし flow 実行が open hypothesis を課題候補として surface し、crates/flow/skills/flow/SKILL.md に source として明記される）
-- 完了した一手の成果が計測として記録される（merge 時に linked hypothesis が awaiting-measurement になり、crates/hypothesis/src/store.rs の validate/reject が計測証拠を必須とする＝証拠なしの validate は失敗する）
-- condukt が experiment/spike タスククラスを持つ（crates/condukt/src/model.rs の Class enum に experiment が加わり、experiment タスクは auto-merge されず findings を記録する）
+- hypothesis が flow の3つ目の source として機能する（引数なし flow 実行が open hypothesis を課題候補として surface し、 crates/flow/skills/flow/SKILL.md に source として明記される）
+- 完了した一手の成果が計測として記録される（merge 時に linked hypothesis が awaiting-measurement になり、 crates/hypothesis/src/store.rs の validate と reject が計測証拠を必須とする＝証拠なしの validate は失敗する）
+- condukt が experiment タスククラスを持つ（ crates/condukt/src/model.rs の Class enum に experiment が加わり、experiment タスクは auto-merge されず findings を記録する）
 - cargo test --workspace が全件 pass（既存の不変条件を壊さない）
 
 ## measuring_stick
