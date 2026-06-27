@@ -327,6 +327,18 @@ BASELINE_EXIT=$?
 
 判断基準: `done_criteria` に「実装」「ロジック」「設計」「コード」「振る舞い」等の語が無く、コマンド 1 ～ 3 本で完結するなら機械判定。shell チェックが pass → verified に set、fail → 通常 verifier フローへ（shell 判定は verifier の前段最適化であり、境界は厳しめに取る）。
 
+**`reproduction_tests` の決定論先行実行（LLM verifier 起動前）**:
+タスクに `reproduction_tests` がある場合、verifier agent を起動する**前に** main が worktree 内で
+そのコマンドを直接 `Bash` 実行する（これは LLM 判断ではなく exit code を見るだけの機械処理）:
+- **exit 非 0** → `failed` に set し、**verifier agent を起動しない**（落ちることが決定論で確定済み）。
+  そのままカスケードエスカレーション（失敗テスト出力を `failure_context.failed_tests` に入れて再投入）へ。
+- **exit 0** → 「テストが通る」型の done_criteria はこの時点で機械的に満たされたとみなし `verified` に set
+  （上の機械判定スキップと同じ扱い）。done_criteria に振る舞い/設計判断の語が残る場合のみ、
+  この exit 0 を**証拠として添えて** verifier agent に渡し最終判定させる。
+
+これにより「テストで赤確定」のタスクは LLM verifier 1 本分を丸ごと省け、
+「テスト緑＋機械的合格条件」のタスクも verifier を起動せず確定できる（正確性は同一の決定論コマンドで不変）。
+
 done の各タスクを `condukt-verifier` 相当で done_criteria 照合する。検証する子の **model は
 `<route.json>` の `verifier_model`**(worker と別ティアの独立検証。無ければ既定 sonnet)を使う。
 verifier 起動プロンプトには以下を渡す:
