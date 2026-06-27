@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use harness_core::config::home;
+use harness_core::projkey::repo_root;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -70,15 +71,3 @@ fn repo_basename(cwd: &Path) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn repo_root(cwd: &Path) -> PathBuf {
-    let mut cur = cwd.to_path_buf();
-    loop {
-        if cur.join(".git").exists() {
-            return cur;
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    cwd.to_path_buf()
-}

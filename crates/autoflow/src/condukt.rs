@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use harness_core::config::home;
+// Shared with condukt (the single source of truth) so autoflow reads the exact
+// run-state directory condukt writes — see harness_core::projkey.
+use harness_core::projkey::{project_key, repo_root};
 use serde::{Deserialize, Serialize};
 
 /// 2 hours in seconds. Running tasks older than this are considered interrupted.
@@ -123,44 +126,16 @@ fn latest_run_file(project_dir: &Path) -> Option<PathBuf> {
     entries.pop()
 }
 
-fn repo_root(cwd: &Path) -> PathBuf {
-    let mut cur = cwd.to_path_buf();
-    loop {
-        if cur.join(".git").exists() {
-            return cur;
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    cwd.to_path_buf()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn project_key(root: &Path) -> String {
-    let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let full = canon.to_string_lossy();
-    let base = canon
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "root".into());
-    let sani: String = base
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    format!("{}-{:08x}", sani, fnv1a32(&full))
-}
-
-fn fnv1a32(s: &str) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in s.bytes() {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x0100_0193);
+    /// Regression guard against re-duplication: autoflow must derive the SAME
+    /// project key as the shared source of truth (which condukt also uses). If a
+    /// future change reintroduces a private copy here, this breaks.
+    #[test]
+    fn project_key_matches_shared_source() {
+        let p = Path::new("/tmp/some-repo");
+        assert_eq!(project_key(p), harness_core::projkey::project_key(p));
     }
-    h
 }

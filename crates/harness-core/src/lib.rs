@@ -17,6 +17,7 @@ pub mod install;
 pub mod interrogate;
 pub mod metrics;
 pub mod pricing;
+pub mod projkey;
 pub mod store;
 pub mod transcript;
 pub mod trust;
