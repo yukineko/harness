@@ -5,6 +5,33 @@
 
 ---
 
+## パターン 0 — autopilot で開いている仕事を回す (/flow)
+
+「次の課題を自分で選んで実行し続けてほしい」とき。`/flow` は **source（compass の一手 / backlog のキュー）→ executor（condukt）** を 1 本のループで束ねる。
+
+```
+/flow
+```
+
+- SessionStart で開いている仕事（compass の next move・open backlog・未完了 condukt run）があると、`flow propose` フックが `/flow` を **propose-then-confirm** で提案する。承認すると起動。
+- 課題文を直接渡すと source 選択を飛ばして condukt に直行し、1 件だけ実行して終了する:
+
+```
+/flow READMEなどの関連文書は更新されたか?
+```
+
+ループは `compass gap` で鮮度をゲートし（charter が陳腐なら自動実行せず `/compass` を促す）、backlog ロックを取得して二重ループを防ぐ。`/flow` は `/backlog` の上位互換なので**併走させない**（backlog ロックで物理的に直列化される）。
+
+```
+/flow
+  └─ compass ゲート: charter 鮮明 → 一手を to_condukt に保持
+  └─ backlog lock acquire（クロスセッション直列化）
+  └─ ループ: compass 主筋 → backlog next の順でピック → /condukt → 検証 → done
+  └─ source が尽きる/予算超過/中断で backlog lock release + サマリ報告
+```
+
+---
+
 ## パターン 1 — "次に何をすべきか分からない" (Phase 0-next)
 
 ```
@@ -269,6 +296,8 @@ hypothesis reject <id> --run <RID>   # 仮説を棄却
 | `ctxrot restore` | 前セッションの決定事項・残課題 (ctxrot ノート) |
 | `condukt restore` | 未完了 run・orphan worktree の有無 |
 | `compass` | 北極星ゴールのリマインド |
+| `daily session-start` | `cargo deny` セキュリティ監査の所見 (1 日 1 回・所見があれば) |
+| `flow propose` | 開いている仕事があれば `/flow` を提案 (propose-then-confirm) |
 | `specguard pending` | 未処理 drift sentinel (あれば) |
 | `taskprog` | progress.md の現状 |
 
@@ -280,6 +309,8 @@ hypothesis reject <id> --run <RID>   # 仮説を棄却
 
 | やりたいこと | コマンド |
 |---|---|
+| 開いている仕事を autopilot で回す | `/flow` |
+| 課題を flow に直渡しで 1 件実行 | `/flow <課題>` |
 | 次の一手を自動決定 | `/condukt 次は何をする` |
 | 北極星を再接地 | `/compass` |
 | バックログ確認 | `session-insights backlog list` |
