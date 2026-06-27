@@ -57,6 +57,28 @@ pub fn consume_skip(root: &Path, marker: &str) -> Option<String> {
     Some(reason)
 }
 
+/// Append `entry` as one JSON line to `<state_dir>/log.jsonl`, creating the
+/// directory if needed. The shared event-log sink for the Stop gates
+/// (donegate/reviewgate/tdd): each builds its own crate-specific `entry`, this
+/// owns the write. Best-effort — a serialization or IO failure is swallowed,
+/// since an observability log must never break the turn it records.
+pub fn append_jsonl(state_dir: &Path, entry: &serde_json::Value) {
+    let path = state_dir.join("log.jsonl");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let (Ok(line), Ok(mut f)) = (
+        serde_json::to_string(entry),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path),
+    ) {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +132,20 @@ mod tests {
             Some("(no reason given)")
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_jsonl_creates_dir_and_appends_lines() {
+        let dir = std::env::temp_dir()
+            .join(format!("hc-gate-log-{}", std::process::id()))
+            .join("nested"); // parent does not exist yet
+        let _ = std::fs::remove_dir_all(&dir);
+        append_jsonl(&dir, &serde_json::json!({ "verdict": "pass" }));
+        append_jsonl(&dir, &serde_json::json!({ "verdict": "fail" }));
+        let body = std::fs::read_to_string(dir.join("log.jsonl")).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "each call appends exactly one line");
+        assert!(lines[0].contains("\"pass\"") && lines[1].contains("\"fail\""));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -211,10 +211,6 @@ fn ran_names(v: &gate::Verdict) -> Vec<String> {
 
 /// Append one JSONL line per gate decision. Best effort, local only.
 fn log_event(cfg: &Config, session: &str, verdict: &str, names: &[String], attempt: u32) {
-    let path = cfg.state_dir.join("log.jsonl");
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let entry = json!({
         "ts": chrono::Local::now().to_rfc3339(),
         "session": session,
@@ -222,16 +218,7 @@ fn log_event(cfg: &Config, session: &str, verdict: &str, names: &[String], attem
         "checks": names,
         "attempt": attempt,
     });
-    if let (Ok(line), Ok(mut f)) = (
-        serde_json::to_string(&entry),
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path),
-    ) {
-        use std::io::Write;
-        let _ = writeln!(f, "{line}");
-    }
+    harness_core::gate::run::append_jsonl(&cfg.state_dir, &entry);
 }
 
 fn status() {
