@@ -110,6 +110,17 @@ Parked work is written one line at a time into taskprog's progress.md "remaining
 so the **next** `/compass` reads it back as gap input — a self-feeding loop that
 structurally reduces the "blank after a checkpoint."
 
+### Closing the loop — `outcome`
+
+Routing a move to condukt **ships** it, but shipping is not validated learning
+(**build ≠ validate**). When a move completes, `compass outcome --verdict
+<forward|unchanged|backward> --evidence <measured result>` judges it against the
+`measuring_stick` and appends the verdict to `.compass/outcomes.json` — **evidence is
+required**, an outcome with no measured result is refused, so a move can't be marked
+"progress" just for having shipped. The next `compass gap` reads the latest record back
+as `last_outcome`, so each round reflects *measured* progress rather than what was merely
+built. When driven by [`/flow`](../flow), the sink records this automatically.
+
 ## The two hooks
 
 Both are deterministic, non-blocking, and exit 0 on any error (a re-grounding hook must
@@ -134,6 +145,7 @@ The binary is thin and deterministic:
 | `compass gap` / `compass gap --write <text>` | assemble gap inputs / persist the gap text |
 | `compass route [--file <path>]` | size-triage a condukt decomposition; park the rest |
 | `compass charter` / `compass charter --write <JSON>` | show the parsed charter + config / persist a sharpened charter |
+| `compass outcome --verdict <forward\|unchanged\|backward> --evidence <text>…` | record a completed move's verdict vs the `measuring_stick` (evidence required); the next `compass gap` surfaces it as `last_outcome` |
 
 ## Configuration
 
@@ -183,11 +195,11 @@ Run on the target machine and commit the result:
 
 ```sh
 # host platform (Linux here, Apple Silicon on a Mac, etc.)
-scripts/build-plugin-bin.sh
+scripts/build-plugin-bin.sh compass
 
 # cross-target on a Mac to also produce the Intel build:
 rustup target add x86_64-apple-darwin
-scripts/build-plugin-bin.sh x86_64-apple-darwin
+scripts/build-plugin-bin.sh compass x86_64-apple-darwin
 
 git add bin/ && git update-index --chmod=+x bin/compass bin/compass-*
 git commit -m "Add <platform> binary"
@@ -217,7 +229,7 @@ a Mac.
 ## Plugin layout
 
 ```
-.claude-plugin/plugin.json     # plugin manifest (version 0.1.0)
+.claude-plugin/plugin.json     # plugin manifest (version 0.1.2)
 hooks/hooks.json               # SessionStart=nudge / Stop=breadcrumb → ${CLAUDE_PLUGIN_ROOT}/bin/compass
 skills/compass/SKILL.md        # the /compass skill (drives the carve loop)
 bin/compass                    # POSIX launcher → compass-<os>-<arch>
@@ -273,6 +285,11 @@ Claude Code セッション内の LLM 労働、バイナリは状態維持と決
 **焦点保護（B案）**: 右サイズ（既定 `s`/`m`）の一手を **1件だけ** condukt へ、残りは保留へ。
 保留は taskprog の progress.md「残り」へ書き戻され、次回 /compass の gap 入力に再浮上する（自己供給ループ）。
 エッジ: **`GoalTooBig`**（全部 l/xl）→ ゴールを小さく彫り直す、**`OnlyNoise`**（全部 xs）→ north_star を問い直す。
+
+**計測ループ（outcome）**: 一手の完了後 `compass outcome --verdict <forward|unchanged|backward> --evidence <計測値>`
+で measuring_stick 判定を `.compass/outcomes.json` に記録する（**証拠必須**＝出荷だけでは記録できない、build ≠ validate）。
+次の `compass gap` が `last_outcome` として読み戻すので、各ラウンドが「計測された進捗」を反映する
+（[`/flow`](../flow) 経由なら sink が自動記録）。
 
 ### config（`.compass/config.toml`、既定値）
 

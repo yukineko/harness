@@ -1,19 +1,24 @@
 # flow
 
 > **Unified source→executor driver for Claude Code**, written in Rust.
-> The **autopilot layer**: it binds the task *sources* ([compass](../compass) next-move
-> + [backlog](../backlog) queue) to the *executor* ([condukt](../condukt), model-routed by
-> [fugu-router](../fugu-router)) in one human-on-the-loop loop.
+> The **autopilot layer**: it binds the task *sources* ([compass](../compass) next-move,
+> [backlog](../backlog) queue, [hypothesis](../hypothesis) PDO lifecycle) to the *executor*
+> ([condukt](../condukt), model-routed by [fugu-router](../fugu-router)) in one
+> human-on-the-loop loop.
 
 There are two separable concerns in keeping an agent productive across a session:
 **supplying the next problem** and **executing it**. `flow` treats them as orthogonal
 and pipes one into the other:
 
 ```
-SOURCE（課題の供給）              EXECUTOR（解決手段の実行）
-  compass  … 次の右サイズの一手   ─┐
-  backlog  … 確定済みキュー        ├─▶  condukt（fugu-router がモデル選択）─▶ verify
-  prompt   … ユーザー直の課題文   ─┘
+SOURCE（課題の供給）                          EXECUTOR（解決手段の実行）
+  compass     … 次の右サイズの一手             ─┐
+  backlog     … 確定済みキュー                  ├─▶  condukt（fugu-router がモデル選択）─▶ verify
+  hypothesis  … PDO 仮説の build / measure      │
+  prompt      … ユーザー直の課題文             ─┘
+
+出荷した仮説は condukt が awaiting-measurement へ遷移させ、次サイクルの measure step が
+計測して validate/reject する（出荷 ≠ 検証 ＝ build ≠ validate）。
 ```
 
 It is **subscription-native**: no API key. The loop control (which source to pull, when
@@ -28,6 +33,7 @@ deterministic layers that already exist.
 |---|---|
 | What is this for · what's the next move? | `compass` |
 | What's the open queue? | `backlog` |
+| What PDO hypothesis is open to build / awaiting measurement? | `hypothesis` |
 | Decompose / schedule / run / done-gate a task | `condukt` |
 | Which Claude tier clears it cheapest? | `fugu-router` |
 | **Bind source → executor in a loop; decide when to stop** | **`flow`** |
@@ -44,8 +50,15 @@ The skill drives the loop; the binary only injects the SessionStart proposal dir
 0. 引数分岐 — 課題文があれば source 選択を飛ばして condukt に直行（1 件だけ実行）
 1. compass ゲート — `compass gap`。charter が陳腐なら自動実行せず /compass を促して停止
 2. ロック取得 — `backlog lock acquire`（クロスセッション直列化）
-3. 実行ループ — compass 主筋 → `backlog next` の順でピック → /condukt → 検証 → sink
-       成功: backlog done / compass の一手を完了 / fugu-router に record
+3. 実行ループ — 優先度順にピック → /condukt → 検証 → sink
+       ピック順: compass 主筋
+                 → measure step（awaiting-measurement の仮説を計測して validate/reject で閉じる）
+                 → `backlog next`
+                 → 新規 open 仮説（その仮説を検証する実験を build）
+       成功 sink: backlog done
+                 / compass は `compass outcome` で measuring_stick 判定（前進/不変/後退）を記録
+                 / hypothesis は出荷で awaiting-measurement、計測後に validate/reject（証拠必須）
+                 / fugu-router に record
        失敗: backlog fail --reason …、スキップして次へ
 4. ロック解放 — source が尽きる/予算超過/中断で `backlog lock release` + サマリ報告
 ```
@@ -101,8 +114,8 @@ has no matching binary it exits 0 silently and prints a one-line build hint to s
 ### Build from source
 
 ```sh
-scripts/build-plugin-bin.sh                 # host platform
-scripts/build-plugin-bin.sh x86_64-apple-darwin   # cross-target the Intel Mac build
+scripts/build-plugin-bin.sh flow                       # host platform
+scripts/build-plugin-bin.sh flow x86_64-apple-darwin   # cross-target the Intel Mac build
 git add bin/ && git update-index --chmod=+x bin/flow bin/flow-*
 ```
 
@@ -117,7 +130,7 @@ git add bin/ && git update-index --chmod=+x bin/flow bin/flow-*
 ## Plugin layout
 
 ```
-.claude-plugin/plugin.json     # plugin manifest (version 0.1.0)
+.claude-plugin/plugin.json     # plugin manifest (version 0.1.2)
 hooks/hooks.json               # SessionStart=propose → ${CLAUDE_PLUGIN_ROOT}/bin/flow
 skills/flow/SKILL.md           # the /flow skill (drives the source→executor loop)
 bin/flow                       # POSIX launcher → flow-<os>-<arch>
