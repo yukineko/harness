@@ -41,15 +41,12 @@ struct Cli {
 enum Command {
     /// Stop hook: run the record→condukt state machine.
     Stop,
-    /// SessionStart hook: injects /backlog prompt if open items exist.
-    SessionStart,
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Stop => stop_command(),
-        Command::SessionStart => sessionstart_command(),
     }
 }
 
@@ -150,32 +147,6 @@ fn stop_command() -> ! {
             }
             Phase::Done => {}
         }
-    })
-}
-
-fn sessionstart_command() -> ! {
-    run_hook(|| {
-        let raw = read_stdin();
-        let input = HookInput::parse(&raw).unwrap_or_default();
-
-        let cfg = Config::load();
-        if !cfg.enabled || Config::disabled_env() {
-            return;
-        }
-
-        let cwd = input.cwd_or_current();
-        let open = backlog::find_open(&cwd);
-        if open.is_empty() {
-            return;
-        }
-
-        let next = &open[0];
-        let count = open.len();
-        let context = format!(
-            "バックログに {} 件の未完了課題があります。/backlog を実行してください。\n次の課題: [{}] {}",
-            count, next.id, next.text
-        );
-        println!("{}", json!({ "additionalContext": context }));
     })
 }
 
