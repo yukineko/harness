@@ -101,6 +101,25 @@ fn review_command() -> ! {
     let raw = read_stdin();
     let hook = HookInput::parse(&raw);
     let interactive = hook.is_none();
+    // never-break-a-turn: a panic in the review logic must not abort with a
+    // backtrace and a non-zero exit. In hook mode swallow it and allow the stop
+    // (exit 0); in manual CLI mode surface a generic error (exit 1). Real
+    // `process::exit` calls inside `review_run` terminate directly, so only
+    // genuine panics unwind to this guard.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| review_run(hook))) {
+        Ok(unreachable) => unreachable,
+        Err(_) => {
+            if interactive {
+                eprintln!("reviewgate: internal error");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+    }
+}
+
+fn review_run(hook: Option<HookInput>) -> ! {
+    let interactive = hook.is_none();
     let input = hook.unwrap_or_default();
     let root = input.cwd_or_current();
 

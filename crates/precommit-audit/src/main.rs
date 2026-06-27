@@ -91,6 +91,16 @@ fn resolve_mode(arg: Option<String>) -> String {
 }
 
 fn main() {
+    // never-break-a-turn: a panic while scanning changed files (unexpected bytes,
+    // linter subprocess quirks, …) must not abort a commit or break the turn with
+    // a backtrace. Real `exit(...)` calls inside `run` terminate directly; only a
+    // genuine panic unwinds here, where we fall back to allow (exit 0).
+    if std::panic::catch_unwind(run).is_err() {
+        exit(0);
+    }
+}
+
+fn run() {
     let args = parse_args();
 
     // Recursion guard: a Stop hook that re-fires within the same stop cycle.

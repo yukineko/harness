@@ -113,6 +113,25 @@ fn gate_command() -> ! {
     let raw = read_stdin();
     let hook = HookInput::parse(&raw);
     let interactive = hook.is_none();
+    // never-break-a-turn: a panic in the gate logic must not abort with a
+    // backtrace and a non-zero exit. In hook mode we swallow it and allow the
+    // stop (exit 0); in manual CLI mode we surface a generic error (exit 1).
+    // Real `process::exit` calls inside `gate_run` terminate the process
+    // directly, so only genuine panics ever unwind to this guard.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gate_run(hook))) {
+        Ok(unreachable) => unreachable,
+        Err(_) => {
+            if interactive {
+                eprintln!("donegate: internal error");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+    }
+}
+
+fn gate_run(hook: Option<HookInput>) -> ! {
+    let interactive = hook.is_none();
     let input = hook.unwrap_or_default();
     let root = input.cwd_or_current();
 
