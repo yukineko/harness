@@ -1,0 +1,160 @@
+---
+name: scout
+description: プロジェクトを多角的に監査して「施策（タスク）」を生成する SOURCE。現在の課題・セキュリティ・業界/他プロジェクトの標準・不足施策・安全性の5レンズを sub-agent で並列調査し、逐語引用つきの施策候補を統合・重複排除・スコアリングして backlog に積み、/flow に実行を引き渡す。compass が単一ゴールの勾配なら、scout は広域偵察で複数施策を生む相補的 SOURCE。判断（監査・施策の選別）は LLM、保存は backlog、実行は flow/condukt。
+argument-hint: "[任意: 監査対象パスやレンズ絞り込み。例: 'security のみ' / 'crates/condukt'。省略時は repo 全体5レンズ]"
+allowed-tools: Task, AskUserQuestion, WebSearch, WebFetch, Read, Grep, Glob, Bash(git:*), Bash(cargo:*), Bash(cargo-deny:*), Bash(backlog:*), Bash(compass:*), Bash(specguard:*), Bash(condukt:*), Bash(ls:*), Bash(rg:*), Bash(grep:*)
+---
+
+# /scout — 多角監査による施策生成 SOURCE
+
+`/scout` は **プロジェクトを5つのレンズで偵察 → 施策（タスク）を生成 → backlog に積む → /flow へ引き渡す**。
+
+```
+REVIEW（決定論的な現状収集）
+   ↓
+5 LENS 並列調査（read-only sub-agent）
+   現在の課題 / セキュリティ / 業界標準(Web) / 不足施策 / 安全性
+   ↓
+SYNTHESIZE（統合・重複排除・スコアリング）
+   ↓
+backlog add（承認済み施策）── /flow ─▶ condukt（実行）
+```
+
+**役割分担（外さない）**: 監査と施策の選別（判断）は **この skill（LLM）+ sub-agent**。
+施策の保存は **backlog バイナリ**、実行は **flow/condukt**。scout は **新しい状態を持たず**、
+read-only で課題を *発見* するだけ。実装は一切しない。
+
+## いつ使うか
+
+- 「今のプロジェクトに何が足りない？ 次に打つべき施策は？」を**広く**洗い出したいとき。
+- セキュリティ・安全性・CI・テスト・docs など**横断的な健全性**を点検したいとき。
+- compass（単一ゴールの勾配＝ONE に絞る）では拾えない**複数の独立した施策**が欲しいとき。
+
+> compass は「一手に絞り残りは parked」。scout は逆に「広く挙げて backlog に積む」。
+> 両方とも source であり、最終的に backlog→/flow→condukt の同じ executor に合流する。
+
+## 不変条件（外さない）
+
+1. **監査は read-only** — scout も sub-agent もファイルを編集しない。施策の実行は flow/condukt に委ねる。
+2. **証拠のない施策は採用しない** — 各施策は逐語引用 or `file:line` 参照 or Web ソース URL を必ず持つ（幻覚防止）。
+3. **書き込みは backlog add のみ** — scout はループもロックも持たない。直列化が要る実行は /flow（backlog ロック）に任せる。
+4. **合意は main のみ** — backlog に積む施策の確定は `AskUserQuestion`（HOTL）。勝手に全件積まない。
+
+---
+
+## 手順
+
+### Phase 0 — スコープ受領
+
+引数から監査スコープを取る:
+- 空 → repo 全体・5レンズ全部。
+- `security のみ` 等 → 指定レンズに絞る。
+- `crates/condukt` 等のパス → そのサブツリーに絞る。
+- `--dry-run` → Phase 3 の施策提示で止める（backlog に積まない）。
+
+`condukt --version` でハーネスの存在を確認（無くても scout 自体は動くが、実行引き渡し先が無いと警告）。
+
+### Phase 1 — 決定論的レビュー（現状の事実収集）
+
+施策を**事実に接地**させるため、まず決定論的にプロジェクト状態を集める（全て read-only・失敗は無視）:
+
+```bash
+git log --oneline -15                       # 直近の流れ
+git status --short                           # 未コミット
+cargo test --workspace 2>&1 | tail -15       # テスト健全性（Rust repo の場合）
+compass gap 2>/dev/null | head -40           # 北極星ゴールとの gap・DoD・measuring stick
+backlog list --status open --project "$PWD"  # 既存の施策（重複回避の素）
+specguard prompt --json 2>/dev/null | head   # spec-drift の有無（あれば）
+cargo deny check advisories 2>&1 | tail -20  # 依存の既知脆弱性（cargo-deny があれば）
+ls .deepwiki/*.md 2>/dev/null                # アーキテクチャ wiki（背景）
+```
+
+得られた要約を **REVIEW コンテキスト**として保持し、全 sub-agent に渡す（各 agent が重い再収集をしないため）。
+**compass の `measuring_stick` があれば施策スコアリングの基準として最優先で採用**する。
+
+### Phase 2 — 5レンズ並列調査（read-only sub-agent）
+
+`Task` で **read-only な探索 agent**（`Explore` 等。ファイル編集権を持たない型）を**1メッセージで並列起動**する。
+各レンズに1体、計5体（引数でレンズを絞った場合はその分だけ）。各 agent には REVIEW コンテキスト＋下記レンズ定義を渡し、
+**施策候補 JSON の配列のみ**を返させる。
+
+| # | レンズ | 調査内容 | 道具 |
+|---|---|---|---|
+| L1 | **現在の課題** | tech debt・TODO/FIXME・壊れかけ・命名/構造の不整合・テスト緩さ・未コミット債務 | Grep/Read/git |
+| L2 | **セキュリティ** | 依存脆弱性(advisories)・secret 混入・unsafe/権限・hook の入力検証・コマンド注入・過剰権限 | cargo-deny/Grep/Read |
+| L3 | **業界・他プロジェクト標準** | 同種 OSS（Rust CLI / Claude Code plugin / agent harness）が**実施している施策**で本 repo に**無い**もの | **WebSearch/WebFetch** + Read |
+| L4 | **不足施策** | CI 網羅・test coverage・observability/telemetry・release/version 運用・docs parity・error handling | Read/Glob/git |
+| L5 | **安全性・堅牢性** | failure mode・「never break a turn」不変条件の破れ・panic/unwrap・cross-platform・データ破損/競合・冪等性 | Grep/Read |
+
+各 sub-agent が返す施策候補のスキーマ:
+```json
+[{
+  "title": "短い命令形の施策名",
+  "lens": "L1|L2|L3|L4|L5",
+  "rationale": "なぜ必要か（1-2文）",
+  "evidence": "逐語引用 / path:line / Web ソース URL（必須・無ければ出さない）",
+  "severity": "high|medium|low",
+  "effort": "xs|s|m|l|xl",
+  "suggested_done": "完了とみなせる観察可能な条件"
+}]
+```
+
+**sub-agent への厳命**: 実装提案ではなく**課題の発見**に徹する。証拠（引用/参照/URL）のない項目は出さない。
+L3 は「他プロジェクトが現にやっている」根拠の URL を必ず添える。
+
+### Phase 3 — 統合・重複排除・スコアリング（main / LLM）
+
+全レンズの候補を集約し、**自分（main の LLM）で**:
+
+1. **重複排除** — 同じ施策を別レンズが挙げたら 1 件に畳み、`lens` を併記。
+2. **証拠フィルタ** — evidence の無い/弱い候補を落とす。
+3. **スコアリング** — 既定式 `(severity × goal への近さ) ÷ effort`。compass の `measuring_stick` があればそれを優先採用。
+   **セキュリティ(L2)・安全性(L5) は重みを上げる**（壊さない・安全側）。
+4. **優先度付け** — `p0`(即対応) / `p1`(近いうち) / `p2`(いつか) のタグを付与。
+
+### Phase 4 — 合意（AskUserQuestion / HOTL）
+
+スコア上位の施策（既定 8〜12 件）を `AskUserQuestion`（multiSelect）で提示し、**backlog に積むものを選ばせる**。
+各選択肢に `severity/effort/lens/priority` を要約表示する。`--dry-run` ならここで停止し、提示だけで終了。
+
+### Phase 5 — backlog へ書き出し
+
+承認された施策を 1 件ずつ backlog に積む:
+
+```bash
+backlog add --title "<施策名>" --project "$PWD" \
+  --priority <p0|p1|p2> \
+  --tag <lens> --tag scout \
+  --notes "<rationale> / 証拠: <evidence> / 完了条件: <suggested_done>"
+```
+
+`--tag scout` を付け、scout 由来の施策と分かるようにする。`--notes` に証拠と完了条件を残し、
+実行時（condukt の interpreter）が done_criteria を引けるようにする。
+
+### Phase 6 — 実行引き渡し（propose-then-confirm）
+
+backlog に積んだら `/flow` を**提案**する（即実行はしない＝HOTL）:
+
+> 「scout が N 件の施策を backlog に積みました。`/flow` で source→executor を回して順に実装しますか？」
+
+ユーザーが承認したら `/flow`（または個別 `/condukt <施策>`）に引き渡す。scout はここで終了する
+（実行ループと backlog ロックは flow の責務。scout は併走しない）。
+
+---
+
+## 早期脱出 / 失敗モード
+
+| 状況 | 対応 |
+|---|---|
+| sub-agent が証拠なしの施策ばかり返す | 証拠フィルタで落とし、レンズを絞って 1 回だけ再調査 |
+| 候補が 0 件（健全） | 「重大な不足施策は検出されず」と報告し、軽微な改善のみ提示 |
+| `backlog` バイナリ不在 | 施策を Markdown で提示し、手動投入を案内（書き込みはスキップ） |
+| WebSearch 不可（オフライン等） | L3 をスキップし「業界標準は未調査」と明示して残り4レンズで続行 |
+| `--dry-run` | Phase 4 提示で停止、backlog に積まない |
+
+## ハードルール（再掲）
+
+- **scout は実装しない**。発見した施策の実行は backlog→/flow→condukt に委ねる。
+- **証拠のない施策は出さない**（逐語引用 / `file:line` / Web URL のいずれか必須）。
+- **/backlog や /flow と併走させない**（scout は書き込むだけでループを持たない）。
+- **合意なく全件 backlog に積まない**（Phase 4 の AskUserQuestion を省略しない）。
