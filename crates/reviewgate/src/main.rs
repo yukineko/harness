@@ -97,25 +97,16 @@ fn exit_on_err(r: anyhow::Result<()>) {
 
 /// The Stop hook. Always exits 0 toward Claude (the `decision` field, not the
 /// exit code, is what blocks a stop). Returns exit 1 only in manual CLI mode.
+///
+/// The never-break-a-turn panic guard lives in `harness_core::gate::run`: a
+/// panic in `review_run` is swallowed (exit 0) in hook mode and surfaced
+/// (exit 1) in manual CLI mode. Real `process::exit` calls inside `review_run`
+/// terminate directly, so only genuine panics ever reach the guard.
 fn review_command() -> ! {
     let raw = read_stdin();
     let hook = HookInput::parse(&raw);
     let interactive = hook.is_none();
-    // never-break-a-turn: a panic in the review logic must not abort with a
-    // backtrace and a non-zero exit. In hook mode swallow it and allow the stop
-    // (exit 0); in manual CLI mode surface a generic error (exit 1). Real
-    // `process::exit` calls inside `review_run` terminate directly, so only
-    // genuine panics unwind to this guard.
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| review_run(hook))) {
-        Ok(unreachable) => unreachable,
-        Err(_) => {
-            if interactive {
-                eprintln!("reviewgate: internal error");
-                std::process::exit(1);
-            }
-            std::process::exit(0);
-        }
-    }
+    harness_core::gate::run::run_guarded("reviewgate", interactive, move || review_run(hook))
 }
 
 fn review_run(hook: Option<HookInput>) -> ! {
@@ -141,7 +132,7 @@ fn review_run(hook: Option<HookInput>) -> ! {
     let session = input.session_key();
 
     // one-shot escape hatch
-    if let Some(reason) = consume_skip(&root) {
+    if let Some(reason) = harness_core::gate::run::consume_skip(&root, ".reviewgate-skip") {
         state::reset(&cfg.state_dir, &session);
         log_event(&cfg, &session, "skip", &[], 0);
         eprintln!("reviewgate: .reviewgate-skip consumed — allowing stop ({reason})");
@@ -201,21 +192,6 @@ fn review_run(hook: Option<HookInput>) -> ! {
             std::process::exit(0);
         }
     }
-}
-
-/// `.reviewgate-skip` in the project root: consumed once, returns its reason.
-fn consume_skip(root: &Path) -> Option<String> {
-    let p = root.join(".reviewgate-skip");
-    if !p.exists() {
-        return None;
-    }
-    let reason = std::fs::read_to_string(&p)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "(no reason given)".to_string());
-    let _ = std::fs::remove_file(&p);
-    Some(reason)
 }
 
 /// Append one JSONL line per decision. Best effort, local only.
