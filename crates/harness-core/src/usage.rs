@@ -349,7 +349,7 @@ mod tests {
         let main = agg.agents.get(AGENT_MAIN).expect("main bucket");
         assert_eq!(main.turns, 1);
         assert_eq!(main.total_tokens(), 300);
-        assert!(agg.agents.get(AGENT_SUB).is_none());
+        assert!(!agg.agents.contains_key(AGENT_SUB));
         let _ = std::fs::remove_file(&path);
     }
 
