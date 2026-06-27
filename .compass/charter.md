@@ -1,19 +1,18 @@
 ## north_star
-Claude Code 用 developer productivity プラグイン集。condukt・compass・session-insights・specguard 等の連携により、AI-assisted 開発の品質・可観測性・安全性・自律性を継続的に向上させる。
+discovery(hypothesis) → flow → condukt → measure → learn のループを閉じ、harness を「build するだけ」から「validate する」基盤へ引き上げる。仮説を一級の source とし、実行結果を計測された学びとして書き戻す。
 
 ## definition_of_done
-- cargo test --workspace が全件 pass する
-- 全プラグインが plugin リストに表示され、plugin install コマンドから導入可能
-- session-insights が SessionEnd フックでスケルトンノートを自動生成し、record スキルで散文を記入するフローが完成する
+- hypothesis が /flow の3つ目の source として機能する（引数なし /flow が open hypothesis を課題候補として surface し、flow SKILL.md に source として明記される）
+- 完了した一手の成果が計測として記録される（merge 時に linked hypothesis が awaiting-measurement になり、hypothesis validate/reject は計測証拠 --evidence/--reason を必須とする＝証拠なしの validate は失敗する）
+- condukt が experiment/spike タスククラスを持ち、experiment タスクは auto-merge されず findings を記録する（experiment task を含む decomposition が condukt validate を通り merge 経路から外れる）
+- cargo test --workspace が全件 pass（既存の不変条件を壊さない）
 
 ## measuring_stick
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
-全 DoD 達成済み。cargo test --workspace 全件 pass・全プラグイン導入可能・session-insights SessionEnd 自動生成フロー完成（record = true 確認）。次の拡張課題の洗い出しが未実施。
 
 ## next_action
-compass で次の拡張ゴールを定義する（/compass で north_star を更新し新たな gap を導出）
 
 ## parked
 
