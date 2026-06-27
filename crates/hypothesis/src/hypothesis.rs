@@ -195,6 +195,112 @@ impl fmt::Display for Criterion {
     }
 }
 
+/// How damaging it is if an assumption turns out false.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Risk {
+    Low,
+    Medium,
+    High,
+}
+
+impl Risk {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" => Ok(Risk::Low),
+            "medium" | "med" => Ok(Risk::Medium),
+            "high" => Ok(Risk::High),
+            other => anyhow::bail!("unknown risk {other:?} (expected low|medium|high)"),
+        }
+    }
+    fn weight(&self) -> u8 {
+        match self {
+            Risk::Low => 0,
+            Risk::Medium => 1,
+            Risk::High => 2,
+        }
+    }
+    fn as_str(&self) -> &'static str {
+        match self {
+            Risk::Low => "low",
+            Risk::Medium => "medium",
+            Risk::High => "high",
+        }
+    }
+}
+
+/// How much we currently know about an assumption (evidence strength).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Evidence {
+    Strong,
+    Weak,
+    None,
+}
+
+impl Evidence {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "strong" => Ok(Evidence::Strong),
+            "weak" => Ok(Evidence::Weak),
+            "none" => Ok(Evidence::None),
+            other => anyhow::bail!("unknown evidence {other:?} (expected strong|weak|none)"),
+        }
+    }
+    fn weakness(&self) -> u8 {
+        match self {
+            Evidence::Strong => 0,
+            Evidence::Weak => 1,
+            Evidence::None => 2,
+        }
+    }
+    fn as_str(&self) -> &'static str {
+        match self {
+            Evidence::Strong => "strong",
+            Evidence::Weak => "weak",
+            Evidence::None => "none",
+        }
+    }
+}
+
+/// A belief a hypothesis rests on. The riskiest untested assumption with weak
+/// evidence is the "leap of faith" — a RAT (riskiest-assumption test) de-risks
+/// it with a minimal experiment *before* committing to a full build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Assumption {
+    pub text: String,
+    pub risk: Risk,
+    pub evidence: Evidence,
+    #[serde(default)]
+    pub tested: bool,
+}
+
+impl Assumption {
+    /// Leap-of-faith score: high risk + weak evidence ranks highest (test first).
+    pub fn leap_score(&self) -> u8 {
+        self.risk.weight() + self.evidence.weakness()
+    }
+
+    /// A leap of faith worth a RAT: untested, high-stakes, and not yet
+    /// well-evidenced. These are what flow should de-risk before a full build.
+    pub fn is_leap_of_faith(&self) -> bool {
+        !self.tested && self.risk == Risk::High && self.evidence != Evidence::Strong
+    }
+}
+
+impl fmt::Display for Assumption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[risk:{} evidence:{}{}] {}",
+            self.risk.as_str(),
+            self.evidence.as_str(),
+            if self.tested { " tested" } else { "" },
+            self.text
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hypothesis {
     pub id: String,
@@ -212,8 +318,22 @@ pub struct Hypothesis {
     /// Pre-registered kill bar: hitting it means the bet is disproven (reject).
     #[serde(default)]
     pub kill_criterion: Option<Criterion>,
+    /// Beliefs the bet rests on; the riskiest untested one is the RAT target.
+    #[serde(default)]
+    pub assumptions: Vec<Assumption>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl Hypothesis {
+    /// The riskiest untested leap-of-faith assumption to de-risk with a RAT
+    /// before a full build, if any. Ties break toward the higher leap score.
+    pub fn riskiest_assumption(&self) -> Option<&Assumption> {
+        self.assumptions
+            .iter()
+            .filter(|a| a.is_leap_of_faith())
+            .max_by_key(|a| a.leap_score())
+    }
 }
 
 impl Hypothesis {
@@ -230,6 +350,7 @@ impl Hypothesis {
             condukt_run: None,
             success_criterion: None,
             kill_criterion: None,
+            assumptions: vec![],
             created_at: now.clone(),
             updated_at: now,
         }
@@ -396,6 +517,57 @@ mod tests {
         assert_eq!(Criterion::parse(&shown).unwrap(), c);
     }
 
+    fn assumption(text: &str, risk: Risk, evidence: Evidence) -> Assumption {
+        Assumption { text: text.to_string(), risk, evidence, tested: false }
+    }
+
+    #[test]
+    fn risk_and_evidence_parse() {
+        assert_eq!(Risk::parse("High").unwrap(), Risk::High);
+        assert_eq!(Risk::parse(" med ").unwrap(), Risk::Medium);
+        assert_eq!(Risk::parse("low").unwrap(), Risk::Low);
+        assert!(Risk::parse("huge").is_err());
+        assert_eq!(Evidence::parse("STRONG").unwrap(), Evidence::Strong);
+        assert_eq!(Evidence::parse("none").unwrap(), Evidence::None);
+        assert!(Evidence::parse("medium").is_err());
+    }
+
+    #[test]
+    fn leap_of_faith_requires_high_risk_and_not_strong() {
+        assert!(assumption("a", Risk::High, Evidence::None).is_leap_of_faith());
+        assert!(assumption("a", Risk::High, Evidence::Weak).is_leap_of_faith());
+        // High risk but strong evidence → already de-risked, not a leap.
+        assert!(!assumption("a", Risk::High, Evidence::Strong).is_leap_of_faith());
+        // Low/medium risk → not a leap of faith regardless of evidence.
+        assert!(!assumption("a", Risk::Medium, Evidence::None).is_leap_of_faith());
+        // Tested → no longer a leap.
+        let mut t = assumption("a", Risk::High, Evidence::None);
+        t.tested = true;
+        assert!(!t.is_leap_of_faith());
+    }
+
+    #[test]
+    fn riskiest_assumption_picks_highest_leap_score() {
+        let mut h = Hypothesis::new("a bet", None);
+        h.assumptions = vec![
+            assumption("weak-evidence high risk", Risk::High, Evidence::Weak), // score 3
+            assumption("no-evidence high risk", Risk::High, Evidence::None),   // score 4 ← RAT
+            assumption("low risk", Risk::Low, Evidence::None),                 // not a leap
+        ];
+        let rat = h.riskiest_assumption().expect("a leap of faith exists");
+        assert_eq!(rat.text, "no-evidence high risk");
+    }
+
+    #[test]
+    fn riskiest_assumption_none_when_all_derisked() {
+        let mut h = Hypothesis::new("a bet", None);
+        h.assumptions = vec![
+            assumption("well evidenced", Risk::High, Evidence::Strong),
+            assumption("low stakes", Risk::Low, Evidence::None),
+        ];
+        assert!(h.riskiest_assumption().is_none());
+    }
+
     #[test]
     fn hypothesis_deserialize_legacy_without_criteria() {
         // Records written before success/kill criteria existed must still load.
@@ -409,5 +581,6 @@ mod tests {
         let h: Hypothesis = serde_json::from_str(json).expect("deserialize legacy");
         assert!(h.success_criterion.is_none());
         assert!(h.kill_criterion.is_none());
+        assert!(h.assumptions.is_empty());
     }
 }

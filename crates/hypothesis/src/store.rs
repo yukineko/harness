@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::hypothesis::{Criterion, Hypothesis, Status};
+use crate::hypothesis::{Assumption, Criterion, Evidence, Hypothesis, Risk, Status};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -230,6 +230,47 @@ impl Store {
         h.status = Status::Rejected;
         h.evidence.push(reason);
         h.condukt_run = run_id;
+        h.updated_at = now_iso();
+        self.save()
+    }
+
+    /// Attach an assumption to a hypothesis. Recording assumptions lets flow
+    /// run a RAT (riskiest-assumption test) — de-risking the leap of faith with
+    /// a minimal experiment before committing to a full build.
+    pub fn add_assumption(
+        &mut self,
+        id: &str,
+        text: String,
+        risk: Risk,
+        evidence: Evidence,
+    ) -> Result<()> {
+        if text.trim().is_empty() {
+            anyhow::bail!("assumption text must not be empty");
+        }
+        let h = self
+            .hypotheses
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+        h.assumptions.push(Assumption { text, risk, evidence, tested: false });
+        h.updated_at = now_iso();
+        self.save()
+    }
+
+    /// Mark the assumption at `index` as tested (e.g. after a RAT de-risked it),
+    /// so it no longer registers as an untested leap of faith.
+    pub fn mark_assumption_tested(&mut self, id: &str, index: usize) -> Result<()> {
+        let h = self
+            .hypotheses
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+        let n = h.assumptions.len();
+        let a = h
+            .assumptions
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("assumption index {index} out of range (have {n})"))?;
+        a.tested = true;
         h.updated_at = now_iso();
         self.save()
     }
@@ -573,6 +614,64 @@ mod tests {
         let id = st.add("plain bet".to_string(), None).unwrap();
         st.validate(&id, vec!["measured outcome".to_string()], None).unwrap();
         assert!(st.list(None)[0].status.is_validated());
+    }
+
+    #[test]
+    fn test_assumptions_persist_and_rat_selection() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("users will pay for X".to_string(), None).unwrap();
+        st.add_assumption(&id, "users have this problem".to_string(), Risk::High, Evidence::None)
+            .unwrap();
+        st.add_assumption(&id, "we can build it".to_string(), Risk::Medium, Evidence::Weak)
+            .unwrap();
+        st.add_assumption(&id, "pricing model works".to_string(), Risk::High, Evidence::Weak)
+            .unwrap();
+
+        // Reload → assumptions persisted; RAT = highest leap score untested.
+        let st2 = Store::load(&cfg).unwrap();
+        let h = st2.list(None).into_iter().find(|h| h.id == id).unwrap();
+        assert_eq!(h.assumptions.len(), 3);
+        let rat = h.riskiest_assumption().expect("a leap of faith");
+        assert_eq!(rat.text, "users have this problem"); // high + none = score 4
+
+        // Marking the top RAT tested promotes the next leap of faith.
+        let mut st3 = Store::load(&cfg).unwrap();
+        st3.mark_assumption_tested(&id, 0).unwrap();
+        let st4 = Store::load(&cfg).unwrap();
+        let h4 = st4.list(None).into_iter().find(|h| h.id == id).unwrap();
+        assert!(h4.assumptions[0].tested);
+        assert_eq!(
+            h4.riskiest_assumption().map(|a| a.text.as_str()),
+            Some("pricing model works") // high + weak = score 3
+        );
+    }
+
+    #[test]
+    fn test_add_assumption_errors() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("a bet".to_string(), None).unwrap();
+
+        assert!(st
+            .add_assumption("deadbeef", "x".to_string(), Risk::Low, Evidence::Weak)
+            .unwrap_err()
+            .to_string()
+            .contains("hypothesis not found"));
+        assert!(st
+            .add_assumption(&id, "  ".to_string(), Risk::Low, Evidence::Weak)
+            .unwrap_err()
+            .to_string()
+            .contains("must not be empty"));
+        assert!(st
+            .mark_assumption_tested(&id, 5)
+            .unwrap_err()
+            .to_string()
+            .contains("out of range"));
     }
 
     #[test]

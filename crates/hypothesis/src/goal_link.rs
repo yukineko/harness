@@ -121,6 +121,7 @@ mod tests {
             condukt_run: None,
             success_criterion: None,
             kill_criterion: None,
+            assumptions: vec![],
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         }

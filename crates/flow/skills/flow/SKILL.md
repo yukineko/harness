@@ -18,7 +18,9 @@ SOURCE（課題の供給）              EXECUTOR（解決手段の実行）
 ```
 
 > `hypothesis` は PDO discovery の出力（検証したい仮説）を実行へ繋ぐ source。**2 相**で扱う:
-> ① **open** な仮説 → 「その仮説を検証する実験」として condukt に流す（build）。完了すると condukt が
+> ① **open** な仮説 → **RAT ゲート**（Step 3-1 の 4）を先に通す: 未テストの高リスク×弱証拠 assumption
+>    （leap of faith）があれば、full build ではなく**その assumption だけを de-risk する最小実験**に落とす。
+>    leap of faith が無ければ「その仮説を検証する実験」として condukt に流す（build）。完了すると condukt が
 >    gate PASS 時に `awaiting-measurement`（出荷済み・未計測）へ遷移させる。
 > ② **awaiting-measurement** な仮説 → **measure step**（Step 3-1 の 2）で観測値を回収し、
 >    **計測した証拠を添えて** validate/reject して閉じる（出荷だけでは validate しない＝build ≠ validate）。
@@ -101,8 +103,16 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
    ```bash
    hypothesis list --status open    # 空なら次へ
    ```
-   open な仮説があれば、その**仮説を検証する実験**を課題文にする（仮説 ID を控える）。
-   `hypothesis` バイナリが無い / 0 件なら skip。
+   open な仮説があれば、**full build に直行する前に RAT ゲート（riskiest-assumption test）を通す**:
+   ```bash
+   RAT=$(hypothesis rat <hid>)      # 未テストの最重要×弱証拠 assumption（leap of faith）を 1 行返す
+   ```
+   - `RAT` が**非空**（高リスク・未テストの leap of faith がある）→ 課題文は **full build ではなく、
+     その assumption だけを検証する最小 de-risk 実験**にする（"<assumption text> が成り立つかを最小コストで測る実験"）。
+     `RAT` 行頭の index を控え、3-3 の sink で `hypothesis tested <hid> <index>` を呼んで計測ループを閉じる。
+   - `RAT` が**空**（高リスクの未テスト assumption が無い＝既に de-risk 済み）→ 従来どおり
+     その**仮説を検証する実験**（full build）を課題文にする。
+   いずれも仮説 ID を控える。`hypothesis` バイナリが無い / 0 件 / `rat` 未対応なら従来どおり full build に流す。
 5. compass 主筋・measure（観測可能なもの）・backlog・open 仮説のいずれも**実行可能なものが無い**
    → **ループを抜けて Step 4 へ**（awaiting-measurement にまだ観測不能な仮説が残っていても、
    それは「計測待ち」として残課題に計上しループは終える）。

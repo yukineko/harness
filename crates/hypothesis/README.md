@@ -67,6 +67,9 @@ The binary is thin and deterministic:
 | `hypothesis await-measurement <id> [--run <run>]` | mark a shipped-but-unmeasured bet (condukt calls this on merge) |
 | `hypothesis validate <id> --evidence <text>… [--measurement "<metric>=<value>"…] [--run <run>]` | terminal: measured evidence supports the bet (evidence required). If a `--success` criterion was pre-registered, a matching `--measurement` must clear it — otherwise validation is refused (no post-hoc goalpost-shifting) |
 | `hypothesis reject <id> [--reason <text>] [--run <run>]` | terminal: measured evidence refutes the bet |
+| `hypothesis assume <id> --text <t> --risk <low\|medium\|high> --evidence <strong\|weak\|none>` | record a belief the bet rests on (for RAT de-risking) |
+| `hypothesis rat <id>` | print the riskiest untested assumption (the leap of faith to de-risk first via a minimal experiment); prints nothing when the bet is already de-risked. flow runs this before a full build |
+| `hypothesis tested <id> <index>` | mark the assumption at `<index>` as tested (e.g. after a RAT), so it no longer registers as a leap of faith |
 | `hypothesis install [--dry-run]` / `hypothesis uninstall` | add/remove the SessionStart hook in settings |
 | `hypothesis session-start` | SessionStart hook entry point (internal) |
 

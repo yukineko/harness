@@ -11,7 +11,7 @@ mod hooks {
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use crate::hypothesis::Criterion;
+use crate::hypothesis::{Criterion, Evidence, Risk};
 
 /// Parse a `--measurement "metric=value"` argument into `(metric, value)`.
 fn parse_measurement(s: &str) -> Result<(String, f64)> {
@@ -62,6 +62,22 @@ enum Command {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Attach an assumption the hypothesis rests on (for RAT de-risking)
+    Assume {
+        id: String,
+        #[arg(long)]
+        text: String,
+        /// Damage if false: low | medium | high
+        #[arg(long)]
+        risk: String,
+        /// Evidence strength so far: strong | weak | none
+        #[arg(long)]
+        evidence: String,
+    },
+    /// Print the riskiest untested assumption (the leap of faith to de-risk first)
+    Rat { id: String },
+    /// Mark the assumption at <index> as tested (e.g. after a RAT)
+    Tested { id: String, index: usize },
     /// Mark a hypothesis as awaiting measurement (deliverable shipped, not yet measured)
     AwaitMeasurement {
         id: String,
@@ -112,6 +128,37 @@ fn run() -> Result<()> {
             let mut st = store::Store::load(&cfg)?;
             st.validate_with_measurements(&id, evidence, measurements, run)?;
         }
+        Command::Assume { id, text, risk, evidence } => {
+            let risk = Risk::parse(&risk)?;
+            let evidence = Evidence::parse(&evidence)?;
+            let mut st = store::Store::load(&cfg)?;
+            st.add_assumption(&id, text, risk, evidence)?;
+            println!("{id} assumption recorded");
+        }
+        Command::Rat { id } => {
+            let st = store::Store::load(&cfg)?;
+            let h = st
+                .all()
+                .iter()
+                .find(|h| h.id == id)
+                .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+            // The riskiest untested leap of faith, if any. Prints
+            // "<index>\t<assumption>" so flow can target it and later mark it
+            // tested; prints nothing (exit 0) when the bet is already de-risked.
+            if let Some(rat) = h.riskiest_assumption() {
+                let index = h
+                    .assumptions
+                    .iter()
+                    .position(|a| std::ptr::eq(a, rat))
+                    .unwrap_or(0);
+                println!("{index}\t{rat}");
+            }
+        }
+        Command::Tested { id, index } => {
+            let mut st = store::Store::load(&cfg)?;
+            st.mark_assumption_tested(&id, index)?;
+            println!("{id} assumption {index} marked tested");
+        }
         Command::AwaitMeasurement { id, run } => {
             let mut st = store::Store::load(&cfg)?;
             st.mark_awaiting_measurement(&id, run)?;
@@ -140,7 +187,11 @@ fn run() -> Result<()> {
                         format!(" [{}]", parts.join(", "))
                     }
                 };
-                println!("[{}] {} — {}{}{}", h.status, h.id, h.text, crit_info, run_info);
+                let rat_info = h
+                    .riskiest_assumption()
+                    .map(|a| format!(" [RAT: {}]", a.text))
+                    .unwrap_or_default();
+                println!("[{}] {} — {}{}{}{}", h.status, h.id, h.text, crit_info, rat_info, run_info);
             }
         }
         Command::Install { dry_run } => {
