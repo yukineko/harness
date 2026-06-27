@@ -19,4 +19,5 @@ pub mod metrics;
 pub mod pricing;
 pub mod store;
 pub mod transcript;
+pub mod trust;
 pub mod usage;
