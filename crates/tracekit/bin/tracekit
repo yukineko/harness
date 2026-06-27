@@ -1,0 +1,26 @@
+#!/bin/sh
+# tracekit plugin launcher — selects the per-platform binary bundled in this dir.
+#
+# tracekit is a soft-dependency observability sink: condukt's state-set calls
+# `tracekit record` opportunistically. If no binary exists for the host it exits
+# 0 silently, so a missing build never breaks a condukt run (mirrors the
+# lifecycle-hook plugins; contrast evalkit, a gate, which exits 1).
+root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+case "$(uname -s)" in
+  Linux)  os=linux ;;
+  Darwin) os=darwin ;;
+  *)      os="$(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64)   arch=x86_64 ;;
+  arm64|aarch64)  arch=arm64 ;;
+  *)              arch="$(uname -m)" ;;
+esac
+
+binary="$root/tracekit-$os-$arch"
+if [ ! -x "$binary" ]; then
+  echo "tracekit: no bundled binary for $os-$arch ($binary)." >&2
+  exit 0
+fi
+exec "$binary" "$@"

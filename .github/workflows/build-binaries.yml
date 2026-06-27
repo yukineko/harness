@@ -39,7 +39,7 @@ env:
     autoflow backlog beacon budgetguard compass condukt ctxrot daily deepwiki
     difflog donegate evalkit flow fugu-router gauge harness-status hypothesis
     playbook precommit-audit reviewgate run-book session-insights stuckguard
-    taskprog tdd
+    taskprog tdd tracekit
 
 jobs:
   smoke:
