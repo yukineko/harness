@@ -17,9 +17,11 @@ SOURCE（課題の供給）              EXECUTOR（解決手段の実行）
   prompt     … ユーザー直の課題文   ─┘
 ```
 
-> `hypothesis` は PDO discovery の出力（検証したい仮説）を実行へ繋ぐ source。
-> open な仮説を「その仮説を検証する実験」として condukt に流し、完了後は出荷ではなく
-> **計測した証拠を添えて** validate/reject する（出荷だけでは validate しない＝build ≠ validate）。
+> `hypothesis` は PDO discovery の出力（検証したい仮説）を実行へ繋ぐ source。**2 相**で扱う:
+> ① **open** な仮説 → 「その仮説を検証する実験」として condukt に流す（build）。完了すると condukt が
+>    gate PASS 時に `awaiting-measurement`（出荷済み・未計測）へ遷移させる。
+> ② **awaiting-measurement** な仮説 → **measure step**（Step 3-1 の 2）で観測値を回収し、
+>    **計測した証拠を添えて** validate/reject して閉じる（出荷だけでは validate しない＝build ≠ validate）。
 
 **役割分担（外さない）**: ループ制御（どの source を引くか・実行・検証・止め時の判定）は **この skill（LLM）**。
 状態維持・ロック・size routing・モデル選択は **既存バイナリ**（`compass` / `backlog` / `condukt` / `fugu-router`）。
@@ -80,18 +82,31 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
 #### 3-1. 次のタスクを優先度順にピック
 
 1. **compass の主筋**（Step 1 の `to_condukt`）が未消化なら → それを最優先で選ぶ。
-2. なければ **backlog**（確定キュー）:
+2. **measure step（計測ループを閉じる / build ≠ validate）** — 新規 build より**先に**、出荷済み・未計測の仮説を回収する:
+   ```bash
+   hypothesis list --status awaiting-measurement   # condukt が merge 時に遷移させた「出荷済み・未計測」
+   ```
+   - 各 awaiting-measurement 仮説について、**計測信号が今観測可能か**を判定する:
+     - **観測可能** → これは **condukt build ではなく measure タスク**。実験で観測した成果を集め、
+       そのまま 3-3 の sink で `hypothesis validate/reject --evidence` して**仮説を閉じる**
+       （この 1 件はここで完了。condukt は起動しない）。3-2 を飛ばして 3-3（measure 由来）へ。
+     - **まだ観測不能**（データ蓄積待ち等）→ awaiting-measurement のまま残し、
+       「計測待ち（まだ観測不能）」として報告し次の候補へ進む（ここで無限ループしない）。
+   - `hypothesis` バイナリが無い / 0 件なら skip。
+3. measure 対象（今観測可能なもの）が無ければ **backlog**（確定キュー）:
    ```bash
    backlog next [--project <path>]
    ```
-3. backlog も空なら **hypothesis**（discovery: 計測待ちの open 仮説）:
+4. backlog も空なら **hypothesis（新規 discovery: open 仮説）**:
    ```bash
    hypothesis list --status open    # 空なら次へ
    ```
    open な仮説があれば、その**仮説を検証する実験**を課題文にする（仮説 ID を控える）。
    `hypothesis` バイナリが無い / 0 件なら skip。
-4. compass 主筋・backlog・hypothesis のいずれも空 → **ループを抜けて Step 4 へ**。
-5. ピックしたタスクのタイトル＋ notes（仕様・制約・参照ファイル）を**課題文**に組み立てる。
+5. compass 主筋・measure（観測可能なもの）・backlog・open 仮説のいずれも**実行可能なものが無い**
+   → **ループを抜けて Step 4 へ**（awaiting-measurement にまだ観測不能な仮説が残っていても、
+   それは「計測待ち」として残課題に計上しループは終える）。
+6. ピックしたタスクのタイトル＋ notes（仕様・制約・参照ファイル）を**課題文**に組み立てる。
 
 #### 3-2. condukt で実行（fugu-router がモデル選択）
 
@@ -117,9 +132,16 @@ condukt の完了ゲートを通ったら結果を source に書き戻す:
     verdict は move の diff・テスト結果・gap への接近度から **driver(LLM) が判定**する（前進=forward / 不変=unchanged / 後退=backward）。
     `--evidence` は計測値（テスト数・ベンチ・観測した挙動）を必須とする＝出荷だけでは記録しない（build ≠ validate）。
     記録後 `compass gap` を取り直すと `last_outcome` が次サイクルに反映される（人手の別コマンド不要＝sink の一部として自動記録）。
-  - hypothesis 由来 → **出荷しただけでは validate しない**。実験で観測した成果を添えて
-    `hypothesis validate <id> --evidence "<観測した成果>"`（反証なら `reject <id> --reason "..."`）。
-    計測結果が未取得なら仮説は open のまま残し、計測を残課題として報告する（build ≠ validate）。
+  - hypothesis 由来（**新規 experiment の build が完了**）→ condukt は gate PASS 時に linked_hypotheses を
+    **`awaiting-measurement`（出荷済み・未計測）へ遷移済み**。**出荷しただけでは validate しない**ので、
+    flow はこの場で validate/reject せず、仮説を awaiting-measurement に残す。閉じるのは**次サイクルの
+    measure step（3-1 の 2）**が観測値を添えて行う（build ≠ validate）。「計測待ち N 件」を残課題として報告する。
+  - measure step 由来（**3-1 の 2 で観測値を回収した awaiting-measurement 仮説**）→ 観測した成果を添えて閉じる:
+    ```bash
+    hypothesis validate <id> --run <RID> --evidence "<観測した成果>"   # 反証なら reject <id> --reason "<反証内容>"
+    ```
+    これで awaiting-measurement → validated / rejected に遷移し、計測ループが閉じる
+    （`validate`/`reject` は証拠必須なので、観測値の無い「出荷だけ」では status を変えられない）。
   - fugu-router 併用時 → 検証結果（どのモデルが通ったか・コスト）を `record` で書き戻して方策を更新。
 - **失敗**（blocked / needs-serial 等）:
   - backlog 由来 → `backlog fail <id> --reason "<概要>"`、スキップして次へ。
