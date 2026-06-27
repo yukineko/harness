@@ -34,6 +34,12 @@ enum Command {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Mark a hypothesis as awaiting measurement (deliverable shipped, not yet measured)
+    AwaitMeasurement {
+        id: String,
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Mark a hypothesis as rejected
     Reject {
         id: String,
@@ -71,6 +77,11 @@ fn run() -> Result<()> {
         Command::Validate { id, evidence, run } => {
             let mut st = store::Store::load(&cfg)?;
             st.validate(&id, evidence, run)?;
+        }
+        Command::AwaitMeasurement { id, run } => {
+            let mut st = store::Store::load(&cfg)?;
+            st.mark_awaiting_measurement(&id, run)?;
+            println!("{id} awaiting-measurement (shipped; run validate/reject after measuring)");
         }
         Command::Reject { id, reason, run } => {
             let mut st = store::Store::load(&cfg)?;

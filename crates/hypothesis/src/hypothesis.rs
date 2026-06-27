@@ -59,6 +59,10 @@ fn is_leap_year(year: u32) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Open,
+    /// A linked deliverable has shipped but the hypothesis has not yet been
+    /// measured. Distinct from `Open` (not started) and `Validated`/`Rejected`
+    /// (measured): "shipped but not yet measured" — build is not validation.
+    AwaitingMeasurement,
     Validated,
     Rejected,
 }
@@ -66,6 +70,10 @@ pub enum Status {
 impl Status {
     pub fn is_open(&self) -> bool {
         matches!(self, Status::Open)
+    }
+
+    pub fn is_awaiting_measurement(&self) -> bool {
+        matches!(self, Status::AwaitingMeasurement)
     }
 
     #[allow(dead_code)]
@@ -83,6 +91,7 @@ impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Status::Open => write!(f, "open"),
+            Status::AwaitingMeasurement => write!(f, "awaiting-measurement"),
             Status::Validated => write!(f, "validated"),
             Status::Rejected => write!(f, "rejected"),
         }
@@ -160,11 +169,18 @@ mod tests {
         assert!(!Status::Rejected.is_open());
         assert!(!Status::Rejected.is_validated());
         assert!(Status::Rejected.is_rejected());
+
+        assert!(Status::AwaitingMeasurement.is_awaiting_measurement());
+        assert!(!Status::AwaitingMeasurement.is_open());
+        assert!(!Status::AwaitingMeasurement.is_validated());
+        assert!(!Status::AwaitingMeasurement.is_rejected());
+        assert!(!Status::Open.is_awaiting_measurement());
     }
 
     #[test]
     fn status_display() {
         assert_eq!(Status::Open.to_string(), "open");
+        assert_eq!(Status::AwaitingMeasurement.to_string(), "awaiting-measurement");
         assert_eq!(Status::Validated.to_string(), "validated");
         assert_eq!(Status::Rejected.to_string(), "rejected");
     }
@@ -212,5 +228,13 @@ mod tests {
         assert_eq!(s, r#""validated""#);
         let s2: Status = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(s2, Status::Validated);
+    }
+
+    #[test]
+    fn status_serde_awaiting_measurement_snake_case() {
+        let s = serde_json::to_string(&Status::AwaitingMeasurement).expect("serialize");
+        assert_eq!(s, r#""awaiting_measurement""#);
+        let s2: Status = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(s2, Status::AwaitingMeasurement);
     }
 }
