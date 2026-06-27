@@ -37,6 +37,11 @@ pub struct Episode {
     /// Who applied `human_label` (e.g. "human"). Provenance only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labeled_by: Option<String>,
+    /// Fingerprint of the SKILL.md corpus active when this outcome was recorded,
+    /// so outcomes can be stratified by skill version (a silent SKILL.md edit
+    /// otherwise makes behaviour drift unattributable). `None` = not captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_fingerprint: Option<String>,
 }
 
 fn default_role() -> String {
@@ -323,6 +328,7 @@ mod tests {
             cost_usd: 0.01,
             human_label: None,
             labeled_by: None,
+            skill_fingerprint: None,
         }
     }
 
@@ -533,6 +539,7 @@ mod tests {
             cost_usd: 0.12,
             human_label: None,
             labeled_by: None,
+            skill_fingerprint: None,
         };
         append(&path, &ep).unwrap();
         // a junk line must not break the load
@@ -546,5 +553,24 @@ mod tests {
         let loaded = load(&path);
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].model, "sonnet");
+    }
+
+    #[test]
+    fn skill_fingerprint_roundtrips_and_omits_when_none() {
+        // Some(..) survives a serialize → deserialize round-trip.
+        let mut ep = sample_ep("add auth", "sonnet");
+        ep.skill_fingerprint = Some("deadbeefcafef00d".into());
+        let line = serde_json::to_string(&ep).unwrap();
+        assert!(line.contains("\"skill_fingerprint\":\"deadbeefcafef00d\""));
+        let back: Episode = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.skill_fingerprint.as_deref(), Some("deadbeefcafef00d"));
+
+        // None: the key is skipped entirely (skip_serializing_if), and an OLD
+        // episode JSON without the field still parses (serde default).
+        let none_ep = sample_ep("add billing", "haiku");
+        let none_line = serde_json::to_string(&none_ep).unwrap();
+        assert!(!none_line.contains("skill_fingerprint"));
+        let back_none: Episode = serde_json::from_str(&none_line).unwrap();
+        assert!(back_none.skill_fingerprint.is_none());
     }
 }

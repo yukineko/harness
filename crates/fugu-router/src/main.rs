@@ -10,6 +10,7 @@
 mod budget;
 mod config;
 mod decomp;
+mod fingerprint;
 mod inject;
 mod install;
 mod pathutil;
@@ -70,6 +71,9 @@ enum Command {
         /// Optional free-text notes about how the task was solved.
         #[arg(long, default_value = "")]
         notes: String,
+        /// Fingerprint of the active SKILL.md corpus (see `fugu-router fingerprint`).
+        #[arg(long, default_value = "")]
+        skill_fingerprint: String,
     },
     /// Apply a human label to a recorded episode, overriding the verifier's
     /// self-pass in policy aggregation. The teacher signal that de-biases the
@@ -153,6 +157,13 @@ enum Command {
         /// Dedup the LOCAL store(s) in place rather than importing from a source.
         #[arg(long)]
         dedup: bool,
+    },
+    /// Print a deterministic fingerprint of the SKILL.md corpus under a directory,
+    /// so recorded outcomes can be tied to the skill version that produced them.
+    Fingerprint {
+        /// Directory to walk for SKILL.md files (default: current directory).
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
 }
 
@@ -327,6 +338,7 @@ fn run_user(cmd: Command) -> Result<()> {
             cost,
             done_criteria,
             notes,
+            skill_fingerprint,
         } => {
             let raw_touched = split_files(&files);
             // Normalise absolute paths to repo-relative so stored paths are
@@ -345,6 +357,11 @@ fn run_user(cmd: Command) -> Result<()> {
                 cost_usd: cost,
                 human_label: None,
                 labeled_by: None,
+                skill_fingerprint: if skill_fingerprint.is_empty() {
+                    None
+                } else {
+                    Some(skill_fingerprint)
+                },
             };
             store::append(&cfg.store_path(), &ep).context("appending episode")?;
             if pass && !done_criteria.is_empty() {
@@ -425,6 +442,14 @@ fn run_user(cmd: Command) -> Result<()> {
             pull_only,
             push_only,
         } => cmd_sync(&cfg, pull_only, push_only),
+        Command::Fingerprint { dir } => {
+            let root = dir.unwrap_or_else(|| PathBuf::from("."));
+            let fp = fingerprint::skill_fingerprint(&root).with_context(|| {
+                format!("fingerprinting SKILL.md corpus under {}", root.display())
+            })?;
+            println!("{fp}");
+            Ok(())
+        }
         Command::Prompt => unreachable!("handled in main"),
     }
 }
@@ -722,6 +747,7 @@ mod label_tests {
             cost_usd: 0.0,
             human_label: None,
             labeled_by: None,
+            skill_fingerprint: None,
         }
     }
 

@@ -158,6 +158,7 @@ mod tests {
             cost_usd: 0.0,
             human_label: None,
             labeled_by: None,
+            skill_fingerprint: None,
         }
     }
 
