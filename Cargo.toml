@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members  = ["crates/*"]
+# Skill-only plugins (no Rust binary) live under crates/ as Claude Code plugins
+# but are NOT Cargo crates, so the `crates/*` glob must skip them.
+exclude  = ["crates/scout"]
 
 [workspace.package]
 rust-version = "1.82"     # is_none_or 使用のため（既存クレート）
