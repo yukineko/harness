@@ -281,7 +281,7 @@ fn main() {
                     // PreCompact does not inject context; report to stderr only.
                     eprintln!("[ctxrot] rescue note saved: {}", path.display());
                 }
-                // Opt-in (distill_on_compact): kick off a detached, high-quality
+                // Default-on (distill_on_compact): kick off a detached, high-quality
                 // `claude -p` distill of the pre-compaction transcript. Fire-and-
                 // forget — never blocks this 10s hook; the next guard re-injects it.
                 hooks::distill::spawn_detached(&input, &cfg);
@@ -843,14 +843,14 @@ inject_todos = true
 inject_pinned = true
 
 # --- async LLM distill on compaction -----------------------------------------
-# Opt-in. When ON, every /compact (manual or auto) — after the instant
+# On by default. Every /compact (manual or auto) — after the instant
 # deterministic rescue note — spawns a DETACHED `claude -p` that distills the
 # full pre-compaction transcript into a high-quality distill-* note. This never
 # blocks compaction; the next prompt's guard re-injects the result so the
 # post-compact context recovers (PreCompact/PostCompact can't inject). It spends
 # one model call per compaction, on your session auth (subscription; no API key).
-# env: CTXROT_DISTILL_ON_COMPACT=1
-distill_on_compact = false
+# Set false (or CTXROT_DISTILL_ON_COMPACT=0) to disable.
+distill_on_compact = true
 # Headless command for the distill (prompt on stdin, note markdown on stdout).
 # A value with shell metachars runs via `sh -c`. env: CTXROT_DISTILL_CMD
 distill_cmd = "claude -p"

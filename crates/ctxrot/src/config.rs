@@ -85,10 +85,11 @@ pub struct Config {
     pub inject_pinned: bool,
 
     // ---- async LLM distill on compaction (feature ④) -------------------------
-    /// Opt-in: when a `/compact` (manual or auto) fires PreCompact, after the
-    /// deterministic rescue note lands, spawn a DETACHED background `claude -p`
+    /// On by default: when a `/compact` (manual or auto) fires PreCompact, after
+    /// the deterministic rescue note lands, spawn a DETACHED background `claude -p`
     /// that distills the full pre-compaction transcript into a high-quality
-    /// `distill-*` note. Off by default — it spends a model call per compaction.
+    /// `distill-*` note. Set `false` (or `CTXROT_DISTILL_ON_COMPACT=0`) to disable
+    /// — it spends a model call per compaction.
     /// The next `guard` (UserPromptSubmit) re-injects it so the post-compact
     /// in-session context recovers (PreCompact/PostCompact can't inject). Runs on
     /// the same auth as the session (subscription; no API key).
@@ -184,7 +185,7 @@ impl Default for Config {
             inject_decisions: true,
             inject_todos: true,
             inject_pinned: true,
-            distill_on_compact: false,
+            distill_on_compact: true,
             distill_cmd: "claude -p".to_string(),
             distill_timeout_secs: 180,
         }
@@ -372,5 +373,21 @@ impl Config {
             }
         }
         band
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distill_on_compact_defaults_on() {
+        // Regression guard: async LLM distill on compaction is ON by default.
+        // Flipping this back to false silently strips post-compact distill quality
+        // for every user who hasn't written a config.toml, so pin it here.
+        let cfg = Config::default();
+        assert!(cfg.distill_on_compact);
+        assert_eq!(cfg.distill_cmd, "claude -p");
+        assert_eq!(cfg.distill_timeout_secs, 180);
     }
 }

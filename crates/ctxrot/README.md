@@ -16,7 +16,7 @@ error it exits 0 and stays silent.
 | Subcommand | Hook | What it does |
 |---|---|---|
 | `ctxrot guard` | `UserPromptSubmit` | Detects large refs (big local files / URLs / "全文" keywords) and **context-budget bands** (50/75/90% of the window). Injects *minimal, conditional* advice — only when something is relevant, and budget advice only once per band crossing (so the advice itself doesn't cause rot). At **band ≥ 2 (~75%+)** it also **preemptively writes a rescue note** (same format as below), so a manual `/compact` *or `/clear`* is safe without waiting for PreCompact. |
-| `ctxrot rescue` | `PreCompact` | Right before `/compact`, streams the recent transcript and writes a durable **rescue note** (decisions, open todos, touched files, links, raw recent turns) so nothing is lost to lossy compaction. Deterministic, no LLM. The note filename carries a **session tag** (`rescue-<session>-<ts>.md`). Same writer also powers guard's preemptive rescue (labeled `trigger: band-NN%`). |
+| `ctxrot rescue` | `PreCompact` | Right before `/compact`, streams the recent transcript and writes a durable **rescue note** (decisions, open todos, touched files, links, raw recent turns) so nothing is lost to lossy compaction. Deterministic, no LLM. The note filename carries a **session tag** (`rescue-<session>-<ts>.md`). Same writer also powers guard's preemptive rescue (labeled `trigger: band-NN%`). By default it *also* fire-and-forgets a detached `claude -p` async distill (`distill_on_compact`, feature ④) that upgrades the note to LLM quality without blocking compaction. |
 | `ctxrot restore` | `SessionStart` | At session start, injects a **compact carryover** (decisions + open todos + a link). It prefers *this* session's own note (matched by session tag); the cross-session fallback returns the latest note when the stream is unambiguous (≤1 session in the dir) but, when **parallel sessions** share one project dir (≥2 sessions), restricts to untagged/shared notes so it never grabs a sibling's carryover. Never the whole note. |
 | `ctxrot preguard` | `PreToolUse` | **Preventive gate, before the load.** Two layers: (1) **rule-based** — a `Read` matching a `load_deny` glob is denied *regardless of size* ("never load these"; holds even for a bounded slice by default), while a `load_allow` glob bypasses the size gate ("trusted, load whole"). (2) **size-based** — an *unbounded* `Read` (no `limit`) of a local file at/above `gate_file_bytes` (default **1MB**) is denied with an actionable reason. Precedence: **deny → limit → allow → size**. Narrow by design so normal source reads are untouched. |
 | `ctxrot toolguard` | `PostToolUse` | When a `Read`/`Bash`/`Grep`/… returns a huge payload, nudges you to route the *next* heavy read through a sub-agent and keep only conclusions. (Handles the 50KB–1MB middle band the `preguard` gate lets through.) |
@@ -195,6 +195,16 @@ restore_enabled = true          # master switch for prior-session carryover
 inject_decisions = true         # include the Decisions section
 inject_todos = true             # include the Open-todos section
 inject_pinned = true            # append `/ctx pin`ned items (pointers) at session start
+
+# async LLM distill on compaction (feature ④):
+distill_on_compact = true       # ON by default: PreCompact also fires a DETACHED
+                                #   `claude -p` that distills the pre-compaction
+                                #   transcript into a high-quality distill-* note
+                                #   (never blocks compaction; the rescue note is the
+                                #   floor on timeout/fail). Costs one model call per
+                                #   compaction — set false to disable.
+distill_cmd = "claude -p"       # headless command (prompt on stdin, note on stdout)
+distill_timeout_secs = 180      # wall-clock cap (s) for that background distill
 ```
 
 Glob syntax for `load_deny`/`load_allow` is path-aware: `*`/`?` stay within a
@@ -212,7 +222,9 @@ Project-relative patterns (`secrets/**`) match absolute paths too.
 Env overrides (Python v1 compatibility): `GUARD_DISABLE` (any value → no-op),
 `CLAUDE_CONTEXT_WINDOW`, `GUARD_LARGE_FILE_BYTES`, `GUARD_GATE_FILE_BYTES`,
 `GUARD_GATE_BASH`, `GUARD_METRICS`. Newer: `CTXROT_LOAD_DENY` / `CTXROT_LOAD_ALLOW`
-(comma-separated globs) and `CTXROT_RESTORE_DISABLE=1` (turn carryover off).
+(comma-separated globs), `CTXROT_RESTORE_DISABLE=1` (turn carryover off), and
+`CTXROT_DISTILL_ON_COMPACT` / `CTXROT_DISTILL_CMD` / `CTXROT_DISTILL_TIMEOUT_SECS`
+(async-distill toggle, command, and timeout).
 
 > **CJK / token-estimate note.** The byte-based thresholds (`large_file_bytes`,
 > `huge_tool_output_bytes`, `gate_file_bytes`) and the `bytes/4` token estimate
