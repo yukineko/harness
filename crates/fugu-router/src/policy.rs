@@ -100,6 +100,54 @@ pub fn verifier_model(worker: &str, class: &str, title: &str) -> &'static str {
     }
 }
 
+/// Drop a model one tier toward the cheapest. haiku is the floor.
+fn one_tier_down(model: &str) -> &'static str {
+    match model {
+        "opus" => "sonnet",
+        "sonnet" => "haiku",
+        _ => "haiku",
+    }
+}
+
+/// Under daily budget pressure (budgetguard reports the warn threshold reached),
+/// bias the decision cheaper: shave the worker one tier and cap the verifier at
+/// sonnet (suppress opus escalation). Deterministic and explicitly recorded in
+/// the rationale. A no-op for `gated` tasks (human-approved, never auto-routed)
+/// and when nothing can be lowered (worker already haiku, verifier not opus).
+pub fn downgrade_for_budget(d: Decision) -> Decision {
+    if d.basis == "gated" {
+        return d;
+    }
+    let new_worker = one_tier_down(&d.worker_model);
+    // Never let the independent verifier sit at opus while we're saving money.
+    let new_verifier = if d.verifier_model == "opus" {
+        "sonnet"
+    } else {
+        d.verifier_model.as_str()
+    };
+    if d.worker_model == new_worker && d.verifier_model == new_verifier {
+        return d; // already at the floor — nothing to downgrade
+    }
+    // Record only the tiers that actually moved (the worker may already be at
+    // the haiku floor while the verifier still gets capped).
+    let mut changes = Vec::new();
+    if d.worker_model != new_worker {
+        changes.push(format!("worker {}→{new_worker}", d.worker_model));
+    }
+    if d.verifier_model != new_verifier {
+        changes.push(format!("verifier {}→{new_verifier}", d.verifier_model));
+    }
+    let rationale = format!("{} | budget pressure: {}", d.rationale, changes.join(", "));
+    Decision {
+        worker_model: new_worker.to_string(),
+        verifier_model: new_verifier.to_string(),
+        basis: d.basis,
+        confidence: d.confidence,
+        neighbors: d.neighbors,
+        rationale,
+    }
+}
+
 struct ModelStat {
     count: usize,
     passes: usize,
@@ -347,6 +395,48 @@ mod tests {
         assert_eq!(prior_model("rename a symbol across the repo", 20), "sonnet");
         assert_eq!(prior_model("reformat the whole tree", 30), "sonnet");
         assert_eq!(prior_model("fix a typo", 1), "haiku");
+    }
+
+    #[test]
+    fn budget_downgrade_shaves_worker_and_caps_verifier() {
+        // opus worker / sonnet verifier under pressure → sonnet / sonnet.
+        let d = decide("redesign auth architecture", &[], "serial", &[], 0.7, 2);
+        assert_eq!(d.worker_model, "opus");
+        assert_eq!(d.verifier_model, "sonnet");
+        let dg = downgrade_for_budget(d);
+        assert_eq!(dg.worker_model, "sonnet");
+        assert_eq!(dg.verifier_model, "sonnet");
+        assert!(dg.rationale.contains("budget pressure"));
+    }
+
+    #[test]
+    fn budget_downgrade_suppresses_opus_verifier() {
+        // sonnet worker + high-stakes (serial) → opus verifier; pressure caps it
+        // at sonnet and shaves the worker to haiku. ("endpoint" hits no DESIGN_KW.)
+        let d = decide("implement the endpoint", &[], "serial", &[], 0.7, 2);
+        assert_eq!(d.worker_model, "sonnet");
+        assert_eq!(d.verifier_model, "opus");
+        let dg = downgrade_for_budget(d);
+        assert_eq!(dg.worker_model, "haiku");
+        assert_eq!(dg.verifier_model, "sonnet");
+        assert!(dg.rationale.contains("verifier opus→sonnet"));
+    }
+
+    #[test]
+    fn budget_downgrade_is_noop_at_floor_and_for_gated() {
+        // haiku worker + sonnet verifier: already the floor → unchanged.
+        let floor = decide("rename a variable", &[], "parallel", &[], 0.7, 2);
+        assert_eq!(floor.worker_model, "haiku");
+        assert_eq!(floor.verifier_model, "sonnet");
+        let dg = downgrade_for_budget(floor);
+        assert_eq!(dg.worker_model, "haiku");
+        assert_eq!(dg.verifier_model, "sonnet");
+        assert!(!dg.rationale.contains("budget pressure"));
+
+        // gated stays human-gated, never downgraded.
+        let gated = downgrade_for_budget(decide("deploy to prod", &[], "gated", &[], 0.7, 2));
+        assert_eq!(gated.basis, "gated");
+        assert_eq!(gated.worker_model, "opus");
     }
 
     #[test]

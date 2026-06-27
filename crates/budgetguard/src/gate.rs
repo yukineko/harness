@@ -66,6 +66,15 @@ pub fn evaluate(
     })
 }
 
+/// Deterministic "budget pressure" signal for downstream cost-aware routing
+/// (consumed by `fugu-router` via `budgetguard status --json`). True once the
+/// day's spend has reached the daily warn threshold — the same point at which
+/// the gate starts warning. A non-positive threshold means "unset" → no
+/// pressure (parity with the gate, which treats `0.0` limits as disabled).
+pub fn budget_pressure(day_usd: f64, daily_warn_usd: f64) -> bool {
+    daily_warn_usd > 0.0 && day_usd >= daily_warn_usd
+}
+
 fn verdict(cfg: &Config, session_usd: f64, day_usd: f64) -> Verdict {
     // Check block limits first (higher priority than warn).
     if cfg.session_block_usd > 0.0 && session_usd >= cfg.session_block_usd {
@@ -138,6 +147,16 @@ pub fn emit_and_exit(result: Option<GateResult>) -> ! {
 mod tests {
     use super::*;
     use crate::config::Config;
+
+    #[test]
+    fn budget_pressure_tracks_warn_threshold() {
+        // Below warn => no pressure; at/over warn => pressure.
+        assert!(!budget_pressure(4.0, 5.0));
+        assert!(budget_pressure(5.0, 5.0));
+        assert!(budget_pressure(9.0, 5.0));
+        // Unset (non-positive) threshold => never pressure, matching the gate.
+        assert!(!budget_pressure(100.0, 0.0));
+    }
 
     fn cfg(sw: f64, sb: f64, dw: f64, db: f64) -> Config {
         Config {

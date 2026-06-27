@@ -7,6 +7,7 @@
 //! cheapest tier that historically clears similar work. condukt calls `route` to
 //! set each task's `suggested_model`, and `record` to feed outcomes back.
 
+mod budget;
 mod config;
 mod decomp;
 mod inject;
@@ -357,9 +358,22 @@ fn cmd_route(cfg: &config::Config, file: Option<PathBuf>, report: Option<PathBuf
     let eps = store::load(&cfg.store_path());
     let mut rng = seed_rng(eps.len());
 
+    // Budget-aware downgrade (soft dep): if budgetguard reports the day's spend
+    // has reached the warn threshold, bias every routed task cheaper. Checked
+    // once per route — the day total doesn't move between tasks of one call.
+    let pressured = budget::under_pressure();
+    if pressured {
+        eprintln!("fugu-router: daily budget pressure — downgrading model choices one tier");
+    }
+
     let mut report_map = serde_json::Map::new();
     for t in &mut dec.tasks {
         let d = route_decision(cfg, &t.title, &t.touched_files, &t.class, &eps, &mut rng);
+        let d = if pressured {
+            policy::downgrade_for_budget(d)
+        } else {
+            d
+        };
         // gated tasks keep whatever the interpreter chose; everything else is set.
         if d.basis != "gated" {
             t.suggested_model = d.worker_model.clone();

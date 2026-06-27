@@ -9,7 +9,7 @@ mod gate;
 mod install;
 mod lock;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 use harness_core::hook::{read_stdin, run_hook};
 
@@ -46,7 +46,16 @@ enum Command {
         force: bool,
     },
     /// Show the resolved config and today's spend.
-    Status,
+    Status(StatusArgs),
+}
+
+#[derive(Args)]
+struct StatusArgs {
+    /// Emit machine-readable JSON ({day_usd, daily_warn_usd, daily_block_usd,
+    /// pressure}) instead of the human table. Lets a downstream router (e.g.
+    /// fugu-router) read budget pressure and downgrade model choices.
+    #[arg(long)]
+    json: bool,
 }
 
 fn main() {
@@ -56,7 +65,7 @@ fn main() {
         Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init { force } => exit_on_err(init(force)),
-        Command::Status => status(),
+        Command::Status(args) => status(args),
     }
 }
 
@@ -108,12 +117,26 @@ fn init(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn status() {
+fn status(args: StatusArgs) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let cfg = Config::load(&cwd);
     let today = today_str();
     let ledger = harness_core::ledger::Ledger::load(&cfg.state_dir);
     let day_usd = ledger.day_total(&today);
+
+    if args.json {
+        let pressure = gate::budget_pressure(day_usd, cfg.daily_warn_usd);
+        println!(
+            "{}",
+            serde_json::json!({
+                "day_usd": day_usd,
+                "daily_warn_usd": cfg.daily_warn_usd,
+                "daily_block_usd": cfg.daily_block_usd,
+                "pressure": pressure,
+            })
+        );
+        return;
+    }
 
     println!("enabled:            {}", cfg.enabled);
     println!("state_dir:          {}", cfg.state_dir.display());
