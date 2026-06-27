@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::usage::{Aggregate, ModelUsage};
+use crate::usage::{AgentUsage, Aggregate, ModelUsage};
 
 /// Token counts for one model within a session. Alias kept for call sites that
 /// referred to it as `Usage`; the type itself is [`crate::usage::ModelUsage`].
@@ -38,6 +38,9 @@ pub struct SessionRecord {
     pub first_ts: Option<String>,
     #[serde(default)]
     pub last_ts: Option<String>,
+    /// Per-agent (main vs sub-agent) token breakdown; empty on legacy records.
+    #[serde(default)]
+    pub agents: BTreeMap<String, AgentUsage>,
     #[serde(default)]
     pub updated_at: String,
 }
@@ -63,8 +66,20 @@ impl SessionRecord {
             tools: if track_tools { agg.tools } else { BTreeMap::new() },
             first_ts: agg.first_ts,
             last_ts: agg.last_ts,
+            agents: agg.agents,
             updated_at: updated_at.into(),
         }
+    }
+
+    /// USD spent by each agent bucket (main / sub-agent), via `session_cost`.
+    /// Empty when the record predates per-agent attribution.
+    pub fn agent_costs(&self, overrides: &[crate::pricing::PriceOverride]) -> BTreeMap<String, f64> {
+        self.agents
+            .iter()
+            .map(|(name, a)| {
+                (name.clone(), crate::pricing::session_cost(a.models.iter(), overrides))
+            })
+            .collect()
     }
 
     /// Total tokens across all models.
@@ -150,6 +165,7 @@ pub fn load_all(state_dir: &Path) -> Vec<SessionRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::usage::{AgentUsage, AGENT_MAIN, AGENT_SUB};
     use tempfile::TempDir;
 
     #[test]
@@ -172,19 +188,28 @@ mod tests {
     }
 
     fn sample_aggregate() -> Aggregate {
+        let usage =
+            Usage { input: 5, output: 7, cache_write_5m: 0, cache_write_1h: 0, cache_read: 1 };
         let mut models = BTreeMap::new();
-        models.insert(
-            "claude-x".to_string(),
-            Usage { input: 5, output: 7, cache_write_5m: 0, cache_write_1h: 0, cache_read: 1 },
-        );
+        models.insert("claude-x".to_string(), usage.clone());
         let mut tools = BTreeMap::new();
         tools.insert("Bash".to_string(), 3);
+        // Split: 3 turns main, 1 turn sub-agent (totals still 4 turns / 13 tokens).
+        let mut agents = BTreeMap::new();
+        let mut main_models = BTreeMap::new();
+        main_models.insert("claude-x".to_string(), usage.clone());
+        agents.insert(AGENT_MAIN.to_string(), AgentUsage { models: main_models, turns: 3 });
+        agents.insert(
+            AGENT_SUB.to_string(),
+            AgentUsage { models: BTreeMap::new(), turns: 1 },
+        );
         Aggregate {
             models,
             turns: 4,
             tools,
             first_ts: Some("2026-06-27T01:00:00Z".to_string()),
             last_ts: Some("2026-06-27T02:00:00Z".to_string()),
+            agents,
         }
     }
 
@@ -221,9 +246,23 @@ mod tests {
         assert_eq!(loaded.session_id, "sess-1");
         assert_eq!(loaded.total_tokens(), 13);
         assert_eq!(loaded.tools.get("Bash"), Some(&3));
+        // Per-agent breakdown survives the JSON roundtrip.
+        assert_eq!(loaded.agents.get(AGENT_MAIN).map(|a| a.turns), Some(3));
+        assert_eq!(loaded.agents.get(AGENT_SUB).map(|a| a.turns), Some(1));
 
         // Missing id → None, not an error.
         assert!(load_one(dir.path(), "nope").is_none());
+    }
+
+    #[test]
+    fn agent_costs_split_by_bucket() {
+        let rec = SessionRecord::from_aggregate(
+            "sid", "proj", "/cwd", sample_aggregate(), true, "ts",
+        );
+        let costs = rec.agent_costs(&[]);
+        // Main carried the tokens; sub-agent bucket had none → 0 USD.
+        assert!(costs.contains_key(AGENT_MAIN));
+        assert_eq!(costs.get(AGENT_SUB).copied(), Some(0.0));
     }
 
     #[test]

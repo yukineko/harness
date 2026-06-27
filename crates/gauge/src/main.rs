@@ -175,6 +175,22 @@ fn session_cmd() {
         );
     }
 
+    if !rec.agents.is_empty() {
+        println!("\nagents (main vs sub-agent)");
+        let costs = rec.agent_costs(&cfg.pricing);
+        let mut agents: Vec<_> = rec.agents.iter().collect();
+        agents.sort_by(|a, b| b.1.turns.cmp(&a.1.turns));
+        for (name, a) in agents {
+            println!(
+                "  {:<12} {:>9}  {:>8}  {} turns",
+                name,
+                report::money(costs.get(name).copied().unwrap_or(0.0)),
+                report::tokens_short(a.total_tokens()),
+                a.turns,
+            );
+        }
+    }
+
     if !rec.tools.is_empty() {
         println!("\ntools");
         let mut tools: Vec<_> = rec.tools.iter().collect();

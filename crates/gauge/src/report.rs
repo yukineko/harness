@@ -67,6 +67,8 @@ pub fn render(records: &[SessionRecord], overrides: &[PriceOverride]) -> String 
     let mut by_model: BTreeMap<String, (f64, Usage)> = BTreeMap::new();
     // day -> (cost, tokens)
     let mut by_day: BTreeMap<String, (f64, u64)> = BTreeMap::new();
+    // agent bucket (main / sub-agent) -> (cost, tokens, turns)
+    let mut by_agent: BTreeMap<String, (f64, u64, u64)> = BTreeMap::new();
 
     for rec in records {
         let cost = record_cost(rec, overrides);
@@ -90,6 +92,17 @@ pub fn render(records: &[SessionRecord], overrides: &[PriceOverride]) -> String 
             let d = by_day.entry(day).or_default();
             d.0 += cost;
             d.1 += toks;
+        }
+
+        for (bucket, a) in &rec.agents {
+            let e = by_agent.entry(bucket.clone()).or_default();
+            e.0 += a
+                .models
+                .iter()
+                .map(|(m, u)| pricing::cost(m, u, overrides))
+                .sum::<f64>();
+            e.1 += a.total_tokens();
+            e.2 += a.turns;
         }
     }
 
@@ -133,6 +146,22 @@ pub fn render(records: &[SessionRecord], overrides: &[PriceOverride]) -> String 
             tokens_short(u.output),
             tokens_short(u.cache_write_5m + u.cache_write_1h + u.cache_read),
         ));
+    }
+
+    // --- by agent (main vs sub-agent) ---
+    if !by_agent.is_empty() {
+        out.push_str("\nエージェント別 (main vs sub-agent)\n");
+        let mut agents: Vec<_> = by_agent.into_iter().collect();
+        agents.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
+        for (name, (cost, toks, turns)) in agents.iter() {
+            out.push_str(&format!(
+                "  {:<12} {:>9}  {:>8}  {} turns\n",
+                truncate(name, 12),
+                money(*cost),
+                tokens_short(*toks),
+                commas(*turns),
+            ));
+        }
     }
 
     // --- by day (most recent 14) ---
@@ -181,5 +210,37 @@ mod tests {
     #[test]
     fn empty_report() {
         assert!(render(&[], &[]).contains("no sessions"));
+    }
+
+    #[test]
+    fn report_shows_agent_breakdown() {
+        use harness_core::usage::AgentUsage;
+        let mut rec = SessionRecord {
+            project: "proj".to_string(),
+            turns: 2,
+            last_ts: Some("2026-06-27T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+        rec.models.insert(
+            "claude-opus-4-8".to_string(),
+            Usage { input: 150, output: 150, ..Default::default() },
+        );
+        let mut main = AgentUsage { turns: 1, ..Default::default() };
+        main.models.insert(
+            "claude-opus-4-8".to_string(),
+            Usage { input: 100, output: 100, ..Default::default() },
+        );
+        let mut sub = AgentUsage { turns: 1, ..Default::default() };
+        sub.models.insert(
+            "claude-opus-4-8".to_string(),
+            Usage { input: 50, output: 50, ..Default::default() },
+        );
+        rec.agents.insert("main".to_string(), main);
+        rec.agents.insert("sub-agent".to_string(), sub);
+
+        let out = render(&[rec], &[]);
+        assert!(out.contains("エージェント別"));
+        assert!(out.contains("main"));
+        assert!(out.contains("sub-agent"));
     }
 }
