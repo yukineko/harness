@@ -11,6 +11,7 @@ discovery(hypothesis) → flow → condukt → measure → learn のループを
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
+DoD1 着地: hypothesis が /flow の3つ目の source（crates/flow/skills/flow/SKILL.md + SessionStart directive）。DoD2 も証拠ゲートは着地済み。残る最大差分は2つ: (a) merge 時に linked hypothesis を awaiting-measurement にする status 追加（12c7726f, DoD2 残り）、(b) condukt の experiment タスククラス（366bf65d, DoD3）。次の右サイズ一手の主筋は (b) experiment class＝discovery を delivery と分けるループの最後のピース。
 
 ## next_action
 
