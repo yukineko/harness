@@ -70,10 +70,13 @@ enum Command {
         #[arg(long, default_value = "")]
         notes: String,
     },
-    /// Search the playbook store for similar past task procedures.
-    Playbook {
+    /// Search past task *procedures* (how similar verified tasks were solved) by
+    /// k-NN. Distinct from the standalone `playbook` plugin, which injects curated
+    /// knowledge notes. `playbook` is kept as a hidden alias for back-compat.
+    #[command(alias = "playbook")]
+    Procedures {
         #[command(subcommand)]
-        action: PlaybookAction,
+        action: ProceduresAction,
     },
     /// Suggest a model for a single free-text task.
     Suggest {
@@ -136,8 +139,8 @@ enum Command {
 }
 
 #[derive(Subcommand)]
-enum PlaybookAction {
-    /// Search playbooks for similar past task procedures (returns JSON array).
+enum ProceduresAction {
+    /// Search procedures for similar past tasks (returns JSON array).
     Search {
         /// Query text (task title / description).
         #[arg(long)]
@@ -285,8 +288,8 @@ fn run_user(cmd: Command) -> Result<()> {
             }
             Ok(())
         }
-        Command::Playbook { action } => match action {
-            PlaybookAction::Search { query, files, k } => {
+        Command::Procedures { action } => match action {
+            ProceduresAction::Search { query, files, k } => {
                 let playbooks = store::load_playbooks(&cfg.playbook_path());
                 if playbooks.is_empty() {
                     println!("[]");

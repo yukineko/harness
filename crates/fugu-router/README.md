@@ -23,6 +23,14 @@ This is the honest substitution discussed in `docs/AGENTIC-CODING-GUIDE.md`:
 fugu *learns* the router; we *retrieve* a policy. Coarser (per-task, not
 per-token), but it needs no API key and no embedding service.
 
+> **`procedures` vs the `playbook` plugin.** fugu-router's `procedures search`
+> subcommand retrieves *how similar verified tasks were solved* (k-NN over the
+> outcome store) to seed condukt's interpreter. That is distinct from the
+> standalone **`playbook` plugin**, which injects curated *knowledge notes* into
+> a prompt. The subcommand used to be named `playbook` (hence the internal
+> `playbooks.jsonl` store, kept for back-compat); it was renamed to `procedures`
+> to remove that collision. `fugu-router playbook …` still works as a hidden alias.
+
 ## How it maps to fugu
 
 | fugu | fugu-router |

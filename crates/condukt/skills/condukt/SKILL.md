@@ -147,7 +147,7 @@ KNOWLEDGE=$(condukt knowledge 2>/dev/null || true)
 interpreter プロンプトに含める (Devin Playbooks 相当):
 ```
 if command -v fugu-router >/dev/null 2>&1; then
-  PLAYBOOKS=$(fugu-router playbook search --query "<課題文の要約>" --k 3 2>/dev/null || true)
+  PLAYBOOKS=$(fugu-router procedures search --query "<課題文の要約>" --k 3 2>/dev/null || true)
   # PLAYBOOKS が "[]" 以外なら interpreter プロンプトに playbook_context: $PLAYBOOKS として渡す
 fi
 ```

@@ -172,7 +172,7 @@ KNOWLEDGE=$(condukt knowledge 2>/dev/null || true)
 （Devin Playbooks 相当）。
 
 ```
-PLAYBOOKS=$(fugu-router playbook search --query "<課題文の要約>" --k 3 2>/dev/null || true)
+PLAYBOOKS=$(fugu-router procedures search --query "<課題文の要約>" --k 3 2>/dev/null || true)
 ```
 
 `condukt-interpreter` を `Task` で起動し、課題を Decomposition JSON に変換させます。
@@ -583,7 +583,7 @@ fugu-router は condukt のソフト依存です。存在しない場合でも c
 
 ```bash
 if command -v fugu-router >/dev/null 2>&1; then
-  PLAYBOOKS=$(fugu-router playbook search --query "<課題文の要約>" --k 3 2>/dev/null || true)
+  PLAYBOOKS=$(fugu-router procedures search --query "<課題文の要約>" --k 3 2>/dev/null || true)
 fi
 ```
 
