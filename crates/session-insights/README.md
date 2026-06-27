@@ -15,7 +15,6 @@ blocks a turn.
 
 | Hook | Records |
 |---|---|
-| **SessionStart** | prints the open **backlog** for the current project (see below) |
 | **PostToolUse** | each tool call (per-tool counts, distinct files touched) |
 | **Stop** | a completed turn; optionally writes the Obsidian session note |
 
@@ -42,24 +41,48 @@ session a1b2c3d4  [2026-06-20T18:00:00+09:00]
 
 ## Backlog (cross-session open issues)
 
-Beyond the per-session record note, session-insights keeps a durable,
-self-pruning list of what's still open across sessions — so you can always tell
-what to do next. It lives in one global Obsidian note (`<vault>/backlog.md`) and
-is surfaced at **SessionStart**. Resolved items are removed from the note (the
-JSON store keeps them for history).
+The durable, cross-project queue is the **standalone [`backlog`](../backlog)
+crate** (`~/.backlog/tasks.toml`), which is now the *single canonical* queue and
+injects pending tasks at SessionStart via its own hook. session-insights no
+longer keeps an independent backlog store — its old `session-insights backlog`
+subcommands and the `<vault>/backlog.md` / `backlog.json` store have been
+removed.
 
 ```sh
-session-insights backlog add --project harness --text "rebuild darwin-x86_64 on an x86 Mac"
-session-insights backlog list --project harness --json   # for tools / the /record flow
-session-insights backlog resolve --id bk-3c886e1f         # drop it from the note
-session-insights backlog render                           # (re)write <vault>/backlog.md
-session-insights backlog brief                            # SessionStart summary
+backlog add --title "rebuild darwin-x86_64 on an x86 Mac" --project harness
+backlog list --project harness --status pending
+backlog done <id>          # close a finished item
 ```
 
-The `/record` command reconciles the backlog automatically: it resolves what the
-session closed and adds genuinely-open follow-ups from `## 残課題`. `add` is
-idempotent by project+text, so items never duplicate. Zero-config — the store is
-local; `render` is a no-op until the vault dir exists.
+The `/record` command reconciles this backlog automatically: it closes what the
+session finished (`backlog done <id>`) and adds genuinely-open follow-ups from
+`## 残課題` (`backlog add`).
+
+### One-time migration from the old session-insights backlog
+
+If you used the old `session-insights backlog` and have a `backlog.json` in your
+state dir, migrate its open items into the standalone backlog **once**. The
+script below is idempotent (the standalone `backlog add` dedups by project+title)
+and is a safe no-op when `backlog.json` is empty or absent:
+
+```sh
+# Default state dir is ~/.session-insights/state (override = state_dir in
+# session-insights.toml; adjust BACKLOG_JSON below if you set a custom one).
+STATE_DIR="$HOME/.session-insights/state"
+BACKLOG_JSON="$STATE_DIR/backlog.json"
+if [ -s "$BACKLOG_JSON" ]; then
+  jq -r '.[] | select(.status=="open") | [.project, .text] | @tsv' "$BACKLOG_JSON" \
+    | while IFS=$'\t' read -r project text; do
+        [ -n "$text" ] && backlog add --title "$text" --project "${project:-default}"
+      done
+else
+  echo "no backlog.json to migrate (nothing to do)"
+fi
+```
+
+After migrating you can delete `backlog.json` (and the auto-generated
+`<vault>/backlog.md`, which was a session-insights render artifact and is no
+longer produced).
 
 ## Obsidian logging (opt-in)
 
