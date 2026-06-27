@@ -23,7 +23,7 @@ pub fn run() -> Option<String> {
 /// Testable core: takes an explicit config and repo root.
 pub(crate) fn run_with(cfg: &Config, repo_root: &Path) -> Option<String> {
     let store = Store::load(cfg).ok()?;
-    let all = store.list(None);
+    let all = store.all();
 
     let open: Vec<_> = all.iter().filter(|h| h.status.is_open()).collect();
     if open.is_empty() {

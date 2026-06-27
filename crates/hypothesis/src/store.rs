@@ -111,19 +111,16 @@ impl Store {
         self.save()
     }
 
-    pub fn list(&self, status: Option<&str>) -> &[Hypothesis] {
-        match status {
-            None => &self.hypotheses,
-            Some(_) => &self.hypotheses, // filtered below via iter in callers; return all for now
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn list_filtered(&self, status: Option<&str>) -> Vec<&Hypothesis> {
+    pub fn list(&self, status: Option<&str>) -> Vec<&Hypothesis> {
         match status {
             None => self.hypotheses.iter().collect(),
             Some(s) => self.hypotheses.iter().filter(|h| h.status.to_string() == s).collect(),
         }
+    }
+
+    /// All hypotheses as a backing slice (for callers that filter themselves).
+    pub fn all(&self) -> &[Hypothesis] {
+        &self.hypotheses
     }
 }
 
@@ -249,6 +246,32 @@ mod tests {
         let h = &st2.list(None)[0];
         assert!(h.status.is_rejected());
         assert_eq!(h.condukt_run, Some("run-xyz789".to_string()));
+    }
+
+    #[test]
+    fn test_list_status_filter() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let open_id = st.add("stays open".to_string(), None).unwrap();
+        let val_id = st.add("gets validated".to_string(), None).unwrap();
+        let rej_id = st.add("gets rejected".to_string(), None).unwrap();
+        st.validate(&val_id, vec!["measured".to_string()], None).unwrap();
+        st.reject(&rej_id, Some("disproven".to_string()), None).unwrap();
+
+        // --status open must exclude validated/rejected (regression: filter was a no-op)
+        let open = st.list(Some("open"));
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, open_id);
+
+        assert_eq!(st.list(Some("validated")).len(), 1);
+        assert_eq!(st.list(Some("validated"))[0].id, val_id);
+        assert_eq!(st.list(Some("rejected")).len(), 1);
+        assert_eq!(st.list(Some("rejected"))[0].id, rej_id);
+
+        // None returns everything
+        assert_eq!(st.list(None).len(), 3);
     }
 
     #[test]
