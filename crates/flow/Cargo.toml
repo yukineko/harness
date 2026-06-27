@@ -1,0 +1,14 @@
+[package]
+name = "flow"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Unified source→executor driver: binds compass/backlog (task sources) to condukt (executor); subscription-native."
+license = "MIT"
+
+[[bin]]
+name = "flow"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
