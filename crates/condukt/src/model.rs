@@ -14,6 +14,9 @@ pub enum Class {
     Serial,
     /// Requires an approval gate (deploy, shared infra). Never auto-run.
     Gated,
+    /// A reversible spike/probe whose value is learning, not a deliverable.
+    /// Scheduled on its own track and never placed on the auto-merge path.
+    Experiment,
 }
 
 /// One unit of work in a decomposition.
@@ -79,6 +82,9 @@ pub struct Schedule {
     pub serial: Vec<String>,
     /// Tasks that require an approval gate; never scheduled for auto-run.
     pub gated: Vec<String>,
+    /// Experiment/spike tasks: reversible probes scheduled on their own track
+    /// and never placed on the auto-merge path (batches/serial).
+    pub experiment: Vec<String>,
     /// Non-fatal notes (e.g. "task X touches a shared path -> serial").
     pub warnings: Vec<String>,
 }
@@ -169,5 +175,14 @@ mod tests {
         )
         .expect("decomposition with confidence should parse");
         assert_eq!(dec.tasks[0].confidence.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn task_with_experiment_class_parses() {
+        let dec: Decomposition = serde_json::from_str(
+            r#"{"goal":"g","tasks":[{"id":"x","class":"experiment"}]}"#,
+        )
+        .expect("decomposition with experiment class should parse");
+        assert_eq!(dec.tasks[0].class, Class::Experiment);
     }
 }

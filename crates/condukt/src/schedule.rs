@@ -234,11 +234,19 @@ pub fn schedule(dec: &Decomposition, shared_globs: &[String]) -> Schedule {
     let shared = build_globset(shared_globs);
 
     let mut gated: Vec<String> = Vec::new();
+    let mut experiment: Vec<String> = Vec::new();
     let mut forced_serial: HashSet<String> = HashSet::new();
 
     for t in &dec.tasks {
         match t.class {
             Class::Gated => gated.push(t.id.clone()),
+            Class::Experiment => {
+                experiment.push(t.id.clone());
+                sched.warnings.push(format!(
+                    "task '{}' is an experiment -> not auto-merged",
+                    t.id
+                ));
+            }
             Class::Serial => {
                 forced_serial.insert(t.id.clone());
             }
@@ -257,14 +265,21 @@ pub fn schedule(dec: &Decomposition, shared_globs: &[String]) -> Schedule {
 
     gated.sort();
     sched.gated = gated.clone();
-    let gated_set: HashSet<&str> = sched.gated.iter().map(|s| s.as_str()).collect();
+    experiment.sort();
+    sched.experiment = experiment.clone();
+    let excluded: HashSet<&str> = sched
+        .gated
+        .iter()
+        .chain(sched.experiment.iter())
+        .map(|s| s.as_str())
+        .collect();
 
     let depth = compute_depths(dec);
 
     // Parallel-eligible tasks grouped by dependency depth.
     let mut by_depth: HashMap<usize, Vec<&Task>> = HashMap::new();
     for t in &dec.tasks {
-        if gated_set.contains(t.id.as_str()) || forced_serial.contains(&t.id) {
+        if excluded.contains(t.id.as_str()) || forced_serial.contains(&t.id) {
             continue;
         }
         let d = *depth.get(t.id.as_str()).unwrap_or(&0);
@@ -412,5 +427,33 @@ mod tests {
     #[test]
     fn empty_decomposition_is_invalid() {
         assert!(!validate(&dec(vec![])).is_empty());
+    }
+
+    #[test]
+    fn experiment_is_excluded_from_merge_path() {
+        let d = dec(vec![
+            task("a", &["src/a.rs"], &[], Class::Parallel),
+            task("x", &["src/x.rs"], &[], Class::Experiment),
+        ]);
+        let s = schedule(&d, &[]);
+        // Experiment routed onto its own track, never the auto-merge path.
+        assert_eq!(s.experiment, vec!["x"]);
+        assert!(!s.batches.iter().any(|b| b.parallel.contains(&"x".into())));
+        assert!(!s.serial.contains(&"x".into()));
+        assert!(!s.gated.contains(&"x".into()));
+        // The parallel sibling is unaffected.
+        assert_eq!(s.batches.len(), 1);
+        assert_eq!(s.batches[0].parallel, vec!["a"]);
+        // A warning marks it as not auto-merged.
+        assert!(s
+            .warnings
+            .iter()
+            .any(|w| w.contains("experiment") && w.contains("not auto-merged")));
+    }
+
+    #[test]
+    fn experiment_decomposition_validates() {
+        let d = dec(vec![task("x", &["src/x.rs"], &[], Class::Experiment)]);
+        assert!(validate(&d).is_empty());
     }
 }
