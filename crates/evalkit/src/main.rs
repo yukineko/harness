@@ -14,6 +14,7 @@
 //! `run_hook`: a gate that swallowed its own failures and exited 0 would be
 //! worse than useless.
 
+mod canary;
 mod case;
 mod run;
 
@@ -39,6 +40,9 @@ enum Command {
     Run(RunArgs),
     /// List discovered cases without running them.
     List(RunArgs),
+    /// Diff two `evalkit run --json` outputs (old vs new): pass-rate delta plus
+    /// regressions / fixes / added / dropped — the offline promptfoo side-by-side.
+    Canary(CanaryArgs),
 }
 
 #[derive(Args)]
@@ -57,11 +61,28 @@ struct RunArgs {
     json: bool,
 }
 
+#[derive(Args)]
+struct CanaryArgs {
+    /// Baseline `evalkit run --json` output (the old prompt/SKILL version).
+    #[arg(long)]
+    baseline: PathBuf,
+    /// Current `evalkit run --json` output (the new prompt/SKILL version).
+    #[arg(long)]
+    current: PathBuf,
+    /// Emit a machine-readable JSON summary instead of the human report.
+    #[arg(long)]
+    json: bool,
+    /// Exit 1 if any case regressed (pass → fail); otherwise the diff is informational.
+    #[arg(long)]
+    fail_on_regression: bool,
+}
+
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
         Command::Run(a) => run::execute(a.dir, a.bin_dir, a.root, a.json, false),
         Command::List(a) => run::execute(a.dir, a.bin_dir, a.root, a.json, true),
+        Command::Canary(a) => canary::execute(a.baseline, a.current, a.json, a.fail_on_regression),
     };
     exit(code);
 }
