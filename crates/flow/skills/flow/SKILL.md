@@ -110,7 +110,13 @@ condukt の完了ゲートを通ったら結果を source に書き戻す:
 
 - **成功**:
   - backlog 由来 → `backlog done <id>`
-  - compass 由来 → compass の一手を完了として記録し、次サイクルの gap を取り直す（`compass gap`）。
+  - compass 由来 → 完了した move を **measuring_stick で判定**し、その verdict を記録する（＝計測ループを閉じる）:
+    ```bash
+    compass outcome --verdict <forward|unchanged|backward> --evidence "<観測した成果>"
+    ```
+    verdict は move の diff・テスト結果・gap への接近度から **driver(LLM) が判定**する（前進=forward / 不変=unchanged / 後退=backward）。
+    `--evidence` は計測値（テスト数・ベンチ・観測した挙動）を必須とする＝出荷だけでは記録しない（build ≠ validate）。
+    記録後 `compass gap` を取り直すと `last_outcome` が次サイクルに反映される（人手の別コマンド不要＝sink の一部として自動記録）。
   - hypothesis 由来 → **出荷しただけでは validate しない**。実験で観測した成果を添えて
     `hypothesis validate <id> --evidence "<観測した成果>"`（反証なら `reject <id> --reason "..."`）。
     計測結果が未取得なら仮説は open のまま残し、計測を残課題として報告する（build ≠ validate）。
