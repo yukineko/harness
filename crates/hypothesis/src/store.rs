@@ -84,28 +84,42 @@ impl Store {
     }
 
     pub fn validate(&mut self, id: &str, evidence: Vec<String>, run_id: Option<String>) -> Result<()> {
+        // A hypothesis is "validated" by measured learning, not by code shipping.
+        // Require at least one non-empty piece of evidence so a build alone can't
+        // flip the status.
+        if evidence.iter().all(|e| e.trim().is_empty()) {
+            anyhow::bail!(
+                "validate requires measured evidence: pass --evidence \"<observed outcome>\" \
+                 (shipping code is not validation)"
+            );
+        }
         let h = self
             .hypotheses
             .iter_mut()
             .find(|h| h.id == id)
             .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
         h.status = Status::Validated;
-        h.evidence.extend(evidence);
+        h.evidence.extend(evidence.into_iter().filter(|e| !e.trim().is_empty()));
         h.condukt_run = run_id;
         h.updated_at = now_iso();
         self.save()
     }
 
     pub fn reject(&mut self, id: &str, reason: Option<String>, run_id: Option<String>) -> Result<()> {
+        // Rejection is also a measured learning decision; require a reason.
+        let reason = match reason {
+            Some(r) if !r.trim().is_empty() => r,
+            _ => anyhow::bail!(
+                "reject requires a reason: pass --reason \"<what disproved it>\""
+            ),
+        };
         let h = self
             .hypotheses
             .iter_mut()
             .find(|h| h.id == id)
             .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
         h.status = Status::Rejected;
-        if let Some(r) = reason {
-            h.evidence.push(r);
-        }
+        h.evidence.push(reason);
         h.condukt_run = run_id;
         h.updated_at = now_iso();
         self.save()
@@ -201,10 +215,10 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
 
-        let err = st.validate("deadbeef", vec![], None).unwrap_err();
+        let err = st.validate("deadbeef", vec!["measured".to_string()], None).unwrap_err();
         assert!(err.to_string().contains("hypothesis not found"));
 
-        let err2 = st.reject("deadbeef", None, None).unwrap_err();
+        let err2 = st.reject("deadbeef", Some("disproven".to_string()), None).unwrap_err();
         assert!(err2.to_string().contains("hypothesis not found"));
     }
 
@@ -225,7 +239,7 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("validate with run".to_string(), None).unwrap();
-        st.validate(&id, vec![], Some("run-abc123".to_string())).unwrap();
+        st.validate(&id, vec!["measured".to_string()], Some("run-abc123".to_string())).unwrap();
 
         let st2 = Store::load(&cfg).unwrap();
         let h = &st2.list(None)[0];
@@ -240,12 +254,35 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("reject with run".to_string(), None).unwrap();
-        st.reject(&id, None, Some("run-xyz789".to_string())).unwrap();
+        st.reject(&id, Some("disproven".to_string()), Some("run-xyz789".to_string())).unwrap();
 
         let st2 = Store::load(&cfg).unwrap();
         let h = &st2.list(None)[0];
         assert!(h.status.is_rejected());
         assert_eq!(h.condukt_run, Some("run-xyz789".to_string()));
+    }
+
+    #[test]
+    fn test_validate_requires_evidence() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("needs measuring".to_string(), None).unwrap();
+
+        // Empty / whitespace-only evidence is refused (shipping != validation).
+        let err = st.validate(&id, vec![], Some("run-1".to_string())).unwrap_err();
+        assert!(err.to_string().contains("requires measured evidence"));
+        let err2 = st.validate(&id, vec!["   ".to_string()], None).unwrap_err();
+        assert!(err2.to_string().contains("requires measured evidence"));
+
+        // Status unchanged after a refused validate.
+        assert!(st.list(None)[0].status.is_open());
+
+        // reject likewise requires a reason.
+        let err3 = st.reject(&id, None, None).unwrap_err();
+        assert!(err3.to_string().contains("requires a reason"));
+        assert!(st.list(None)[0].status.is_open());
     }
 
     #[test]
