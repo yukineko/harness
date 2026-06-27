@@ -28,10 +28,46 @@ pub struct Episode {
     pub pass: bool,
     #[serde(default)]
     pub cost_usd: f64,
+    /// Human correction of the verifier's self-label, if any. `Some(true)` =
+    /// human says good, `Some(false)` = human says bad. `None` = unlabeled, so
+    /// the verifier's `pass` stands. Overrides `pass` in policy aggregation —
+    /// human teacher signal de-biases the verifier's self-pass feedback loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_label: Option<bool>,
+    /// Who applied `human_label` (e.g. "human"). Provenance only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labeled_by: Option<String>,
 }
 
 fn default_role() -> String {
     "worker".to_string()
+}
+
+impl Episode {
+    /// The effective pass signal the policy should learn from: the human label
+    /// when present, otherwise the verifier's self-reported `pass`.
+    pub fn effective_pass(&self) -> bool {
+        self.human_label.unwrap_or(self.pass)
+    }
+}
+
+/// Overwrite the episode store with `eps` (load → modify → save). The store is
+/// normally append-only; this is the one explicit admin rewrite (used by
+/// `label`, mirroring `dedup`). Writes via a temp file + rename so a crash
+/// mid-write can't truncate the store.
+pub fn save_all(path: &Path, eps: &[Episode]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("jsonl.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        for ep in eps {
+            let line = serde_json::to_string(ep).unwrap_or_default();
+            writeln!(f, "{line}")?;
+        }
+    }
+    std::fs::rename(&tmp, path)
 }
 
 /// Load all episodes, skipping any malformed line.
@@ -285,7 +321,41 @@ mod tests {
             role: "worker".into(),
             pass: true,
             cost_usd: 0.01,
+            human_label: None,
+            labeled_by: None,
         }
+    }
+
+    #[test]
+    fn effective_pass_prefers_human_label() {
+        let mut ep = sample_ep("t", "sonnet"); // verifier pass: true
+        assert!(ep.effective_pass());
+        ep.human_label = Some(false); // human overrides good → bad
+        assert!(!ep.effective_pass());
+        ep.pass = false;
+        ep.human_label = Some(true); // human rescues a failed episode
+        assert!(ep.effective_pass());
+    }
+
+    #[test]
+    fn save_all_rewrites_store_with_label() {
+        let dir = std::env::temp_dir().join(format!("fugu-saveall-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("episodes.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let mut a = sample_ep("alpha", "sonnet");
+        let b = sample_ep("beta", "haiku");
+        append(&path, &a).unwrap();
+        append(&path, &b).unwrap();
+        a.human_label = Some(false);
+        a.labeled_by = Some("human".into());
+        save_all(&path, &[a, b]).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].human_label, Some(false));
+        assert_eq!(loaded[0].labeled_by.as_deref(), Some("human"));
+        assert!(loaded[1].human_label.is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn sample_pb(title: &str) -> Playbook {
@@ -461,6 +531,8 @@ mod tests {
             role: "worker".into(),
             pass: true,
             cost_usd: 0.12,
+            human_label: None,
+            labeled_by: None,
         };
         append(&path, &ep).unwrap();
         // a junk line must not break the load

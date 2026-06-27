@@ -100,6 +100,24 @@ fugu-router record --title "<task title>" --files "<touched_files>" \
 `--status` other than a pass-word (`verified|pass|passed|ok|true`) counts as a
 non-pass. `--cost` is optional (read it from `gauge` if you want cost-aware routing).
 
+### `label` — human teacher signal
+
+`record`'s `pass` comes from the verifier judging *its own* sibling's work, so a
+biased verifier can reinforce a bad routing choice. `label` lets a human correct
+a recorded episode; the human verdict overrides `pass` in policy aggregation
+(`Episode::effective_pass`), de-biasing the self-reinforcing loop (cf. Langfuse
+Annotation Queues):
+
+```bash
+fugu-router label "add login" --verdict bad  --by human   # most recent title match
+fugu-router label --latest     --verdict good             # the last episode recorded
+```
+
+`--verdict good|bad` sets the episode's `human_label`; the most recent match wins
+(`--latest` ignores the title selector). A labeled-bad episode no longer counts
+as a pass for its model in k-NN voting; a labeled-good one rescues a verifier
+failure. Pass a title selector **or** `--latest`.
+
 ## Integration with condukt
 
 condukt is the orchestration spine; fugu-router is its routing brain. The

@@ -161,7 +161,8 @@ fn aggregate(neighbors: &[Neighbor]) -> BTreeMap<String, ModelStat> {
             passes: 0,
         });
         s.count += 1;
-        if n.ep.pass {
+        // Learn from the human label when present, else the verifier's self-pass.
+        if n.ep.effective_pass() {
             s.passes += 1;
         }
     }
@@ -365,9 +366,33 @@ mod tests {
                 role: "worker".into(),
                 pass,
                 cost_usd: 0.0,
+                human_label: None,
+                labeled_by: None,
             },
             sim: 0.5,
         }
+    }
+
+    #[test]
+    fn human_label_overrides_pass_in_aggregate() {
+        // Two sonnet neighbours that the verifier passed; a human labels one bad.
+        let mut bad = nb("sonnet", true);
+        bad.ep.human_label = Some(false);
+        let good = nb("sonnet", true);
+        let stats = aggregate(&[bad, good]);
+        let s = stats.get("sonnet").unwrap();
+        assert_eq!(s.count, 2);
+        // only the human-good (unlabeled→self-pass) one counts as a pass.
+        assert_eq!(s.passes, 1);
+    }
+
+    #[test]
+    fn human_good_label_rescues_a_failed_episode() {
+        // verifier failed it, but a human says good → counts as a pass.
+        let mut rescued = nb("haiku", false);
+        rescued.ep.human_label = Some(true);
+        let stats = aggregate(&[rescued]);
+        assert_eq!(stats.get("haiku").unwrap().passes, 1);
     }
 
     #[test]

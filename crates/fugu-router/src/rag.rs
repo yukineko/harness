@@ -156,6 +156,8 @@ mod tests {
             role: "worker".into(),
             pass,
             cost_usd: 0.0,
+            human_label: None,
+            labeled_by: None,
         }
     }
 

@@ -71,6 +71,23 @@ enum Command {
         #[arg(long, default_value = "")]
         notes: String,
     },
+    /// Apply a human label to a recorded episode, overriding the verifier's
+    /// self-pass in policy aggregation. The teacher signal that de-biases the
+    /// verifier's self-reinforcing feedback loop (record's sibling).
+    Label {
+        /// Title substring selecting the episode to label (case-insensitive);
+        /// the most recent match is chosen. Omit with --latest.
+        selector: Option<String>,
+        /// Human verdict for the episode.
+        #[arg(long, value_parser = ["good", "bad"])]
+        verdict: String,
+        /// Who applied the label (provenance).
+        #[arg(long, default_value = "human")]
+        by: String,
+        /// Label the most recently recorded episode regardless of title.
+        #[arg(long)]
+        latest: bool,
+    },
     /// Search past task *procedures* (how similar verified tasks were solved) by
     /// k-NN. Distinct from the standalone `playbook` plugin, which injects curated
     /// knowledge notes. `playbook` is kept as a hidden alias for back-compat.
@@ -165,6 +182,64 @@ fn split_files(s: &str) -> Vec<String> {
 
 fn is_pass(status: &str) -> bool {
     matches!(status, "verified" | "pass" | "passed" | "ok" | "true")
+}
+
+/// Pick the episode to label: the most recent (`ts`, tie → last recorded) among
+/// those matching `selector` (case-insensitive title substring), or the most
+/// recent overall when `latest`. Pure for unit-testing.
+fn select_episode_index(
+    eps: &[store::Episode],
+    selector: Option<&str>,
+    latest: bool,
+) -> Option<usize> {
+    let needle = if latest {
+        None
+    } else {
+        selector.map(|s| s.to_lowercase())
+    };
+    eps.iter()
+        .enumerate()
+        .filter(|(_, ep)| match &needle {
+            Some(n) => ep.title.to_lowercase().contains(n),
+            None => true,
+        })
+        .max_by_key(|(i, ep)| (ep.ts, *i))
+        .map(|(i, _)| i)
+}
+
+/// Apply a human label to a recorded episode and rewrite the store. The label
+/// overrides the verifier's self-pass in `policy::aggregate` (via
+/// `Episode::effective_pass`).
+fn cmd_label(
+    cfg: &config::Config,
+    selector: Option<String>,
+    verdict: &str,
+    by: &str,
+    latest: bool,
+) -> Result<()> {
+    if selector.is_none() && !latest {
+        anyhow::bail!("provide a title selector or --latest to choose an episode");
+    }
+    let path = cfg.store_path();
+    let mut eps = store::load(&path);
+    if eps.is_empty() {
+        anyhow::bail!("no episodes recorded yet (store: {})", path.display());
+    }
+    let idx = select_episode_index(&eps, selector.as_deref(), latest).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no episode title matched {:?}",
+            selector.as_deref().unwrap_or("<latest>")
+        )
+    })?;
+    let good = verdict == "good";
+    eps[idx].human_label = Some(good);
+    eps[idx].labeled_by = Some(by.to_string());
+    store::save_all(&path, &eps).context("rewriting episode store")?;
+    eprintln!(
+        "labeled: \"{}\" [{}] human_label={} by={} (was pass={})",
+        eps[idx].title, eps[idx].model, good, by, eps[idx].pass
+    );
+    Ok(())
 }
 
 /// Seed the PRNG from wall-clock (nanosecond) + store size so exploration varies
@@ -268,6 +343,8 @@ fn run_user(cmd: Command) -> Result<()> {
                 role,
                 pass,
                 cost_usd: cost,
+                human_label: None,
+                labeled_by: None,
             };
             store::append(&cfg.store_path(), &ep).context("appending episode")?;
             if pass && !done_criteria.is_empty() {
@@ -289,6 +366,12 @@ fn run_user(cmd: Command) -> Result<()> {
             }
             Ok(())
         }
+        Command::Label {
+            selector,
+            verdict,
+            by,
+            latest,
+        } => cmd_label(&cfg, selector, &verdict, &by, latest),
         Command::Procedures { action } => match action {
             ProceduresAction::Search { query, files, k } => {
                 let playbooks = store::load_playbooks(&cfg.playbook_path());
@@ -620,4 +703,53 @@ fn cmd_stats(cfg: &config::Config, as_json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    use crate::store::Episode;
+
+    fn ep(title: &str, ts: u64) -> Episode {
+        Episode {
+            ts,
+            title: title.into(),
+            touched_files: vec![],
+            class: "parallel".into(),
+            model: "sonnet".into(),
+            role: "worker".into(),
+            pass: true,
+            cost_usd: 0.0,
+            human_label: None,
+            labeled_by: None,
+        }
+    }
+
+    #[test]
+    fn latest_picks_highest_ts() {
+        let eps = vec![ep("a", 10), ep("b", 30), ep("c", 20)];
+        assert_eq!(select_episode_index(&eps, None, true), Some(1));
+    }
+
+    #[test]
+    fn selector_matches_title_case_insensitive_most_recent() {
+        let eps = vec![
+            ep("Add login", 10),
+            ep("add LOGIN again", 20),
+            ep("unrelated", 30),
+        ];
+        assert_eq!(select_episode_index(&eps, Some("login"), false), Some(1));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        let eps = vec![ep("a", 1)];
+        assert_eq!(select_episode_index(&eps, Some("zzz"), false), None);
+    }
+
+    #[test]
+    fn tie_breaks_to_last_recorded() {
+        let eps = vec![ep("x", 5), ep("x", 5)];
+        assert_eq!(select_episode_index(&eps, Some("x"), false), Some(1));
+    }
 }
