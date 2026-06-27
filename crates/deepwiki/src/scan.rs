@@ -10,10 +10,30 @@ use serde::Serialize;
 
 /// Directories never worth descending into.
 const SKIP_DIRS: &[&str] = &[
-    ".git", "target", "node_modules", "dist", "build", "out", ".next", ".nuxt",
-    ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "vendor",
-    ".idea", ".vscode", "coverage", ".gradle", ".cargo", ".deepwiki", ".turbo",
-    "Pods", "DerivedData", ".terraform",
+    ".git",
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "vendor",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".gradle",
+    ".cargo",
+    ".deepwiki",
+    ".turbo",
+    "Pods",
+    "DerivedData",
+    ".terraform",
 ];
 
 /// Extensions we count as source lines, mapped to a language label.
@@ -43,10 +63,22 @@ fn lang_for(ext: &str) -> Option<&'static str> {
 }
 
 const KEY_FILES: &[&str] = &[
-    "Cargo.toml", "package.json", "pyproject.toml", "requirements.txt",
-    "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "Gemfile",
-    "Makefile", "Dockerfile", "docker-compose.yml", "tsconfig.json",
-    "CMakeLists.txt", "composer.json", ".tool-versions",
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "Gemfile",
+    "Makefile",
+    "Dockerfile",
+    "docker-compose.yml",
+    "tsconfig.json",
+    "CMakeLists.txt",
+    "composer.json",
+    ".tool-versions",
 ];
 
 #[derive(Debug, Serialize)]
@@ -79,8 +111,18 @@ pub struct DirEntry {
 fn is_entry_point(rel: &str, name: &str) -> bool {
     matches!(
         name,
-        "main.rs" | "lib.rs" | "main.go" | "main.py" | "__main__.py" | "app.py"
-            | "index.ts" | "index.js" | "main.ts" | "main.js" | "App.tsx" | "Main.java"
+        "main.rs"
+            | "lib.rs"
+            | "main.go"
+            | "main.py"
+            | "__main__.py"
+            | "app.py"
+            | "index.ts"
+            | "index.js"
+            | "main.ts"
+            | "main.js"
+            | "App.tsx"
+            | "Main.java"
     ) || rel.starts_with("cmd/")
         || rel == "src/main.rs"
 }
@@ -111,7 +153,11 @@ pub fn scan(root: &Path) -> RepoMap {
                 continue;
             }
             let files = if is_dir { count_files(&e.path()) } else { 1 };
-            tops.push(DirEntry { name, is_dir, files });
+            tops.push(DirEntry {
+                name,
+                is_dir,
+                files,
+            });
         }
         tops.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(b.files.cmp(&a.files)));
         map.top_level = tops;
@@ -214,7 +260,10 @@ pub fn render_markdown(map: &RepoMap) -> String {
     let mut langs: Vec<(&String, &LangStat)> = map.languages.iter().collect();
     langs.sort_by_key(|b| std::cmp::Reverse(b.1.lines));
     for (lang, st) in langs {
-        s.push_str(&format!("- {lang}: {} files, {} lines\n", st.files, st.lines));
+        s.push_str(&format!(
+            "- {lang}: {} files, {} lines\n",
+            st.files, st.lines
+        ));
     }
 
     s.push_str("\n## top-level layout\n");

@@ -176,7 +176,10 @@ mod tests {
             name: "deploy".into(),
             path: PathBuf::new(),
             global: false,
-            meta: Meta { description: String::new(), aliases: vec!["ship".into()] },
+            meta: Meta {
+                description: String::new(),
+                aliases: vec!["ship".into()],
+            },
             body: "x".into(),
         };
         assert!(r.matches("deploy"));

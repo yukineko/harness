@@ -243,7 +243,10 @@ cmd = "echo home"
         write(&Config::home_path(), HOME_TOML);
         let cfg = Config::load(root);
         assert_eq!(
-            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            cfg.checks
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["homecheck"],
             "untrusted project must fall back to the home config"
         );
@@ -252,7 +255,10 @@ cmd = "echo home"
         trust::add(root).unwrap();
         let cfg = Config::load(root);
         assert_eq!(
-            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            cfg.checks
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["proj"],
             "trusted project config must win over the home config"
         );
@@ -261,7 +267,10 @@ cmd = "echo home"
         assert!(trust::remove(root).unwrap());
         let cfg = Config::load(root);
         assert_eq!(
-            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            cfg.checks
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["homecheck"],
             "untrusting must drop the project config again"
         );
@@ -271,7 +280,10 @@ cmd = "echo home"
         std::env::set_var("HARNESS_TRUST_ALL", "1");
         let cfg = Config::load(root);
         assert_eq!(
-            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            cfg.checks
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["proj"],
             "HARNESS_TRUST_ALL must honor the project config"
         );
@@ -282,7 +294,10 @@ cmd = "echo home"
         let bare = tempfile::tempdir().unwrap();
         let cfg = Config::load(bare.path());
         assert_eq!(
-            cfg.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            cfg.checks
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["homecheck"],
             "home config must load without any trust"
         );

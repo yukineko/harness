@@ -219,7 +219,10 @@ mod tests {
         // 1) Untrusted project: the command must be dropped, but other project
         //    settings (here `desktop`) still apply.
         let cfg = Config::load(project.path());
-        assert_eq!(cfg.command, None, "untrusted project command must be dropped");
+        assert_eq!(
+            cfg.command, None,
+            "untrusted project command must be dropped"
+        );
         assert!(cfg.desktop, "non-command project settings still apply");
 
         // 2) HARNESS_TRUST_ALL trusts every project → command is honored.

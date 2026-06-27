@@ -7,9 +7,8 @@ use std::collections::BTreeSet;
 use crate::store::Episode;
 
 const STOP: &[&str] = &[
-    "the", "a", "an", "to", "of", "and", "or", "for", "in", "on", "with", "add",
-    "update", "fix", "make", "use", "via", "into", "from", "that", "this", "be",
-    "is", "are", "new",
+    "the", "a", "an", "to", "of", "and", "or", "for", "in", "on", "with", "add", "update", "fix",
+    "make", "use", "via", "into", "from", "that", "this", "be", "is", "are", "new",
 ];
 
 /// Normalise free text into a token set: lowercased, alnum, stopwords dropped,
@@ -28,10 +27,42 @@ pub fn tokenize(s: &str) -> BTreeSet<String> {
 /// Dropping these keeps `src/auth/login.ts` vs `src/billing/report.ts` from
 /// looking similar just because they share `src` and `ts`.
 const FILE_STOP: &[&str] = &[
-    "src", "lib", "app", "pkg", "internal", "cmd", "test", "tests", "spec",
-    "dist", "build", "target", "node_modules", "index", "mod", "main", "crates",
-    "ts", "tsx", "js", "jsx", "py", "rs", "go", "rb", "java", "c", "cpp", "h",
-    "hpp", "md", "json", "toml", "yaml", "yml", "txt",
+    "src",
+    "lib",
+    "app",
+    "pkg",
+    "internal",
+    "cmd",
+    "test",
+    "tests",
+    "spec",
+    "dist",
+    "build",
+    "target",
+    "node_modules",
+    "index",
+    "mod",
+    "main",
+    "crates",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "py",
+    "rs",
+    "go",
+    "rb",
+    "java",
+    "c",
+    "cpp",
+    "h",
+    "hpp",
+    "md",
+    "json",
+    "toml",
+    "yaml",
+    "yml",
+    "txt",
 ];
 
 /// Path-derived tokens: meaningful path segments, so `src/auth/login.ts`
@@ -102,7 +133,11 @@ pub fn knn(
         })
         .filter(|n| n.sim >= threshold)
         .collect();
-    scored.sort_by(|a, b| b.sim.partial_cmp(&a.sim).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.sim
+            .partial_cmp(&a.sim)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(k);
     scored
 }
@@ -137,7 +172,12 @@ mod tests {
     fn shared_files_raise_similarity() {
         let episodes = vec![
             ep("rework login handler", &["src/auth/login.ts"], "opus", true),
-            ep("update billing report", &["src/billing/report.ts"], "haiku", true),
+            ep(
+                "update billing report",
+                &["src/billing/report.ts"],
+                "haiku",
+                true,
+            ),
         ];
         let q = vec!["src/auth/login.ts".to_string()];
         let nb = knn("fix login validation", &q, &episodes, 5, 0.0);
@@ -161,7 +201,12 @@ mod tests {
 
     #[test]
     fn threshold_filters_unrelated() {
-        let episodes = vec![ep("update billing report", &["src/billing/report.ts"], "haiku", true)];
+        let episodes = vec![ep(
+            "update billing report",
+            &["src/billing/report.ts"],
+            "haiku",
+            true,
+        )];
         let q = vec!["src/auth/oauth.ts".to_string()];
         let nb = knn("design auth protocol", &q, &episodes, 5, 0.15);
         assert!(nb.is_empty());

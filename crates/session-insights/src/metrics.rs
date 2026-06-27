@@ -112,9 +112,8 @@ impl Session {
 
     /// Coarse work category from the dominant tool group.
     pub fn category(&self) -> &'static str {
-        let group = |names: &[&str]| -> u64 {
-            names.iter().filter_map(|n| self.tools.get(*n)).sum()
-        };
+        let group =
+            |names: &[&str]| -> u64 { names.iter().filter_map(|n| self.tools.get(*n)).sum() };
         let coding = group(&["Edit", "Write", "MultiEdit", "NotebookEdit"]);
         let ops = group(&["Bash"]);
         let research = group(&["Read", "Grep", "Glob", "WebFetch", "WebSearch"]);
@@ -230,9 +229,19 @@ mod tests {
         assert_eq!(s.project, "harness");
         assert_eq!(s.cwd, "/Users/x/src/harness");
         // A later tool event from a changed cwd must NOT rewrite project/cwd.
-        s.ensure("sess-1", "session-insights", "/Users/x/src/harness/crates/session-insights");
-        assert_eq!(s.project, "harness", "project must stay pinned to session start");
-        assert_eq!(s.cwd, "/Users/x/src/harness", "cwd must stay pinned to session start");
+        s.ensure(
+            "sess-1",
+            "session-insights",
+            "/Users/x/src/harness/crates/session-insights",
+        );
+        assert_eq!(
+            s.project, "harness",
+            "project must stay pinned to session start"
+        );
+        assert_eq!(
+            s.cwd, "/Users/x/src/harness",
+            "cwd must stay pinned to session start"
+        );
         assert_eq!(s.session_id, "sess-1");
         assert_eq!(s.started_at, started, "started_at must not change");
     }

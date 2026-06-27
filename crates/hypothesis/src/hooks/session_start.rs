@@ -28,7 +28,10 @@ pub(crate) fn run_with(cfg: &Config, repo_root: &Path) -> Option<String> {
     let open: Vec<_> = all.iter().filter(|h| h.status.is_open()).collect();
     // Awaiting-measurement hypotheses have shipped but still need a human to
     // measure and run validate/reject — surface them so they don't get lost.
-    let awaiting: Vec<_> = all.iter().filter(|h| h.status.is_awaiting_measurement()).collect();
+    let awaiting: Vec<_> = all
+        .iter()
+        .filter(|h| h.status.is_awaiting_measurement())
+        .collect();
     if open.is_empty() && awaiting.is_empty() {
         return None;
     }
@@ -50,7 +53,10 @@ pub(crate) fn run_with(cfg: &Config, repo_root: &Path) -> Option<String> {
     }
 
     for h in &awaiting {
-        out.push_str(&format!("- **[{}]** [awaiting-measurement] {}\n", h.id, h.text));
+        out.push_str(&format!(
+            "- **[{}]** [awaiting-measurement] {}\n",
+            h.id, h.text
+        ));
         if let Some(goal) = &h.linked_goal {
             out.push_str(&format!("  linked_goal: {}\n", goal));
         }
@@ -117,7 +123,8 @@ mod tests {
         let cfg = test_cfg(&dir);
 
         let mut st = Store::load(&cfg).unwrap();
-        st.add("users want faster onboarding".to_string(), None).unwrap();
+        st.add("users want faster onboarding".to_string(), None)
+            .unwrap();
 
         let out = run_with(&cfg, dir.path()).expect("should produce output");
         assert!(out.contains("users want faster onboarding"));
@@ -130,8 +137,11 @@ mod tests {
         let cfg = test_cfg(&dir);
 
         let mut st = Store::load(&cfg).unwrap();
-        let id = st.add("shipped, needs measuring".to_string(), None).unwrap();
-        st.mark_awaiting_measurement(&id, Some("run-1".to_string())).unwrap();
+        let id = st
+            .add("shipped, needs measuring".to_string(), None)
+            .unwrap();
+        st.mark_awaiting_measurement(&id, Some("run-1".to_string()))
+            .unwrap();
 
         let out = run_with(&cfg, dir.path()).expect("should produce output");
         assert!(out.contains("shipped, needs measuring"));
@@ -145,7 +155,8 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("already proven".to_string(), None).unwrap();
-        st.validate(&id, vec!["measured".to_string()], None).unwrap();
+        st.validate(&id, vec!["measured".to_string()], None)
+            .unwrap();
 
         let result = run_with(&cfg, dir.path());
         // All open hypotheses gone → None
@@ -198,11 +209,7 @@ mod tests {
         cfg.inject_limit = 60;
 
         let mut st = Store::load(&cfg).unwrap();
-        st.add(
-            "a".repeat(200),
-            None,
-        )
-        .unwrap();
+        st.add("a".repeat(200), None).unwrap();
 
         let out = run_with(&cfg, dir.path()).expect("output");
         assert!(out.contains("*(truncated)*"));

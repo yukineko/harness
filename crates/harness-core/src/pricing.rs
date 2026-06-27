@@ -37,15 +37,30 @@ pub struct Rate {
 fn builtin_rate(model: &str) -> Rate {
     let m = model.to_lowercase();
     if m.contains("fable") || m.contains("mythos") {
-        Rate { input: 10.0, output: 50.0 }
+        Rate {
+            input: 10.0,
+            output: 50.0,
+        }
     } else if m.contains("opus") {
-        Rate { input: 5.0, output: 25.0 }
+        Rate {
+            input: 5.0,
+            output: 25.0,
+        }
     } else if m.contains("sonnet") {
-        Rate { input: 3.0, output: 15.0 }
+        Rate {
+            input: 3.0,
+            output: 15.0,
+        }
     } else if m.contains("haiku") {
-        Rate { input: 1.0, output: 5.0 }
+        Rate {
+            input: 1.0,
+            output: 5.0,
+        }
     } else {
-        Rate { input: 0.0, output: 0.0 }
+        Rate {
+            input: 0.0,
+            output: 0.0,
+        }
     }
 }
 
@@ -152,11 +167,17 @@ mod tests {
         let mut models: BTreeMap<String, ModelUsage> = BTreeMap::new();
         models.insert(
             "claude-opus-4-8".into(),
-            ModelUsage { input: 1_000_000, ..Default::default() },
+            ModelUsage {
+                input: 1_000_000,
+                ..Default::default()
+            },
         );
         models.insert(
             "claude-haiku-4-5".into(),
-            ModelUsage { output: 1_000_000, ..Default::default() },
+            ModelUsage {
+                output: 1_000_000,
+                ..Default::default()
+            },
         );
         // opus input 5 + haiku output 5 = 10
         assert!((session_cost(models.iter(), &[]) - 10.0).abs() < 1e-9);

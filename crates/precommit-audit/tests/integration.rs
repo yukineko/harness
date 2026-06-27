@@ -130,9 +130,18 @@ fn session_end_blocking_finding_is_advisory_not_a_failed_hook() {
     write(&dir, ".precommit-audit.toml", NO_LINTERS);
     write(&dir, "app.py", "def add(a, b):\n    return a + b\n");
     let (code, err) = run_stop_event(&dir, "SessionEnd");
-    assert_eq!(code, 0, "SessionEnd must never surface a blocking exit; stderr: {err}");
-    assert!(err.contains("advisory"), "advisory wording expected; stderr: {err}");
-    assert!(err.contains("TEST MISSING"), "finding still reported; stderr: {err}");
+    assert_eq!(
+        code, 0,
+        "SessionEnd must never surface a blocking exit; stderr: {err}"
+    );
+    assert!(
+        err.contains("advisory"),
+        "advisory wording expected; stderr: {err}"
+    );
+    assert!(
+        err.contains("TEST MISSING"),
+        "finding still reported; stderr: {err}"
+    );
 }
 
 #[test]
@@ -151,7 +160,11 @@ fn source_with_test_passes() {
     let dir = init_repo();
     write(&dir, ".precommit-audit.toml", NO_LINTERS);
     write(&dir, "app.py", "def add(a, b):\n    return a + b\n");
-    write(&dir, "tests/test_app.py", "def test_add():\n    assert True\n");
+    write(
+        &dir,
+        "tests/test_app.py",
+        "def test_add():\n    assert True\n",
+    );
     let (code, err) = run(&dir);
     assert_eq!(code, 0, "source + test => pass; stderr: {err}");
 }
@@ -160,12 +173,12 @@ fn source_with_test_passes() {
 fn hardcoded_secret_blocks() {
     let dir = init_repo();
     write(&dir, ".precommit-audit.toml", NO_LINTERS);
+    write(&dir, "conf.py", "password = \"hunter2supersecret\"\n");
     write(
         &dir,
-        "conf.py",
-        "password = \"hunter2supersecret\"\n",
+        "tests/test_conf.py",
+        "def test_x():\n    assert True\n",
     );
-    write(&dir, "tests/test_conf.py", "def test_x():\n    assert True\n");
     let (code, err) = run(&dir);
     assert_eq!(code, 1);
     assert!(err.contains("SECRET"), "stderr: {err}");
@@ -175,14 +188,17 @@ fn hardcoded_secret_blocks() {
 fn env_getter_secret_is_allowed() {
     let dir = init_repo();
     write(&dir, ".precommit-audit.toml", NO_LINTERS);
+    write(&dir, "conf.py", "password = os.environ[\"DB_PASSWORD\"]\n");
     write(
         &dir,
-        "conf.py",
-        "password = os.environ[\"DB_PASSWORD\"]\n",
+        "tests/test_conf.py",
+        "def test_x():\n    assert True\n",
     );
-    write(&dir, "tests/test_conf.py", "def test_x():\n    assert True\n");
     let (code, err) = run(&dir);
-    assert_eq!(code, 0, "env getter is not a hard-coded secret; stderr: {err}");
+    assert_eq!(
+        code, 0,
+        "env getter is not a hard-coded secret; stderr: {err}"
+    );
 }
 
 #[test]
@@ -190,13 +206,24 @@ fn hardcoded_ip_blocks_but_testnet_ok() {
     let dir = init_repo();
     write(&dir, ".precommit-audit.toml", NO_LINTERS);
     // 10.x is a real private addr -> flagged; 192.0.2.x is RFC5737 -> benign.
-    write(&dir, "net.py", "HOST = \"10.20.30.40\"\nDOC = \"192.0.2.5\"\n");
-    write(&dir, "tests/test_net.py", "def test_x():\n    assert True\n");
+    write(
+        &dir,
+        "net.py",
+        "HOST = \"10.20.30.40\"\nDOC = \"192.0.2.5\"\n",
+    );
+    write(
+        &dir,
+        "tests/test_net.py",
+        "def test_x():\n    assert True\n",
+    );
     let (code, err) = run(&dir);
     assert_eq!(code, 1);
     assert!(err.contains("HARD-CODED IP"), "stderr: {err}");
     assert!(err.contains("10.20.30.40"), "stderr: {err}");
-    assert!(!err.contains("192.0.2.5"), "test-net must be benign; stderr: {err}");
+    assert!(
+        !err.contains("192.0.2.5"),
+        "test-net must be benign; stderr: {err}"
+    );
 }
 
 #[test]
@@ -208,9 +235,16 @@ fn audit_ignore_suppresses_line() {
         "net.py",
         "HOST = \"10.20.30.40\"  # audit-ignore: lab fixture\n",
     );
-    write(&dir, "tests/test_net.py", "def test_x():\n    assert True\n");
+    write(
+        &dir,
+        "tests/test_net.py",
+        "def test_x():\n    assert True\n",
+    );
     let (code, err) = run(&dir);
-    assert_eq!(code, 0, "audit-ignore must suppress the IP hit; stderr: {err}");
+    assert_eq!(
+        code, 0,
+        "audit-ignore must suppress the IP hit; stderr: {err}"
+    );
 }
 
 #[test]
@@ -219,15 +253,18 @@ fn swallowed_exception_blocks() {
     write(&dir, ".precommit-audit.toml", NO_LINTERS);
     // Bare `except:` is the swallow pattern the check detects (a multi-line
     // `except Exception as e:` + `pass` is intentionally NOT flagged).
+    write(&dir, "app.py", "try:\n    do()\nexcept:\n    pass\n");
     write(
         &dir,
-        "app.py",
-        "try:\n    do()\nexcept:\n    pass\n",
+        "tests/test_app.py",
+        "def test_x():\n    assert True\n",
     );
-    write(&dir, "tests/test_app.py", "def test_x():\n    assert True\n");
     let (code, err) = run(&dir);
     assert_eq!(code, 1);
-    assert!(err.contains("SWALLOWED") || err.contains("FALL-THROUGH"), "stderr: {err}");
+    assert!(
+        err.contains("SWALLOWED") || err.contains("FALL-THROUGH"),
+        "stderr: {err}"
+    );
 }
 
 #[test]
@@ -290,7 +327,10 @@ message = "canonical env only"
     write(&dir, ".precommit-audit.toml", cfg);
     write(&dir, "a.py", "load_dotenv(\"/etc/myapp/app.env\")\n");
     let (code, err) = run(&dir);
-    assert_eq!(code, 0, "unless allowlist must exempt the line; stderr: {err}");
+    assert_eq!(
+        code, 0,
+        "unless allowlist must exempt the line; stderr: {err}"
+    );
 }
 
 #[test]
@@ -301,13 +341,20 @@ fn skip_marker_bypasses_once() {
     write(&dir, ".claude/.audit-skip", "emergency");
     let (code, err) = run(&dir);
     assert_eq!(code, 0, "skip marker bypasses; stderr: {err}");
-    assert!(!dir.join(".claude/.audit-skip").exists(), "skip marker is consumed");
+    assert!(
+        !dir.join(".claude/.audit-skip").exists(),
+        "skip marker is consumed"
+    );
 }
 
 #[test]
 fn line_ending_lf_in_sh_is_fine() {
     let dir = init_repo();
-    write(&dir, ".precommit-audit.toml", "[checks]\nlinters = false\nmissing_test = false\n");
+    write(
+        &dir,
+        ".precommit-audit.toml",
+        "[checks]\nlinters = false\nmissing_test = false\n",
+    );
     write(&dir, "run.sh", "#!/bin/bash\necho hi\n");
     let (code, err) = run(&dir);
     assert_eq!(code, 0, "LF .sh is correct; stderr: {err}");

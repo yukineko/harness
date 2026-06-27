@@ -311,7 +311,10 @@ mod tests {
         // First-create skeleton, then a model fills the prose.
         let first = skeleton(&ctx(tp.to_str().unwrap(), 4));
         let filled = first
-            .replace("<!-- fill: 完了サマリ -->", "実際にやったこと: record.rs を追加")
+            .replace(
+                "<!-- fill: 完了サマリ -->",
+                "実際にやったこと: record.rs を追加",
+            )
             .replace("<!-- fill: 残課題 -->", "テストを増やす");
 
         // Second call: different numbers.

@@ -98,8 +98,7 @@ pub struct ImportSummary {
 /// When `dry_run` is true, nothing is written. Returns a summary.
 pub fn import_episodes(src: &Path, dst: &Path, dry_run: bool) -> std::io::Result<ImportSummary> {
     let existing = load(dst);
-    let existing_hashes: HashSet<String> =
-        existing.iter().map(content_hash_episode).collect();
+    let existing_hashes: HashSet<String> = existing.iter().map(content_hash_episode).collect();
 
     let Ok(text) = std::fs::read_to_string(src) else {
         return Ok(ImportSummary::default());
@@ -110,7 +109,10 @@ pub fn import_episodes(src: &Path, dst: &Path, dry_run: bool) -> std::io::Result
         .filter_map(|l| serde_json::from_str::<Episode>(l).ok())
         .collect();
 
-    let mut summary = ImportSummary { read: src_eps.len(), ..Default::default() };
+    let mut summary = ImportSummary {
+        read: src_eps.len(),
+        ..Default::default()
+    };
     for ep in &src_eps {
         if existing_hashes.contains(&content_hash_episode(ep)) {
             summary.skipped += 1;
@@ -128,8 +130,7 @@ pub fn import_episodes(src: &Path, dst: &Path, dry_run: bool) -> std::io::Result
 /// When `dry_run` is true, nothing is written. Returns a summary.
 pub fn import_playbooks(src: &Path, dst: &Path, dry_run: bool) -> std::io::Result<ImportSummary> {
     let existing = load_playbooks(dst);
-    let existing_hashes: HashSet<String> =
-        existing.iter().map(content_hash_playbook).collect();
+    let existing_hashes: HashSet<String> = existing.iter().map(content_hash_playbook).collect();
 
     let Ok(text) = std::fs::read_to_string(src) else {
         return Ok(ImportSummary::default());
@@ -140,7 +141,10 @@ pub fn import_playbooks(src: &Path, dst: &Path, dry_run: bool) -> std::io::Resul
         .filter_map(|l| serde_json::from_str::<Playbook>(l).ok())
         .collect();
 
-    let mut summary = ImportSummary { read: src_pbs.len(), ..Default::default() };
+    let mut summary = ImportSummary {
+        read: src_pbs.len(),
+        ..Default::default()
+    };
     for pb in &src_pbs {
         if existing_hashes.contains(&content_hash_playbook(pb)) {
             summary.skipped += 1;
@@ -170,7 +174,11 @@ pub fn dedup_episodes(path: &Path) -> std::io::Result<ImportSummary> {
     if skipped > 0 {
         atomic_write_jsonl(path, &unique, serde_json::to_string)?;
     }
-    Ok(ImportSummary { read: total, new: unique.len(), skipped })
+    Ok(ImportSummary {
+        read: total,
+        new: unique.len(),
+        skipped,
+    })
 }
 
 /// Rewrite `path` in place, removing duplicate Playbook records (first-seen wins).
@@ -188,7 +196,11 @@ pub fn dedup_playbooks(path: &Path) -> std::io::Result<ImportSummary> {
     if skipped > 0 {
         atomic_write_jsonl(path, &unique, serde_json::to_string)?;
     }
-    Ok(ImportSummary { read: total, new: unique.len(), skipped })
+    Ok(ImportSummary {
+        read: total,
+        new: unique.len(),
+        skipped,
+    })
 }
 
 /// Write `items` as JSONL to a temp file next to `path`, then rename atomically.

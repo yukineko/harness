@@ -153,9 +153,8 @@ fn is_full_tail(cmd: &str) -> bool {
 /// `&`) — it never enters context, so never gate it. `2>&1` is stderr-dup, not a
 /// file redirect, so its token (`2>&1`) is intentionally not matched here.
 fn redirects_out(cmd: &str) -> bool {
-    cmd.split_whitespace().any(|t| {
-        t == ">" || t == ">>" || (t.starts_with('>') && t.len() > 1) || t == "&"
-    })
+    cmd.split_whitespace()
+        .any(|t| t == ">" || t == ">>" || (t.starts_with('>') && t.len() > 1) || t == "&")
 }
 
 /// The kind of unbounded-dump pattern in `cmd`, or None if it looks safe/bounded.
@@ -241,7 +240,8 @@ mod tests {
     use std::io::Write;
 
     fn big_temp_file(name: &str, bytes: usize) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("ctxrot-preguard-{}-{}", std::process::id(), name));
+        let p =
+            std::env::temp_dir().join(format!("ctxrot-preguard-{}-{}", std::process::id(), name));
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(&vec![b'x'; bytes]).unwrap();
         p
@@ -259,7 +259,10 @@ mod tests {
     fn denies_huge_unbounded_read() {
         let cfg = Config::default();
         let p = big_temp_file("huge.log", 1_200_000);
-        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy() })),
+            &cfg,
+        );
         assert!(out.unwrap().contains("sub-agent"));
         let _ = std::fs::remove_file(&p);
     }
@@ -280,7 +283,10 @@ mod tests {
     fn allows_normal_sized_file() {
         let cfg = Config::default();
         let p = big_temp_file("small.rs", 60_000); // > large_file_bytes but << gate
-        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy() })),
+            &cfg,
+        );
         assert!(out.is_none(), "a 60KB source file must not be gated");
         let _ = std::fs::remove_file(&p);
     }
@@ -292,7 +298,10 @@ mod tests {
             ..Config::default()
         };
         let p = big_temp_file("huge3.log", 1_200_000);
-        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy() })),
+            &cfg,
+        );
         assert!(out.is_none(), "gate_file_bytes=0 disables the gate");
         let _ = std::fs::remove_file(&p);
     }
@@ -307,7 +316,10 @@ mod tests {
         };
         // A tiny file (well under the size gate) is still denied by the rule.
         let p = big_temp_file("rule.log", 100);
-        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy() })),
+            &cfg,
+        );
         assert!(out.unwrap().contains("load_deny"));
         let _ = std::fs::remove_file(&p);
     }
@@ -323,7 +335,10 @@ mod tests {
             &read_input(json!({ "file_path": p.to_string_lossy(), "limit": 10 })),
             &cfg,
         );
-        assert!(out.is_some(), "deny rule should hold even for a bounded slice");
+        assert!(
+            out.is_some(),
+            "deny rule should hold even for a bounded slice"
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -339,7 +354,10 @@ mod tests {
             &read_input(json!({ "file_path": p.to_string_lossy(), "limit": 10 })),
             &cfg,
         );
-        assert!(out.is_none(), "with the flag off, a slice of a denied file is allowed");
+        assert!(
+            out.is_none(),
+            "with the flag off, a slice of a denied file is allowed"
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -350,8 +368,14 @@ mod tests {
             ..Config::default()
         };
         let p = big_temp_file("huge.md", 1_200_000);
-        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
-        assert!(out.is_none(), "a huge but allow-listed file must bypass the gate");
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy() })),
+            &cfg,
+        );
+        assert!(
+            out.is_none(),
+            "a huge but allow-listed file must bypass the gate"
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -363,7 +387,10 @@ mod tests {
             ..Config::default()
         };
         let p = big_temp_file("nogate.log", 100);
-        let out = run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg);
+        let out = run(
+            &read_input(json!({ "file_path": p.to_string_lossy() })),
+            &cfg,
+        );
         assert!(out.is_some(), "deny rules are independent of the size gate");
         let _ = std::fs::remove_file(&p);
     }
@@ -448,7 +475,11 @@ mod tests {
         // The Read path must keep working with the default (Bash-off) config.
         let cfg = Config::default();
         let p = big_temp_file("readstill.log", 1_200_000);
-        assert!(run(&read_input(json!({ "file_path": p.to_string_lossy() })), &cfg).is_some());
+        assert!(run(
+            &read_input(json!({ "file_path": p.to_string_lossy() })),
+            &cfg
+        )
+        .is_some());
         let _ = std::fs::remove_file(&p);
     }
 }

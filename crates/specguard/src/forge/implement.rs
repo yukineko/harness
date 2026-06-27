@@ -39,10 +39,16 @@ impl ImplResult {
 fn parse_impl_output(stdout: &str) -> ParsedImpl {
     let marker_pos = stdout.rfind(IMPL_MARKER);
     if marker_pos.is_none() {
-        return ParsedImpl { found: false, ..Default::default() };
+        return ParsedImpl {
+            found: false,
+            ..Default::default()
+        };
     }
     let trailer = &stdout[marker_pos.unwrap() + IMPL_MARKER.len()..];
-    let mut p = ParsedImpl { found: true, ..Default::default() };
+    let mut p = ParsedImpl {
+        found: true,
+        ..Default::default()
+    };
     for line in trailer.lines() {
         let line = line.trim();
         if let Some(v) = line.strip_prefix("task_id:") {
@@ -95,7 +101,11 @@ pub fn run_task(
         .output();
 
     let worktree_created = add.map(|o| o.status.success()).unwrap_or(false);
-    let effective_root = if worktree_created { wt_path.clone() } else { repo_root.to_path_buf() };
+    let effective_root = if worktree_created {
+        wt_path.clone()
+    } else {
+        repo_root.to_path_buf()
+    };
 
     // Build impl agent config — write-enabled (opposite of normalize).
     let impl_cfg = AgentConfig {
@@ -182,16 +192,18 @@ pub fn run_parallel(
     // Bounded collect: drain in order (ordering matches requirement order).
     handles
         .into_iter()
-        .map(|h| h.join().unwrap_or_else(|_| ImplResult {
-            spec_id: String::new(),
-            req_id: "panic".to_string(),
-            status: "failed".to_string(),
-            test_cmd: None,
-            test_result: None,
-            evidence_note: Some("thread panicked".to_string()),
-            worktree: None,
-            agent_exit: -1,
-        }))
+        .map(|h| {
+            h.join().unwrap_or_else(|_| ImplResult {
+                spec_id: String::new(),
+                req_id: "panic".to_string(),
+                status: "failed".to_string(),
+                test_cmd: None,
+                test_result: None,
+                evidence_note: Some("thread panicked".to_string()),
+                worktree: None,
+                agent_exit: -1,
+            })
+        })
         .collect()
 }
 

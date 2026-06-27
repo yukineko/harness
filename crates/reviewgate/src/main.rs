@@ -84,7 +84,10 @@ fn trust() -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let key = harness_core::trust::add(&root)?;
     println!("trusted {}", key.display());
-    println!("reviewgate will now honor {}.", Config::project_path(&key).display());
+    println!(
+        "reviewgate will now honor {}.",
+        Config::project_path(&key).display()
+    );
     Ok(())
 }
 

@@ -84,23 +84,39 @@ fn exit_on_err(r: anyhow::Result<()>) {
 }
 
 fn session_start() {
-    if Config::disabled_env() { return; }
+    if Config::disabled_env() {
+        return;
+    }
     let raw = read_stdin();
-    let Some(input) = harness_core::hook::HookInput::parse(&raw) else { return };
-    if input.session_id.is_empty() { return; }
+    let Some(input) = harness_core::hook::HookInput::parse(&raw) else {
+        return;
+    };
+    if input.session_id.is_empty() {
+        return;
+    }
     let cwd = input.cwd_or_current();
     let cfg = Config::load(&cwd);
-    if cfg.enabled { record::on_session_start(&input, &cfg); }
+    if cfg.enabled {
+        record::on_session_start(&input, &cfg);
+    }
 }
 
 fn session_end() {
-    if Config::disabled_env() { return; }
+    if Config::disabled_env() {
+        return;
+    }
     let raw = read_stdin();
-    let Some(input) = harness_core::hook::HookInput::parse(&raw) else { return };
-    if input.session_id.is_empty() { return; }
+    let Some(input) = harness_core::hook::HookInput::parse(&raw) else {
+        return;
+    };
+    if input.session_id.is_empty() {
+        return;
+    }
     let cwd = input.cwd_or_current();
     let cfg = Config::load(&cwd);
-    if cfg.enabled { record::on_session_end(&input, &cfg); }
+    if cfg.enabled {
+        record::on_session_end(&input, &cfg);
+    }
 }
 
 fn list(limit: usize) {
@@ -161,4 +177,3 @@ fn status() {
     println!("diff_body_limit:  {} bytes", cfg.diff_body_limit);
     println!("exclude_globs:    {:?}", cfg.exclude_globs);
 }
-

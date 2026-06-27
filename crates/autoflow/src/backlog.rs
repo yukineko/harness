@@ -70,4 +70,3 @@ fn repo_basename(cwd: &Path) -> String {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
-

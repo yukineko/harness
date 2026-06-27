@@ -90,7 +90,10 @@ mod tests {
 
     #[test]
     fn priority_p0() {
-        assert_eq!(make_task(vec!["p0", "cycle:test-fix"], "pending").priority(), 0);
+        assert_eq!(
+            make_task(vec!["p0", "cycle:test-fix"], "pending").priority(),
+            0
+        );
     }
 
     #[test]

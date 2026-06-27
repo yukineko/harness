@@ -143,7 +143,8 @@ pub fn render_shard(
             )
         }
         Shard::Invariants => (
-            "(この shard は不変条件のみを照合する。D1 領域監査は別 shard で実施する。)\n".to_string(),
+            "(この shard は不変条件のみを照合する。D1 領域監査は別 shard で実施する。)\n"
+                .to_string(),
             invariants_block(cfg),
             shard_scope_summary(cfg, scope, None),
         ),
@@ -190,9 +191,13 @@ fn render_decisions(cfg: &Config, scope: &Scope, date: &str) -> String {
         }
     }
     let inscope_canon = if canon.is_empty() {
-        "(in-scope の canon なし — 全 decision について「理由が今も成立するか」を中心に確認)\n".to_string()
+        "(in-scope の canon なし — 全 decision について「理由が今も成立するか」を中心に確認)\n"
+            .to_string()
     } else {
-        canon.iter().map(|c| format!("- `{c}`\n")).collect::<String>()
+        canon
+            .iter()
+            .map(|c| format!("- `{c}`\n"))
+            .collect::<String>()
     };
 
     DECISIONS_TEMPLATE
@@ -472,9 +477,18 @@ mod tests {
         assert_eq!(s.len(), 3);
         assert_eq!(shard_label(&cfg, &scope, s[2]), "decisions");
 
-        let out = render_shard(DECISIONS_TEMPLATE, &cfg, &scope, Shard::Decisions, "2026-06-17");
+        let out = render_shard(
+            DECISIONS_TEMPLATE,
+            &cfg,
+            &scope,
+            Shard::Decisions,
+            "2026-06-17",
+        );
         assert!(out.contains("2026-06-17-x.md"), "lists the decision record");
-        assert!(out.contains("logging/SPEC.md"), "lists in-scope canon to cross-check");
+        assert!(
+            out.contains("logging/SPEC.md"),
+            "lists in-scope canon to cross-check"
+        );
         assert!(out.contains(MARKER));
         assert!(!out.contains("{{"));
     }
@@ -545,7 +559,13 @@ mod tests {
     fn invariant_shard_carries_invariants_not_areas() {
         let cfg = sample_cfg();
         let scope = sample_scope();
-        let out = render_shard(DEFAULT_TEMPLATE, &cfg, &scope, Shard::Invariants, "2026-06-17");
+        let out = render_shard(
+            DEFAULT_TEMPLATE,
+            &cfg,
+            &scope,
+            Shard::Invariants,
+            "2026-06-17",
+        );
         assert!(out.contains("all signing via signature.py"));
         assert!(out.contains(MARKER));
         // Area canon is audited by the area shard, not here.

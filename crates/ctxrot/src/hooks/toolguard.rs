@@ -15,7 +15,15 @@ use harness_core::hook::HookInput;
 
 /// Tools whose output is the usual rot vector. Others (Edit, Write, TodoWrite…)
 /// are skipped even if their echoed response is large.
-const WATCHED: &[&str] = &["Read", "Bash", "Grep", "Glob", "WebFetch", "BashOutput", "NotebookRead"];
+const WATCHED: &[&str] = &[
+    "Read",
+    "Bash",
+    "Grep",
+    "Glob",
+    "WebFetch",
+    "BashOutput",
+    "NotebookRead",
+];
 
 pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
     if input.tool_name.is_empty() || !WATCHED.contains(&input.tool_name.as_str()) {

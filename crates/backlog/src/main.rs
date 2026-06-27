@@ -355,5 +355,8 @@ fn format_unix_datetime(secs: u64) -> String {
     let month = j + 2 - 12 * l;
     let year = 100 * (n - 49) + i + l;
 
-    format!("{:04}-{:02}-{:02} {:02}:{:02} UTC", year, month, day, hh, mm)
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        year, month, day, hh, mm
+    )
 }

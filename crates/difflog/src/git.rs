@@ -41,9 +41,7 @@ pub fn diff_stat(root: &Path, base: &str) -> String {
         .current_dir(root)
         .output();
     match out {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).into_owned()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
         _ => String::new(),
     }
 }
@@ -58,7 +56,9 @@ pub fn diff_name_status(root: &Path, base: &str) -> Vec<(char, String)> {
         .current_dir(root)
         .output();
     let Ok(o) = out else { return Vec::new() };
-    if !o.status.success() { return Vec::new(); }
+    if !o.status.success() {
+        return Vec::new();
+    }
     String::from_utf8_lossy(&o.stdout)
         .lines()
         .filter_map(|line| {
@@ -79,11 +79,18 @@ pub fn diff_body(root: &Path, base: &str, limit: usize) -> String {
         return String::new();
     }
     let out = Command::new("git")
-        .args(["diff", "--diff-filter=ACMRT", "--", &format!("{base}..HEAD")])
+        .args([
+            "diff",
+            "--diff-filter=ACMRT",
+            "--",
+            &format!("{base}..HEAD"),
+        ])
         .current_dir(root)
         .output();
     let Ok(o) = out else { return String::new() };
-    if !o.status.success() { return String::new(); }
+    if !o.status.success() {
+        return String::new();
+    }
     let full = String::from_utf8_lossy(&o.stdout);
     if full.len() <= limit {
         full.into_owned()

@@ -57,18 +57,15 @@ impl Store {
         let content = toml::to_string_pretty(&file)?;
 
         // Atomic write: write to temp file then rename
-        let tmp_name = format!(
-            ".hypotheses.tmp.{}.toml",
-            {
-                let mut h = DefaultHasher::new();
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    .hash(&mut h);
-                h.finish()
-            }
-        );
+        let tmp_name = format!(".hypotheses.tmp.{}.toml", {
+            let mut h = DefaultHasher::new();
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+                .hash(&mut h);
+            h.finish()
+        });
         let tmp_path = store_dir.join(&tmp_name);
         std::fs::write(&tmp_path, content)?;
         std::fs::rename(&tmp_path, self.cfg.hypotheses_path())?;
@@ -106,7 +103,12 @@ impl Store {
     /// Convenience wrapper for [`Store::validate_with_measurements`] with no
     /// measurements. Used by tests and the no-criteria validation path.
     #[allow(dead_code)]
-    pub fn validate(&mut self, id: &str, evidence: Vec<String>, run_id: Option<String>) -> Result<()> {
+    pub fn validate(
+        &mut self,
+        id: &str,
+        evidence: Vec<String>,
+        run_id: Option<String>,
+    ) -> Result<()> {
         self.validate_with_measurements(id, evidence, vec![], run_id)
     }
 
@@ -191,7 +193,8 @@ impl Store {
 
         let h = &mut self.hypotheses[idx];
         h.status = Status::Validated;
-        h.evidence.extend(evidence.into_iter().filter(|e| !e.trim().is_empty()));
+        h.evidence
+            .extend(evidence.into_iter().filter(|e| !e.trim().is_empty()));
         h.evidence.extend(measured_evidence);
         h.condukt_run = run_id;
         h.updated_at = now_iso();
@@ -214,13 +217,16 @@ impl Store {
         self.save()
     }
 
-    pub fn reject(&mut self, id: &str, reason: Option<String>, run_id: Option<String>) -> Result<()> {
+    pub fn reject(
+        &mut self,
+        id: &str,
+        reason: Option<String>,
+        run_id: Option<String>,
+    ) -> Result<()> {
         // Rejection is also a measured learning decision; require a reason.
         let reason = match reason {
             Some(r) if !r.trim().is_empty() => r,
-            _ => anyhow::bail!(
-                "reject requires a reason: pass --reason \"<what disproved it>\""
-            ),
+            _ => anyhow::bail!("reject requires a reason: pass --reason \"<what disproved it>\""),
         };
         let h = self
             .hypotheses
@@ -252,7 +258,12 @@ impl Store {
             .iter_mut()
             .find(|h| h.id == id)
             .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
-        h.assumptions.push(Assumption { text, risk, evidence, tested: false });
+        h.assumptions.push(Assumption {
+            text,
+            risk,
+            evidence,
+            tested: false,
+        });
         h.updated_at = now_iso();
         self.save()
     }
@@ -278,7 +289,11 @@ impl Store {
     pub fn list(&self, status: Option<&str>) -> Vec<&Hypothesis> {
         match status {
             None => self.hypotheses.iter().collect(),
-            Some(s) => self.hypotheses.iter().filter(|h| h.status.to_string() == s).collect(),
+            Some(s) => self
+                .hypotheses
+                .iter()
+                .filter(|h| h.status.to_string() == s)
+                .collect(),
         }
     }
 
@@ -330,8 +345,12 @@ mod tests {
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("validate this".to_string(), None).unwrap();
 
-        st.validate(&id, vec!["evidence A".to_string(), "evidence B".to_string()], None)
-            .unwrap();
+        st.validate(
+            &id,
+            vec!["evidence A".to_string(), "evidence B".to_string()],
+            None,
+        )
+        .unwrap();
 
         // reload to verify persistence
         let st2 = Store::load(&cfg).unwrap();
@@ -364,7 +383,9 @@ mod tests {
         let cfg = test_cfg(&dir);
 
         let mut st = Store::load(&cfg).unwrap();
-        let id = st.add("shipped but not measured".to_string(), None).unwrap();
+        let id = st
+            .add("shipped but not measured".to_string(), None)
+            .unwrap();
         st.mark_awaiting_measurement(&id, Some("run-await1".to_string()))
             .unwrap();
 
@@ -381,12 +402,17 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("measure after ship".to_string(), None).unwrap();
-        st.mark_awaiting_measurement(&id, Some("run-1".to_string())).unwrap();
+        st.mark_awaiting_measurement(&id, Some("run-1".to_string()))
+            .unwrap();
         assert!(st.list(None)[0].status.is_awaiting_measurement());
 
         // A human measures and validates with evidence → validated.
-        st.validate(&id, vec!["conversion rose 12%".to_string()], Some("run-1".to_string()))
-            .unwrap();
+        st.validate(
+            &id,
+            vec!["conversion rose 12%".to_string()],
+            Some("run-1".to_string()),
+        )
+        .unwrap();
 
         let st2 = Store::load(&cfg).unwrap();
         let h = &st2.list(None)[0];
@@ -401,10 +427,14 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
 
-        let err = st.validate("deadbeef", vec!["measured".to_string()], None).unwrap_err();
+        let err = st
+            .validate("deadbeef", vec!["measured".to_string()], None)
+            .unwrap_err();
         assert!(err.to_string().contains("hypothesis not found"));
 
-        let err2 = st.reject("deadbeef", Some("disproven".to_string()), None).unwrap_err();
+        let err2 = st
+            .reject("deadbeef", Some("disproven".to_string()), None)
+            .unwrap_err();
         assert!(err2.to_string().contains("hypothesis not found"));
     }
 
@@ -425,7 +455,12 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("validate with run".to_string(), None).unwrap();
-        st.validate(&id, vec!["measured".to_string()], Some("run-abc123".to_string())).unwrap();
+        st.validate(
+            &id,
+            vec!["measured".to_string()],
+            Some("run-abc123".to_string()),
+        )
+        .unwrap();
 
         let st2 = Store::load(&cfg).unwrap();
         let h = &st2.list(None)[0];
@@ -440,7 +475,12 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("reject with run".to_string(), None).unwrap();
-        st.reject(&id, Some("disproven".to_string()), Some("run-xyz789".to_string())).unwrap();
+        st.reject(
+            &id,
+            Some("disproven".to_string()),
+            Some("run-xyz789".to_string()),
+        )
+        .unwrap();
 
         let st2 = Store::load(&cfg).unwrap();
         let h = &st2.list(None)[0];
@@ -457,7 +497,9 @@ mod tests {
         let id = st.add("needs measuring".to_string(), None).unwrap();
 
         // Empty / whitespace-only evidence is refused (shipping != validation).
-        let err = st.validate(&id, vec![], Some("run-1".to_string())).unwrap_err();
+        let err = st
+            .validate(&id, vec![], Some("run-1".to_string()))
+            .unwrap_err();
         assert!(err.to_string().contains("requires measured evidence"));
         let err2 = st.validate(&id, vec!["   ".to_string()], None).unwrap_err();
         assert!(err2.to_string().contains("requires measured evidence"));
@@ -480,8 +522,10 @@ mod tests {
         let open_id = st.add("stays open".to_string(), None).unwrap();
         let val_id = st.add("gets validated".to_string(), None).unwrap();
         let rej_id = st.add("gets rejected".to_string(), None).unwrap();
-        st.validate(&val_id, vec!["measured".to_string()], None).unwrap();
-        st.reject(&rej_id, Some("disproven".to_string()), None).unwrap();
+        st.validate(&val_id, vec!["measured".to_string()], None)
+            .unwrap();
+        st.reject(&rej_id, Some("disproven".to_string()), None)
+            .unwrap();
 
         // --status open must exclude validated/rejected (regression: filter was a no-op)
         let open = st.list(Some("open"));
@@ -592,7 +636,9 @@ mod tests {
         let err = st
             .validate_with_measurements(&id, vec![], vec![("activation".to_string(), 0.3)], None)
             .unwrap_err();
-        assert!(err.to_string().contains("does not clear the pre-registered success criterion"));
+        assert!(err
+            .to_string()
+            .contains("does not clear the pre-registered success criterion"));
         assert!(st.list(None)[0].status.is_open());
 
         // Hits the kill bar → refused, error points specifically at the kill criterion.
@@ -612,7 +658,8 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("plain bet".to_string(), None).unwrap();
-        st.validate(&id, vec!["measured outcome".to_string()], None).unwrap();
+        st.validate(&id, vec!["measured outcome".to_string()], None)
+            .unwrap();
         assert!(st.list(None)[0].status.is_validated());
     }
 
@@ -623,12 +670,27 @@ mod tests {
 
         let mut st = Store::load(&cfg).unwrap();
         let id = st.add("users will pay for X".to_string(), None).unwrap();
-        st.add_assumption(&id, "users have this problem".to_string(), Risk::High, Evidence::None)
-            .unwrap();
-        st.add_assumption(&id, "we can build it".to_string(), Risk::Medium, Evidence::Weak)
-            .unwrap();
-        st.add_assumption(&id, "pricing model works".to_string(), Risk::High, Evidence::Weak)
-            .unwrap();
+        st.add_assumption(
+            &id,
+            "users have this problem".to_string(),
+            Risk::High,
+            Evidence::None,
+        )
+        .unwrap();
+        st.add_assumption(
+            &id,
+            "we can build it".to_string(),
+            Risk::Medium,
+            Evidence::Weak,
+        )
+        .unwrap();
+        st.add_assumption(
+            &id,
+            "pricing model works".to_string(),
+            Risk::High,
+            Evidence::Weak,
+        )
+        .unwrap();
 
         // Reload → assumptions persisted; RAT = highest leap score untested.
         let st2 = Store::load(&cfg).unwrap();

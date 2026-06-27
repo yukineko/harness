@@ -149,10 +149,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp_log(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "hc-gate-runner-{}-{name}.log",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("hc-gate-runner-{}-{name}.log", std::process::id()))
     }
 
     #[test]

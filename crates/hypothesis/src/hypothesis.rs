@@ -38,7 +38,20 @@ fn now_iso8601() -> String {
         year += 1;
     }
     let leap = is_leap_year(year);
-    let days_in_month = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let days_in_month = [
+        31u64,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1u32;
     for dim in &days_in_month {
         if remaining_days < *dim {
@@ -49,7 +62,10 @@ fn now_iso8601() -> String {
     }
     let day = remaining_days + 1;
 
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, h, m, s)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, h, m, s
+    )
 }
 
 fn is_leap_year(year: u32) -> bool {
@@ -191,7 +207,13 @@ impl Criterion {
 
 impl fmt::Display for Criterion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}", self.metric, self.comparator.as_str(), self.threshold)
+        write!(
+            f,
+            "{} {} {}",
+            self.metric,
+            self.comparator.as_str(),
+            self.threshold
+        )
     }
 }
 
@@ -406,7 +428,10 @@ mod tests {
     #[test]
     fn status_display() {
         assert_eq!(Status::Open.to_string(), "open");
-        assert_eq!(Status::AwaitingMeasurement.to_string(), "awaiting-measurement");
+        assert_eq!(
+            Status::AwaitingMeasurement.to_string(),
+            "awaiting-measurement"
+        );
         assert_eq!(Status::Validated.to_string(), "validated");
         assert_eq!(Status::Rejected.to_string(), "rejected");
     }
@@ -518,7 +543,12 @@ mod tests {
     }
 
     fn assumption(text: &str, risk: Risk, evidence: Evidence) -> Assumption {
-        Assumption { text: text.to_string(), risk, evidence, tested: false }
+        Assumption {
+            text: text.to_string(),
+            risk,
+            evidence,
+            tested: false,
+        }
     }
 
     #[test]

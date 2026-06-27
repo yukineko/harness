@@ -62,8 +62,7 @@ fn entries_conflict(a: &str, b: &str) -> bool {
 
 /// Do two tasks' file sets conflict?
 pub fn files_conflict(a: &[String], b: &[String]) -> bool {
-    a.iter()
-        .any(|x| b.iter().any(|y| entries_conflict(x, y)))
+    a.iter().any(|x| b.iter().any(|y| entries_conflict(x, y)))
 }
 
 fn build_globset(globs: &[String]) -> Option<GlobSet> {

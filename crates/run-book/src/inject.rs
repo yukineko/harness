@@ -72,7 +72,10 @@ pub fn expand<'a>(prompt: &str, runbooks: &'a [Runbook], cfg: &Config) -> Expans
             }
         }
     }
-    Expansion { matched, want_index }
+    Expansion {
+        matched,
+        want_index,
+    }
 }
 
 const HEADER: &str = "<!-- runbook -->\n以下はユーザーが `!名前` で明示的に呼び出した作業手順です。対象タスクではこの手順に厳密に従い、「禁止事項 / Forbidden Actions」があれば必ず守ってください。";
@@ -126,7 +129,10 @@ fn render_index(all: &[Runbook], cfg: &Config) -> String {
         } else {
             format!(" — {}", rb.meta.description)
         };
-        s.push_str(&format!("\n- `{}{}`{} ({})", cfg.prefix, rb.name, desc, scope));
+        s.push_str(&format!(
+            "\n- `{}{}`{} ({})",
+            cfg.prefix, rb.name, desc, scope
+        ));
     }
     s
 }

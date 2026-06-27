@@ -85,7 +85,10 @@ fn scan_cmd(root: PathBuf, json: bool) -> anyhow::Result<()> {
 
 fn status_cmd(root: PathBuf) -> anyhow::Result<()> {
     let Some(m) = meta::load(&root) else {
-        println!("no wiki yet — run `/deepwiki` to generate one in {}/", meta::WIKI_DIR);
+        println!(
+            "no wiki yet — run `/deepwiki` to generate one in {}/",
+            meta::WIKI_DIR
+        );
         return Ok(());
     };
     println!("wiki built: {}  ({} pages)", m.built_at, m.pages.len());
@@ -97,7 +100,11 @@ fn status_cmd(root: PathBuf) -> anyhow::Result<()> {
             let changed = meta::changed_since(&root, &m.sha);
             let src: Vec<&String> = changed.iter().filter(|f| is_sourceish(f)).collect();
             println!("status: ⚠ stale — HEAD is now {}", short(&head));
-            println!("{} file(s) changed since, {} source-ish:", changed.len(), src.len());
+            println!(
+                "{} file(s) changed since, {} source-ish:",
+                changed.len(),
+                src.len()
+            );
             for f in src.iter().take(20) {
                 println!("  {f}");
             }
@@ -128,9 +135,9 @@ fn is_sourceish(path: &str) -> bool {
         return false;
     }
     [
-        ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rb", ".java", ".kt",
-        ".swift", ".c", ".h", ".cc", ".cpp", ".cs", ".php", ".scala", ".sh",
-        ".toml", ".json", ".yaml", ".yml", ".sql",
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rb", ".java", ".kt", ".swift", ".c",
+        ".h", ".cc", ".cpp", ".cs", ".php", ".scala", ".sh", ".toml", ".json", ".yaml", ".yml",
+        ".sql",
     ]
     .iter()
     .any(|ext| p.ends_with(ext))

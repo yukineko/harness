@@ -89,7 +89,8 @@ mod tests {
 
     #[test]
     fn extracts_compass_next_block() {
-        let msg = "Done for now.\n\n```compass-next\nWire route_command to read --file.\n```\n\nThanks!";
+        let msg =
+            "Done for now.\n\n```compass-next\nWire route_command to read --file.\n```\n\nThanks!";
         assert_eq!(
             extract_next_action(msg).as_deref(),
             Some("Wire route_command to read --file.")

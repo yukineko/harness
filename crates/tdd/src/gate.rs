@@ -186,7 +186,10 @@ mod tests {
     fn impl_without_test_blocks() {
         let cfg = Config::default();
         let changed = Some(vec!["src/lib.rs".to_string()]);
-        let added = Some(vec![added("src/lib.rs", "pub fn add(a:i32,b:i32)->i32{a+b}")]);
+        let added = Some(vec![added(
+            "src/lib.rs",
+            "pub fn add(a:i32,b:i32)->i32{a+b}",
+        )]);
         let v = classify(&cfg, &changed, &added);
         assert_eq!(v.added_impl_lines, 1);
         assert!(!v.has_test_evidence());
@@ -200,7 +203,10 @@ mod tests {
         let added = Some(vec![
             added("src/lib.rs", "pub fn add(a:i32,b:i32)->i32{a+b}"),
             added("src/lib.rs", "    #[test]"),
-            added("src/lib.rs", "    fn test_add() { assert_eq!(add(1,2),3); }"),
+            added(
+                "src/lib.rs",
+                "    fn test_add() { assert_eq!(add(1,2),3); }",
+            ),
         ]);
         let v = classify(&cfg, &changed, &added);
         assert!(v.test_marker_added);

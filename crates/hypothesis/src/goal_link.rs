@@ -208,7 +208,11 @@ Claude Code 用 developer productivity プラグイン集。condukt・compass・
 
         let hypotheses = vec![make_hypothesis("h4", None)];
         let unlinked = check_goal_link(&hypotheses, tmp.path());
-        assert_eq!(unlinked, vec!["h4"], "h4 (no linked_goal) should be unlinked");
+        assert_eq!(
+            unlinked,
+            vec!["h4"],
+            "h4 (no linked_goal) should be unlinked"
+        );
     }
 
     #[test]
@@ -236,15 +240,27 @@ Claude Code 用 developer productivity プラグイン集。condukt・compass・
         write_charter(tmp.path(), SAMPLE_CHARTER);
 
         let hypotheses = vec![
-            make_hypothesis("linked1", Some("condukt")),           // north_star に含まれる
-            make_hypothesis("linked2", Some("plugin リスト")),     // dod に含まれる
-            make_hypothesis("unlinked1", Some("no match")),        // 不一致
-            make_hypothesis("unlinked2", None),                    // None
+            make_hypothesis("linked1", Some("condukt")), // north_star に含まれる
+            make_hypothesis("linked2", Some("plugin リスト")), // dod に含まれる
+            make_hypothesis("unlinked1", Some("no match")), // 不一致
+            make_hypothesis("unlinked2", None),          // None
         ];
         let unlinked = check_goal_link(&hypotheses, tmp.path());
-        assert!(!unlinked.contains(&"linked1".to_string()), "linked1 should be linked");
-        assert!(!unlinked.contains(&"linked2".to_string()), "linked2 should be linked");
-        assert!(unlinked.contains(&"unlinked1".to_string()), "unlinked1 should be unlinked");
-        assert!(unlinked.contains(&"unlinked2".to_string()), "unlinked2 should be unlinked");
+        assert!(
+            !unlinked.contains(&"linked1".to_string()),
+            "linked1 should be linked"
+        );
+        assert!(
+            !unlinked.contains(&"linked2".to_string()),
+            "linked2 should be linked"
+        );
+        assert!(
+            unlinked.contains(&"unlinked1".to_string()),
+            "unlinked1 should be unlinked"
+        );
+        assert!(
+            unlinked.contains(&"unlinked2".to_string()),
+            "unlinked2 should be unlinked"
+        );
     }
 }

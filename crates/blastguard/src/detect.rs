@@ -107,8 +107,7 @@ fn detect_bash(cmd: &str) -> Decision {
 
 fn redirect_target_is_safe(target: &str) -> bool {
     let t = exclude::normalize(target);
-    matches!(t.as_str(), "/dev/null" | "/dev/stdout" | "/dev/stderr")
-        || exclude::is_config_file(&t)
+    matches!(t.as_str(), "/dev/null" | "/dev/stdout" | "/dev/stderr") || exclude::is_config_file(&t)
 }
 
 /// Quote-aware split of a command line into individual simple-command segments
@@ -215,10 +214,12 @@ fn is_assignment(tok: &str) -> bool {
     if let Some(eq) = tok.find('=') {
         let name = &tok[..eq];
         !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && name
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && name.chars().next().map(|c| !c.is_ascii_digit()).unwrap_or(false)
+                .next()
+                .map(|c| !c.is_ascii_digit())
+                .unwrap_or(false)
     } else {
         false
     }
@@ -308,7 +309,11 @@ fn analyze_rm(rest: &[&str]) -> Decision {
     let recursive = rest
         .iter()
         .any(|t| (is_short_flag(t) && (t.contains('r') || t.contains('R'))) || *t == "--recursive");
-    let operands: Vec<&str> = rest.iter().filter(|t| !t.starts_with('-')).copied().collect();
+    let operands: Vec<&str> = rest
+        .iter()
+        .filter(|t| !t.starts_with('-'))
+        .copied()
+        .collect();
     let wildcard = operands.iter().any(|o| o.contains('*'));
 
     if !recursive && !wildcard {
@@ -504,36 +509,60 @@ mod tests {
 
     #[test]
     fn write_empty_content_to_source_is_denied() {
-        assert!(detect("Write", Some(&json!({ "file_path": "src/main.rs", "content": "" }))).is_deny());
-        assert!(detect("Write", Some(&json!({ "file_path": "src/main.rs", "content": "   \n" }))).is_deny());
+        assert!(detect(
+            "Write",
+            Some(&json!({ "file_path": "src/main.rs", "content": "" }))
+        )
+        .is_deny());
+        assert!(detect(
+            "Write",
+            Some(&json!({ "file_path": "src/main.rs", "content": "   \n" }))
+        )
+        .is_deny());
     }
 
     #[test]
     fn write_with_content_or_to_config_is_allowed() {
         assert_eq!(
-            detect("Write", Some(&json!({ "file_path": "src/main.rs", "content": "fn main() {}" }))),
+            detect(
+                "Write",
+                Some(&json!({ "file_path": "src/main.rs", "content": "fn main() {}" }))
+            ),
             Decision::Allow
         );
         // Config files are exempt even when emptied.
         assert_eq!(
-            detect("Write", Some(&json!({ "file_path": "Cargo.toml", "content": "" }))),
+            detect(
+                "Write",
+                Some(&json!({ "file_path": "Cargo.toml", "content": "" }))
+            ),
             Decision::Allow
         );
         assert_eq!(
-            detect("Write", Some(&json!({ "file_path": ".claude/settings.json", "content": "" }))),
+            detect(
+                "Write",
+                Some(&json!({ "file_path": ".claude/settings.json", "content": "" }))
+            ),
             Decision::Allow
         );
     }
 
     #[test]
     fn write_to_git_internals_is_denied() {
-        assert!(detect("Write", Some(&json!({ "file_path": ".git/config", "content": "x" }))).is_deny());
+        assert!(detect(
+            "Write",
+            Some(&json!({ "file_path": ".git/config", "content": "x" }))
+        )
+        .is_deny());
     }
 
     #[test]
     fn missing_or_unknown_input_is_allowed() {
         assert_eq!(detect("Bash", None), Decision::Allow);
-        assert_eq!(detect("Read", Some(&json!({ "file_path": "x" }))), Decision::Allow);
+        assert_eq!(
+            detect("Read", Some(&json!({ "file_path": "x" }))),
+            Decision::Allow
+        );
         assert_eq!(detect("Write", Some(&json!({}))), Decision::Allow);
     }
 }

@@ -64,14 +64,31 @@ fn days_to_date(days: u64) -> String {
     let mut d = days as u32;
     loop {
         let days_in_year = if is_leap(y) { 366 } else { 365 };
-        if d < days_in_year { break; }
+        if d < days_in_year {
+            break;
+        }
         d -= days_in_year;
         y += 1;
     }
-    let months = [31u32, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months = [
+        31u32,
+        if is_leap(y) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 1u32;
     for &mdays in &months {
-        if d < mdays { break; }
+        if d < mdays {
+            break;
+        }
         d -= mdays;
         m += 1;
     }
@@ -93,8 +110,10 @@ fn main() {
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&b).unwrap_or_default());
             } else {
-                println!("Today ({}): ${:.4} across {} session(s)",
-                    today, b.today_usd, b.session_count_today);
+                println!(
+                    "Today ({}): ${:.4} across {} session(s)",
+                    today, b.today_usd, b.session_count_today
+                );
             }
         }
         Some(Command::Sessions) => {
@@ -103,9 +122,13 @@ fn main() {
                 println!("{}", serde_json::to_string_pretty(&s).unwrap_or_default());
             } else {
                 for sess in &s {
-                    println!("{} | {} | {} turns | ${:.4}",
+                    println!(
+                        "{} | {} | {} turns | ${:.4}",
                         sess.session_id.get(..8).unwrap_or(&sess.session_id),
-                        sess.project, sess.turns, sess.cost_usd);
+                        sess.project,
+                        sess.turns,
+                        sess.cost_usd
+                    );
                 }
             }
         }
@@ -126,13 +149,7 @@ fn main() {
             if cli.json {
                 display::print_json(&today, &b, &s, &p);
             } else {
-                display::print_status(
-                    &today,
-                    &b,
-                    &s,
-                    &p,
-                    &cwd.to_string_lossy(),
-                );
+                display::print_status(&today, &b, &s, &p, &cwd.to_string_lossy());
             }
         }
     }

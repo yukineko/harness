@@ -277,10 +277,7 @@ fn evaluate_command() -> Result<()> {
                 if !ans.defer {
                     s.bundle.fragments.push(interrogate::Fragment {
                         text: ans.value.clone(),
-                        source_path: format!(
-                            "interrogate:answer:{}:{}",
-                            ans.gate, ans.reference
-                        ),
+                        source_path: format!("interrogate:answer:{}:{}", ans.gate, ans.reference),
                         authority: interrogate::Authority::High,
                         score: 0,
                         anchor: None,
@@ -300,7 +297,10 @@ fn evaluate_command() -> Result<()> {
     }
     carve::save(&root, &state)?;
 
-    println!("{}", serde_json::to_string_pretty(&CarveView::new(open, &state))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&CarveView::new(open, &state))?
+    );
     Ok(())
 }
 
@@ -337,7 +337,10 @@ fn apply_command(args: ApplyArgs) -> Result<()> {
     let open = interrogate::apply(&gates, &mut state, answer);
     carve::save(&root, &state)?;
 
-    println!("{}", serde_json::to_string_pretty(&CarveView::new(open, &state))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&CarveView::new(open, &state))?
+    );
     Ok(())
 }
 
@@ -465,8 +468,7 @@ fn route_command(args: RouteArgs) -> Result<()> {
             buf
         }
     };
-    let dec: Decomposition =
-        serde_json::from_str(&raw).context("parsing decomposition JSON")?;
+    let dec: Decomposition = serde_json::from_str(&raw).context("parsing decomposition JSON")?;
 
     let routing = route::route(&dec, &cfg);
 

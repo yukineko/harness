@@ -219,7 +219,11 @@ fn default_transcripts() -> String {
     "~/.claude/projects".to_string()
 }
 fn default_authority() -> Vec<String> {
-    vec!["obsidian".to_string(), "canon".to_string(), "prompt".to_string()]
+    vec![
+        "obsidian".to_string(),
+        "canon".to_string(),
+        "prompt".to_string(),
+    ]
 }
 fn default_top_k() -> usize {
     24
@@ -256,8 +260,8 @@ impl Config {
     pub fn load(path: &Path) -> Result<Config> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text)
-            .with_context(|| format!("parsing config {}", path.display()))?;
+        let cfg: Config =
+            toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
     }

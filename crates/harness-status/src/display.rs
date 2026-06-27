@@ -33,14 +33,18 @@ pub fn print_status(
     if sessions.is_empty() {
         println!("  No session records found — gauge not installed?");
     } else {
-        println!("  {:<16} {:<20} {:>6} {:>12} {:>9}",
-            "Session", "Project", "Turns", "Tokens", "Cost USD");
+        println!(
+            "  {:<16} {:<20} {:>6} {:>12} {:>9}",
+            "Session", "Project", "Turns", "Tokens", "Cost USD"
+        );
         println!("  {}", "-".repeat(70));
         for s in sessions {
             let id8 = s.session_id.get(..8).unwrap_or(&s.session_id);
             let proj = truncate(&s.project, 20);
-            println!("  {:<16} {:<20} {:>6} {:>12} {:>9.4}",
-                id8, proj, s.turns, s.total_tokens, s.cost_usd);
+            println!(
+                "  {:<16} {:<20} {:>6} {:>12} {:>9.4}",
+                id8, proj, s.turns, s.total_tokens, s.cost_usd
+            );
         }
     }
     println!();

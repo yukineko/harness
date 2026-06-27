@@ -59,7 +59,11 @@ pub fn evaluate(
     drop(_guard);
 
     let verdict = verdict(cfg, session_usd, day_usd);
-    Some(GateResult { session_usd, day_usd, verdict })
+    Some(GateResult {
+        session_usd,
+        day_usd,
+        verdict,
+    })
 }
 
 fn verdict(cfg: &Config, session_usd: f64, day_usd: f64) -> Verdict {

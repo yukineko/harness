@@ -138,7 +138,10 @@ fn session_cmd() {
     let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let cfg = Config::load(&root);
     let records = store::load_all(&cfg.state_dir);
-    let Some(rec) = records.into_iter().max_by(|a, b| a.updated_at.cmp(&b.updated_at)) else {
+    let Some(rec) = records
+        .into_iter()
+        .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+    else {
         println!("no sessions recorded yet.");
         return;
     };
@@ -229,7 +232,11 @@ fn status() {
     let records = store::load_all(&cfg.state_dir);
     let total_cost: f64 = records
         .iter()
-        .flat_map(|r| r.models.iter().map(|(m, u)| pricing::cost(m, u, &cfg.pricing)))
+        .flat_map(|r| {
+            r.models
+                .iter()
+                .map(|(m, u)| pricing::cost(m, u, &cfg.pricing))
+        })
         .sum();
 
     println!("config:       {}", Config::config_source(&root).display());
@@ -276,7 +283,10 @@ fn init(force: bool) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let path = Config::project_path(&root);
     if path.exists() && !force {
-        anyhow::bail!("{} already exists (use --force to overwrite)", path.display());
+        anyhow::bail!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        );
     }
     std::fs::write(&path, STARTER)?;
     println!("wrote {}", path.display());

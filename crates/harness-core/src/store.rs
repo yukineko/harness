@@ -54,9 +54,7 @@ pub fn session_tag(session_id: &str) -> String {
 /// uses to tell streams apart.
 fn note_session_tag(path: &Path) -> Option<String> {
     let stem = path.file_stem().and_then(|s| s.to_str())?;
-    tagged_note_re()
-        .captures(stem)
-        .map(|c| c[1].to_string())
+    tagged_note_re().captures(stem).map(|c| c[1].to_string())
 }
 
 fn tagged_note_re() -> Regex {
@@ -248,7 +246,11 @@ impl Store {
     ) -> PruneResult {
         let notes = self.list_notes(cwd); // newest first
         let mut protect: HashSet<PathBuf> = notes.iter().take(keep).cloned().collect();
-        for p in notes.iter().filter(|p| is_distill(p)).take(keep_distill_min) {
+        for p in notes
+            .iter()
+            .filter(|p| is_distill(p))
+            .take(keep_distill_min)
+        {
             protect.insert(p.clone());
         }
         let mut removed = Vec::new();
@@ -290,7 +292,8 @@ mod tests {
 
     /// A throwaway store rooted under the temp dir, isolated per test name + pid.
     fn temp_store(name: &str) -> (Store, PathBuf) {
-        let root = std::env::temp_dir().join(format!("harness-store-{}-{}", name, std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("harness-store-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         (Store::new(root.clone()), root)
     }
@@ -309,8 +312,12 @@ mod tests {
         let a = session_tag("session-A");
         let b = session_tag("session-B");
 
-        store.write_note_named(cwd, &format!("distill-{a}-20260619-100000"), "mine").unwrap();
-        store.write_note_named(cwd, &format!("rescue-{b}-20260619-110000"), "theirs").unwrap();
+        store
+            .write_note_named(cwd, &format!("distill-{a}-20260619-100000"), "mine")
+            .unwrap();
+        store
+            .write_note_named(cwd, &format!("rescue-{b}-20260619-110000"), "theirs")
+            .unwrap();
 
         let mine = store.latest_note_for_session(cwd, "session-A").unwrap();
         assert!(mine.to_string_lossy().contains(&a));
@@ -336,7 +343,10 @@ mod tests {
             Some("nosess".to_string())
         );
         // Legacy/untagged notes carry no session tag.
-        assert_eq!(note_session_tag(Path::new("/x/rescue-20260619-100000.md")), None);
+        assert_eq!(
+            note_session_tag(Path::new("/x/rescue-20260619-100000.md")),
+            None
+        );
         assert_eq!(note_session_tag(Path::new("/x/handwritten-notes.md")), None);
     }
 
@@ -347,8 +357,12 @@ mod tests {
         let a = session_tag("prev-session");
 
         // Only one (prior, sequential) session's notes → unambiguous → return latest.
-        store.write_note_named(cwd, &format!("distill-{a}-20260619-100000"), "old").unwrap();
-        store.write_note_named(cwd, &format!("rescue-{a}-20260619-110000"), "newer").unwrap();
+        store
+            .write_note_named(cwd, &format!("distill-{a}-20260619-100000"), "old")
+            .unwrap();
+        store
+            .write_note_named(cwd, &format!("rescue-{a}-20260619-110000"), "newer")
+            .unwrap();
         let fb = store.latest_fallback_note(cwd).unwrap();
         assert!(std::fs::read_to_string(&fb).unwrap().contains("newer"));
 
@@ -396,7 +410,9 @@ mod tests {
         let (store, root) = temp_store("prune-distill");
         let cwd = Path::new("/some/project");
         // Oldest = one distill, then 4 rescues on top.
-        store.write_note_named(cwd, "distill-aaaaaaaa-20260101-000000", "d").unwrap();
+        store
+            .write_note_named(cwd, "distill-aaaaaaaa-20260101-000000", "d")
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         write_series(&store, cwd, "rescue-aaaaaaaa-2026010", 4);
 
@@ -470,7 +486,8 @@ mod tests {
         // dirs under /var -> /private/var), the escape check canonicalized the dir but
         // fell back to the raw, non-canonical path for the not-yet-created note — so the
         // prefix check spuriously failed and every write was rejected.
-        let base = std::env::temp_dir().join(format!("harness-store-symlink-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("harness-store-symlink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let real = base.join("real");
         std::fs::create_dir_all(&real).unwrap();
@@ -484,7 +501,10 @@ mod tests {
         let path = store
             .write_note_named(cwd, "rescue-deadbeef-20260101-000000", "body")
             .expect("write through symlinked root should succeed");
-        assert!(path.exists(), "note file should have been written: {path:?}");
+        assert!(
+            path.exists(),
+            "note file should have been written: {path:?}"
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "body");
 
         let _ = std::fs::remove_dir_all(&base);
@@ -544,12 +564,18 @@ mod tests {
         let b = session_tag("sib-B");
 
         // Two distinct sessions → parallel → must NOT return either tagged note.
-        store.write_note_named(cwd, &format!("distill-{a}-20260619-100000"), "A").unwrap();
-        store.write_note_named(cwd, &format!("rescue-{b}-20260619-110000"), "B").unwrap();
+        store
+            .write_note_named(cwd, &format!("distill-{a}-20260619-100000"), "A")
+            .unwrap();
+        store
+            .write_note_named(cwd, &format!("rescue-{b}-20260619-110000"), "B")
+            .unwrap();
         assert!(store.latest_fallback_note(cwd).is_none());
 
         // With an untagged shared note present, fall back to that instead.
-        store.write_note_named(cwd, "shared-handoff", "shared").unwrap();
+        store
+            .write_note_named(cwd, "shared-handoff", "shared")
+            .unwrap();
         let fb = store.latest_fallback_note(cwd).unwrap();
         assert!(std::fs::read_to_string(&fb).unwrap().contains("shared"));
 

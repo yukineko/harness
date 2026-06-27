@@ -166,7 +166,8 @@ mod tests {
     fn detects_ours() {
         let g = json!({"hooks":[{"type":"command","command":"/x/ctxrot guard"}]});
         assert!(is_ours(&g));
-        let legacy = json!({"hooks":[{"type":"command","command":"python3 .../context-rot-guard.py"}]});
+        let legacy =
+            json!({"hooks":[{"type":"command","command":"python3 .../context-rot-guard.py"}]});
         assert!(is_ours(&legacy));
         let other = json!({"hooks":[{"type":"command","command":"prettier --write"}]});
         assert!(!is_ours(&other));

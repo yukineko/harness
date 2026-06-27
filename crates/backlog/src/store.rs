@@ -28,8 +28,7 @@ pub fn save(path: &Path, tasks: &[Task]) -> Result<()> {
     let file = TasksFile {
         task: tasks.to_vec(),
     };
-    let text =
-        toml::to_string_pretty(&file).context("failed to serialize tasks to TOML")?;
+    let text = toml::to_string_pretty(&file).context("failed to serialize tasks to TOML")?;
 
     // 一時ファイルは同ディレクトリに置いて rename でアトミック差し替え
     let tmp_path = path.with_file_name(".tasks.toml.tmp");
@@ -39,8 +38,13 @@ pub fn save(path: &Path, tasks: &[Task]) -> Result<()> {
     }
     std::fs::write(&tmp_path, &text)
         .with_context(|| format!("failed to write tmp file {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path)
-        .with_context(|| format!("failed to rename {} -> {}", tmp_path.display(), path.display()))?;
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to rename {} -> {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -263,7 +267,15 @@ mod tests {
     #[test]
     fn add_and_load_roundtrip() {
         let path = tmp_path();
-        let id = add(&path, "Test task", "/repo", vec!["p1".into()], "notes", 1000).unwrap();
+        let id = add(
+            &path,
+            "Test task",
+            "/repo",
+            vec!["p1".into()],
+            "notes",
+            1000,
+        )
+        .unwrap();
         assert_eq!(id.len(), 8);
         let tasks = load(&path).unwrap();
         assert_eq!(tasks.len(), 1);
@@ -404,7 +416,10 @@ mod tests {
         mark_failed(&path, &id, None).unwrap();
         // deferred なので next は None を返す
         let result = next(&path, None, None).unwrap();
-        assert!(result.is_none(), "deferred task should not be returned by next");
+        assert!(
+            result.is_none(),
+            "deferred task should not be returned by next"
+        );
     }
 
     #[test]

@@ -127,8 +127,7 @@ impl Spec {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Spec> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("reading spec {}: {e}", path.display()))?;
-        toml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("parsing spec {}: {e}", path.display()))
+        toml::from_str(&text).map_err(|e| anyhow::anyhow!("parsing spec {}: {e}", path.display()))
     }
 
     /// Serialize to TOML for persistence.

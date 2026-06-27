@@ -10,8 +10,19 @@ use crate::store::Episode;
 pub fn looks_actionable(prompt: &str) -> bool {
     let p = prompt.to_lowercase();
     [
-        "condukt", "implement", "refactor", "fix", "add ", "build", "migrate",
-        "feature", "実装", "修正", "リファクタ", "追加", "機能",
+        "condukt",
+        "implement",
+        "refactor",
+        "fix",
+        "add ",
+        "build",
+        "migrate",
+        "feature",
+        "実装",
+        "修正",
+        "リファクタ",
+        "追加",
+        "機能",
     ]
     .iter()
     .any(|k| p.contains(k))
@@ -38,11 +49,17 @@ pub fn summary(episodes: &[Episode], limit: usize) -> Option<String> {
     for (m, (n, p, cost)) in &agg {
         lines.push(format!(
             "  {m}: {p}/{n} pass ({:.0}%), avg ${:.4}",
-            if *n > 0 { *p as f64 / *n as f64 * 100.0 } else { 0.0 },
+            if *n > 0 {
+                *p as f64 / *n as f64 * 100.0
+            } else {
+                0.0
+            },
             if *n > 0 { cost / *n as f64 } else { 0.0 },
         ));
     }
-    lines.push("Run `fugu-router route --file <decomp.json>` to set suggested_model per task.".into());
+    lines.push(
+        "Run `fugu-router route --file <decomp.json>` to set suggested_model per task.".into(),
+    );
     let mut out = lines.join("\n");
     if limit > 0 && out.len() > limit {
         out.truncate(limit);

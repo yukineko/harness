@@ -50,8 +50,7 @@ pub fn run_shards(
 ) -> Vec<ShardOutput> {
     let n = shards.len();
     let next = Mutex::new(0usize);
-    let results: Mutex<Vec<Option<ShardOutput>>> =
-        Mutex::new((0..n).map(|_| None).collect());
+    let results: Mutex<Vec<Option<ShardOutput>>> = Mutex::new((0..n).map(|_| None).collect());
     let workers = MAX_PARALLEL.min(n).max(1);
 
     thread::scope(|s| {

@@ -53,7 +53,10 @@ fn config_file_edit_is_allowed_silently() {
     let payload = r#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":".claude/settings.json"}}"#;
     let (code, stdout) = run(payload);
     assert_eq!(code, 0);
-    assert!(stdout.trim().is_empty(), "allow must be silent, got: {stdout}");
+    assert!(
+        stdout.trim().is_empty(),
+        "allow must be silent, got: {stdout}"
+    );
 }
 
 #[test]
@@ -61,14 +64,20 @@ fn benign_command_is_allowed_silently() {
     let payload = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cargo test"}}"#;
     let (code, stdout) = run(payload);
     assert_eq!(code, 0);
-    assert!(stdout.trim().is_empty(), "allow must be silent, got: {stdout}");
+    assert!(
+        stdout.trim().is_empty(),
+        "allow must be silent, got: {stdout}"
+    );
 }
 
 #[test]
 fn empty_stdin_is_silent() {
     let (code, stdout) = run("");
     assert_eq!(code, 0);
-    assert!(stdout.trim().is_empty(), "empty stdin must be silent, got: {stdout}");
+    assert!(
+        stdout.trim().is_empty(),
+        "empty stdin must be silent, got: {stdout}"
+    );
 }
 
 #[test]
@@ -76,5 +85,8 @@ fn config_file_delete_via_bash_is_allowed() {
     let payload = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm package.json"}}"#;
     let (code, stdout) = run(payload);
     assert_eq!(code, 0);
-    assert!(stdout.trim().is_empty(), "allow must be silent, got: {stdout}");
+    assert!(
+        stdout.trim().is_empty(),
+        "allow must be silent, got: {stdout}"
+    );
 }

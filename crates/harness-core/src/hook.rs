@@ -111,7 +111,10 @@ mod tests {
         let panicked = catch_silent(|| panic!("boom"));
         let ok = catch_silent(|| { /* no-op */ });
         std::panic::set_hook(prev);
-        assert!(!panicked, "a panicking handler must be caught, not propagated");
+        assert!(
+            !panicked,
+            "a panicking handler must be caught, not propagated"
+        );
         assert!(ok, "a clean handler reports success");
     }
 }

@@ -120,7 +120,12 @@ mod tests {
         // With a `/` in the pattern there is no basename fallback, so a single
         // `*` stays within one segment: `dir/*.log` matches `dir/a.log` but not
         // a file one level deeper.
-        assert!(matches("dir/*.log", "dir/a.log", &p("/proj/dir/a.log"), Some(&p("/proj"))));
+        assert!(matches(
+            "dir/*.log",
+            "dir/a.log",
+            &p("/proj/dir/a.log"),
+            Some(&p("/proj"))
+        ));
         assert!(!matches(
             "dir/*.log",
             "dir/sub/a.log",
@@ -143,7 +148,12 @@ mod tests {
     #[test]
     fn doublestar_slash_is_optional_prefix() {
         // `**/x.txt` matches both `x.txt` at root and nested.
-        assert!(matches("**/x.txt", "x.txt", &p("/proj/x.txt"), Some(&p("/proj"))));
+        assert!(matches(
+            "**/x.txt",
+            "x.txt",
+            &p("/proj/x.txt"),
+            Some(&p("/proj"))
+        ));
         assert!(matches(
             "**/x.txt",
             "deep/dir/x.txt",
@@ -171,8 +181,18 @@ mod tests {
 
     #[test]
     fn extension_and_dir_patterns() {
-        assert!(matches("**/*.min.js", "a/b.min.js", &p("/x/a/b.min.js"), Some(&p("/x"))));
-        assert!(!matches("**/*.min.js", "a/b.js", &p("/x/a/b.js"), Some(&p("/x"))));
+        assert!(matches(
+            "**/*.min.js",
+            "a/b.min.js",
+            &p("/x/a/b.min.js"),
+            Some(&p("/x"))
+        ));
+        assert!(!matches(
+            "**/*.min.js",
+            "a/b.js",
+            &p("/x/a/b.js"),
+            Some(&p("/x"))
+        ));
     }
 
     #[test]
@@ -185,8 +205,18 @@ mod tests {
     fn any_match_is_or() {
         let pats = vec!["**/*.log".to_string(), "secrets/**".to_string()];
         assert!(any_match(&pats, "x.log", &p("/p/x.log"), Some(&p("/p"))));
-        assert!(any_match(&pats, "/p/secrets/a", &p("/p/secrets/a"), Some(&p("/p"))));
-        assert!(!any_match(&pats, "/p/src/main.rs", &p("/p/src/main.rs"), Some(&p("/p"))));
+        assert!(any_match(
+            &pats,
+            "/p/secrets/a",
+            &p("/p/secrets/a"),
+            Some(&p("/p"))
+        ));
+        assert!(!any_match(
+            &pats,
+            "/p/src/main.rs",
+            &p("/p/src/main.rs"),
+            Some(&p("/p"))
+        ));
     }
 
     #[test]

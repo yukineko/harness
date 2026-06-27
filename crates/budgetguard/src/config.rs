@@ -81,24 +81,44 @@ impl Config {
                 Some(p)
             } else {
                 let h = base_dir().join("config.toml");
-                if h.exists() { Some(h) } else { None }
+                if h.exists() {
+                    Some(h)
+                } else {
+                    None
+                }
             }
         };
 
         if let Some(path) = path {
             if let Ok(text) = std::fs::read_to_string(&path) {
                 if let Ok(fc) = toml::from_str::<FileConfig>(&text) {
-                    if let Some(v) = fc.enabled { cfg.enabled = v; }
-                    if let Some(v) = fc.state_dir { cfg.state_dir = expand_tilde(&v); }
-                    if let Some(v) = fc.session.warn_usd { cfg.session_warn_usd = v; }
-                    if let Some(v) = fc.session.block_usd { cfg.session_block_usd = v; }
-                    if let Some(v) = fc.daily.warn_usd { cfg.daily_warn_usd = v; }
-                    if let Some(v) = fc.daily.block_usd { cfg.daily_block_usd = v; }
-                    cfg.price_overrides = fc.price.into_iter().map(|p| PriceOverride {
-                        pattern: p.pattern,
-                        input: p.input,
-                        output: p.output,
-                    }).collect();
+                    if let Some(v) = fc.enabled {
+                        cfg.enabled = v;
+                    }
+                    if let Some(v) = fc.state_dir {
+                        cfg.state_dir = expand_tilde(&v);
+                    }
+                    if let Some(v) = fc.session.warn_usd {
+                        cfg.session_warn_usd = v;
+                    }
+                    if let Some(v) = fc.session.block_usd {
+                        cfg.session_block_usd = v;
+                    }
+                    if let Some(v) = fc.daily.warn_usd {
+                        cfg.daily_warn_usd = v;
+                    }
+                    if let Some(v) = fc.daily.block_usd {
+                        cfg.daily_block_usd = v;
+                    }
+                    cfg.price_overrides = fc
+                        .price
+                        .into_iter()
+                        .map(|p| PriceOverride {
+                            pattern: p.pattern,
+                            input: p.input,
+                            output: p.output,
+                        })
+                        .collect();
                 }
             }
         }

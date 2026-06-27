@@ -110,7 +110,9 @@ fn note_carryover(input: &HookInput, cfg: &Config, cwd: &Path) -> Option<String>
 
     let mut out = String::new();
     if preferred {
-        out.push_str("[ctxrot restore] 指定ノートから引き継ぎ（`ctxrot ctx use-note` で固定中）:\n");
+        out.push_str(
+            "[ctxrot restore] 指定ノートから引き継ぎ（`ctxrot ctx use-note` で固定中）:\n",
+        );
     } else {
         out.push_str("[ctxrot restore] 前回セッションからの引き継ぎ（要約）:\n");
     }
@@ -134,9 +136,7 @@ fn note_carryover(input: &HookInput, cfg: &Config, cwd: &Path) -> Option<String>
     // regex-extracted and may be thin/empty. One line nudging /distill now —
     // kept to a single line so the injection itself doesn't bloat.
     if !harness_core::store::is_distill(&latest) {
-        out.push_str(
-            "\n（前回 /distill 未実行。重要な結論は今のうちに /distill で蒸留推奨）",
-        );
+        out.push_str("\n（前回 /distill 未実行。重要な結論は今のうちに /distill で蒸留推奨）");
     }
 
     // If both sections were empty/missing/off, only the pointer is useful.
@@ -174,7 +174,10 @@ fn pinned_carryover(cfg: &Config, cwd: &Path) -> Option<String> {
         out.push('\n');
     }
     if ls.pinned.len() > shown {
-        out.push_str(&format!("…他 {} 件（`/ctx list` で全件）\n", ls.pinned.len() - shown));
+        out.push_str(&format!(
+            "…他 {} 件（`/ctx list` で全件）\n",
+            ls.pinned.len() - shown
+        ));
     }
     Some(out.trim_end().to_string())
 }
@@ -239,7 +242,10 @@ pub fn missing_sections(text: &str) -> Vec<&'static str> {
 /// a thin-but-valid note impossible. Each entry is `(human label, heading aliases)`.
 pub const RECOMMENDED_SECTIONS: &[(&str, &[&str])] = &[
     ("触ったファイル / Files", &["触ったファイル", "Files"]),
-    ("重要な事実 / Key facts", &["重要な事実", "重要事実", "Key facts"]),
+    (
+        "重要な事実 / Key facts",
+        &["重要な事実", "重要事実", "Key facts"],
+    ),
     ("現在地 / Where we are", &["現在地", "Where we are"]),
 ];
 
@@ -297,7 +303,9 @@ mod tests {
     #[test]
     fn pulls_named_section() {
         let note = "## 決定事項 / Decisions\n\n- A を採用\n- B は不採用\n\n## 残課題 / Open todos\n\n_(なし / none)_\n";
-        assert!(extract_section(note, &["決定事項", "Decisions"]).unwrap().contains("A を採用"));
+        assert!(extract_section(note, &["決定事項", "Decisions"])
+            .unwrap()
+            .contains("A を採用"));
         assert!(extract_section(note, &["残課題", "todos"]).is_none());
     }
 
@@ -334,7 +342,8 @@ mod tests {
     }
 
     fn restore_fixture(name: &str, slug_prefix: &str) -> (Config, std::path::PathBuf, HookInput) {
-        let base = std::env::temp_dir().join(format!("ctxrot-restore-{name}-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("ctxrot-restore-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
@@ -345,8 +354,13 @@ mod tests {
         };
         let session = "sess-restore";
         let body = "## 決定事項 / Decisions\n\n- A を採用\n\n## 残課題 / Open todos\n\n- B\n";
-        let slug = format!("{slug_prefix}-{}-20260101-000000", harness_core::store::session_tag(session));
-        harness_core::store::Store::new(cfg.store_dir.clone()).write_note(&cwd, &slug, body).unwrap();
+        let slug = format!(
+            "{slug_prefix}-{}-20260101-000000",
+            harness_core::store::session_tag(session)
+        );
+        harness_core::store::Store::new(cfg.store_dir.clone())
+            .write_note(&cwd, &slug, body)
+            .unwrap();
         let input = HookInput {
             session_id: session.into(),
             source: "startup".into(),
@@ -361,7 +375,10 @@ mod tests {
         let (cfg, base, input) = restore_fixture("rescue", "rescue");
         let out = run(&input, &cfg).expect("carryover from rescue note");
         assert!(out.contains("A を採用"));
-        assert!(out.contains("/distill 未実行"), "rescue-only restore should nudge: {out}");
+        assert!(
+            out.contains("/distill 未実行"),
+            "rescue-only restore should nudge: {out}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -370,7 +387,10 @@ mod tests {
         let (cfg, base, input) = restore_fixture("distill", "distill");
         let out = run(&input, &cfg).expect("carryover from distill note");
         assert!(out.contains("A を採用"));
-        assert!(!out.contains("/distill 未実行"), "distill restore must not nudge: {out}");
+        assert!(
+            !out.contains("/distill 未実行"),
+            "distill restore must not nudge: {out}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -380,7 +400,10 @@ mod tests {
     fn restore_disabled_injects_nothing() {
         let (mut cfg, base, input) = restore_fixture("disabled", "distill");
         cfg.restore_enabled = false;
-        assert!(run(&input, &cfg).is_none(), "restore_enabled=false must inject nothing");
+        assert!(
+            run(&input, &cfg).is_none(),
+            "restore_enabled=false must inject nothing"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -389,7 +412,10 @@ mod tests {
         let (mut cfg, base, input) = restore_fixture("nodec", "distill");
         cfg.inject_decisions = false;
         let out = run(&input, &cfg).expect("todos still carry");
-        assert!(!out.contains("A を採用"), "decisions must be omitted: {out}");
+        assert!(
+            !out.contains("A を採用"),
+            "decisions must be omitted: {out}"
+        );
         assert!(out.contains("■ 残課題"), "todos must remain: {out}");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -401,7 +427,10 @@ mod tests {
         cfg.inject_todos = false;
         let out = run(&input, &cfg).expect("pointer still useful");
         assert!(!out.contains("A を採用"));
-        assert!(out.contains("退避ノートあり"), "should degrade to a pointer: {out}");
+        assert!(
+            out.contains("退避ノートあり"),
+            "should degrade to a pointer: {out}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -413,7 +442,10 @@ mod tests {
         ls.pin("docs/spec.md");
         ls.save(&cfg.state_dir, &cwd).unwrap();
         let out = run(&input, &cfg).expect("carryover + pinned");
-        assert!(out.contains("ピン留め中の参照"), "pinned header missing: {out}");
+        assert!(
+            out.contains("ピン留め中の参照"),
+            "pinned header missing: {out}"
+        );
         assert!(out.contains("docs/spec.md"), "pinned item missing: {out}");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -427,7 +459,10 @@ mod tests {
         ls.pin("docs/spec.md");
         ls.save(&cfg.state_dir, &cwd).unwrap();
         let out = run(&input, &cfg).expect("carryover");
-        assert!(!out.contains("docs/spec.md"), "inject_pinned=false must hide pins: {out}");
+        assert!(
+            !out.contains("docs/spec.md"),
+            "inject_pinned=false must hide pins: {out}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

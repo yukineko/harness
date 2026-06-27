@@ -114,15 +114,24 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
             Some(".py") => {
                 if cfg.py_compile && has_python {
                     let mut c = Command::new(python_bin);
-                    c.arg("-m").arg("py_compile").arg(&abs).current_dir(ctx.root);
+                    c.arg("-m")
+                        .arg("py_compile")
+                        .arg(&abs)
+                        .current_dir(ctx.root);
                     let (ok, o) = run_bounded(c, timeout);
                     if !ok {
-                        syntax_fails.push(format!("  {file} (py_compile):\n    {}", first_lines(&o, 3)));
+                        syntax_fails.push(format!(
+                            "  {file} (py_compile):\n    {}",
+                            first_lines(&o, 3)
+                        ));
                     }
                 }
                 if cfg.ruff && has_ruff {
                     let mut c = Command::new("ruff");
-                    c.arg("check").arg("--quiet").arg(&abs).current_dir(ctx.root);
+                    c.arg("check")
+                        .arg("--quiet")
+                        .arg(&abs)
+                        .current_dir(ctx.root);
                     let (ok, o) = run_bounded(c, timeout);
                     if !ok {
                         syntax_fails.push(format!("  {file} (ruff):\n    {}", first_lines(&o, 5)));
@@ -135,34 +144,37 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
                     c.arg("-n").arg(&abs).current_dir(ctx.root);
                     let (ok, o) = run_bounded(c, timeout);
                     if !ok {
-                        syntax_fails.push(format!("  {file} (bash -n):\n    {}", first_lines(&o, 3)));
+                        syntax_fails
+                            .push(format!("  {file} (bash -n):\n    {}", first_lines(&o, 3)));
                     }
                 }
             }
-            Some(".ts") | Some(".tsx") | Some(".js") | Some(".jsx")
-                if cfg.eslint => {
-                    if let Some(root) = eslint_root(ctx, file) {
-                        let bin = node_bin(&ctx.root.join(&root), "eslint");
-                        if bin.exists() {
-                            let mut c = Command::new(&bin);
-                            c.arg("--max-warnings=0")
-                                .arg(&abs)
-                                .current_dir(ctx.root.join(&root));
-                            let (ok, o) = run_bounded(c, timeout);
-                            if !ok {
-                                syntax_fails
-                                    .push(format!("  {file} (eslint):\n    {}", first_lines(&o, 5)));
-                            }
+            Some(".ts") | Some(".tsx") | Some(".js") | Some(".jsx") if cfg.eslint => {
+                if let Some(root) = eslint_root(ctx, file) {
+                    let bin = node_bin(&ctx.root.join(&root), "eslint");
+                    if bin.exists() {
+                        let mut c = Command::new(&bin);
+                        c.arg("--max-warnings=0")
+                            .arg(&abs)
+                            .current_dir(ctx.root.join(&root));
+                        let (ok, o) = run_bounded(c, timeout);
+                        if !ok {
+                            syntax_fails
+                                .push(format!("  {file} (eslint):\n    {}", first_lines(&o, 5)));
                         }
                     }
                 }
+            }
             _ => {}
         }
     }
     if !syntax_fails.is_empty() {
         out.push(Issue::block(
             "SYNTAX / LINT FAILURE",
-            format!("SYNTAX / LINT FAILURE in changed files:\n{}", syntax_fails.join("\n")),
+            format!(
+                "SYNTAX / LINT FAILURE in changed files:\n{}",
+                syntax_fails.join("\n")
+            ),
         ));
     }
 
@@ -184,14 +196,23 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
                 continue;
             }
             let mut c = Command::new(&bin);
-            c.arg("--noEmit").arg("--incremental").current_dir(&proj_abs);
+            c.arg("--noEmit")
+                .arg("--incremental")
+                .current_dir(&proj_abs);
             let (ok, o) = run_bounded(c, timeout);
             let has_ts_err = o.contains("error TS");
             if !ok || has_ts_err {
                 if o.contains("<killed") {
-                    tsc_fails.push(format!("  {proj} (tsc): killed after {}s", cfg.timeout_secs));
+                    tsc_fails.push(format!(
+                        "  {proj} (tsc): killed after {}s",
+                        cfg.timeout_secs
+                    ));
                 } else {
-                    let summary: Vec<&str> = o.lines().filter(|l| l.contains("error TS")).take(5).collect();
+                    let summary: Vec<&str> = o
+                        .lines()
+                        .filter(|l| l.contains("error TS"))
+                        .take(5)
+                        .collect();
                     let body = if summary.is_empty() {
                         first_lines(&o, 3)
                     } else {
@@ -229,14 +250,16 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
                     continue;
                 }
                 let mut c = Command::new(python_bin);
-                c.arg("-m").arg("radon").arg("cc").arg("-n").arg("D").arg("-s")
-                    .arg(ctx.root.join(file)).current_dir(ctx.root);
+                c.arg("-m")
+                    .arg("radon")
+                    .arg("cc")
+                    .arg("-n")
+                    .arg("D")
+                    .arg("-s")
+                    .arg(ctx.root.join(file))
+                    .current_dir(ctx.root);
                 let (_ok, o) = run_bounded(c, timeout);
-                let hits: Vec<&str> = o
-                    .lines()
-                    .filter(|l| radon_hit(l))
-                    .take(3)
-                    .collect();
+                let hits: Vec<&str> = o.lines().filter(|l| radon_hit(l)).take(3).collect();
                 if !hits.is_empty() {
                     fails.push(format!("  {file}: {}", hits.join("; ")));
                 }
@@ -271,8 +294,12 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
             .collect();
         if !scan.is_empty() {
             let mut c = Command::new("semgrep");
-            c.arg("--config").arg("auto").arg("--quiet").arg("--error")
-                .arg("--timeout").arg("20");
+            c.arg("--config")
+                .arg("auto")
+                .arg("--quiet")
+                .arg("--error")
+                .arg("--timeout")
+                .arg("20");
             for f in &scan {
                 c.arg(f);
             }
@@ -281,11 +308,20 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
             if !ok {
                 let summary: Vec<&str> = o
                     .lines()
-                    .filter(|l| l.contains("rule:") || l.contains("severity:") || l.contains("message:"))
+                    .filter(|l| {
+                        l.contains("rule:") || l.contains("severity:") || l.contains("message:")
+                    })
                     .take(8)
                     .collect();
-                let body = if summary.is_empty() { first_lines(&o, 5) } else { summary.join("\n    ") };
-                out.push(Issue::block("SEMGREP", format!("SEMGREP findings:\n    {body}")));
+                let body = if summary.is_empty() {
+                    first_lines(&o, 5)
+                } else {
+                    summary.join("\n    ")
+                };
+                out.push(Issue::block(
+                    "SEMGREP",
+                    format!("SEMGREP findings:\n    {body}"),
+                ));
             }
         }
     }
@@ -301,17 +337,27 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
             let mut c = Command::new("gitleaks");
             // Scan the repo tree directly with --no-git; cheaper than copying and
             // sufficient since we only care that changed files are clean.
-            c.arg("detect").arg("--no-git").arg("--source").arg(ctx.root)
-                .arg("--no-banner").arg("--redact");
+            c.arg("detect")
+                .arg("--no-git")
+                .arg("--source")
+                .arg(ctx.root)
+                .arg("--no-banner")
+                .arg("--redact");
             c.current_dir(ctx.root);
             let (ok, o) = run_bounded(c, Duration::from_secs(cfg.timeout_secs.max(30)));
             if !ok {
                 let summary: Vec<&str> = o
                     .lines()
-                    .filter(|l| l.contains("Finding") || l.contains("Secret") || l.contains("RuleID"))
+                    .filter(|l| {
+                        l.contains("Finding") || l.contains("Secret") || l.contains("RuleID")
+                    })
                     .take(5)
                     .collect();
-                let body = if summary.is_empty() { first_lines(&o, 5) } else { summary.join("\n    ") };
+                let body = if summary.is_empty() {
+                    first_lines(&o, 5)
+                } else {
+                    summary.join("\n    ")
+                };
                 out.push(Issue::block(
                     "GITLEAKS",
                     format!("GITLEAKS DETECTED SECRETS in changed files:\n    {body}"),

@@ -36,9 +36,9 @@ impl std::str::FromStr for Status {
             "failed" => Status::Failed,
             "verified" => Status::Verified,
             "cancelled" => Status::Cancelled,
-            other => bail!(
-                "unknown status '{other}' (pending|running|done|failed|verified|cancelled)"
-            ),
+            other => {
+                bail!("unknown status '{other}' (pending|running|done|failed|verified|cancelled)")
+            }
         })
     }
 }
@@ -107,13 +107,8 @@ impl RunState {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(&tmp_path, &json)
             .with_context(|| format!("writing tmp {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, &path).with_context(|| {
-            format!(
-                "renaming {} -> {}",
-                tmp_path.display(),
-                path.display()
-            )
-        })?;
+        std::fs::rename(&tmp_path, &path)
+            .with_context(|| format!("renaming {} -> {}", tmp_path.display(), path.display()))?;
         Ok(path)
     }
 
@@ -196,13 +191,8 @@ pub fn save_decomposition(cfg: &Config, cwd: &Path, run_id: &str, json: &str) ->
     let tmp_path = dir.join(format!("{run_id}.decomposition.json.tmp"));
     std::fs::write(&tmp_path, json)
         .with_context(|| format!("writing tmp decomposition to {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &path).with_context(|| {
-        format!(
-            "renaming {} -> {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })
+    std::fs::rename(&tmp_path, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp_path.display(), path.display()))
 }
 
 /// Load the raw decomposition JSON for an existing run. Fails if not found.
@@ -255,11 +245,7 @@ pub fn reconcile_run(
 
         let branch_merged = t.branch.as_deref().map(|b| {
             // `git merge-base --is-ancestor <b> <default>` exits 0 if b is an ancestor.
-            crate::worktree::git(
-                &repo,
-                &["merge-base", "--is-ancestor", b, default_branch],
-            )
-            .is_ok()
+            crate::worktree::git(&repo, &["merge-base", "--is-ancestor", b, default_branch]).is_ok()
         });
 
         let branch_exists = t.branch.as_deref().map(|b| {
@@ -375,8 +361,10 @@ pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
             let p = PathBuf::from(wt);
             if p.exists() {
                 match worktree::is_dirty(&p) {
-                    Ok(true) => reasons
-                        .push(format!("worktree for '{}' has uncommitted changes ({wt})", t.id)),
+                    Ok(true) => reasons.push(format!(
+                        "worktree for '{}' has uncommitted changes ({wt})",
+                        t.id
+                    )),
                     Ok(false) => {
                         reasons.push(format!("worktree for '{}' still exists ({wt})", t.id))
                     }
@@ -491,17 +479,19 @@ pub fn count_test_failures(output: &str, exit_ok: bool) -> usize {
         if l.contains("failed") && l.contains("passed") {
             let words: Vec<&str> = l.split_whitespace().collect();
             for (i, w) in words.iter().enumerate() {
-                if (*w == "failed," || *w == "failed")
-                    && i > 0 {
-                        if let Ok(n) = words[i - 1].parse::<usize>() {
-                            return n;
-                        }
+                if (*w == "failed," || *w == "failed") && i > 0 {
+                    if let Ok(n) = words[i - 1].parse::<usize>() {
+                        return n;
                     }
+                }
             }
         }
     }
     // npm/jest: count lines starting with "FAIL "
-    let jest_fails = output.lines().filter(|l| l.trim_start().starts_with("FAIL ")).count();
+    let jest_fails = output
+        .lines()
+        .filter(|l| l.trim_start().starts_with("FAIL "))
+        .count();
     if jest_fails > 0 {
         return jest_fails;
     }
@@ -675,7 +665,10 @@ pub fn list_cancellable_tasks(cfg: &Config, cwd: &Path) -> Vec<CancellableTask> 
         let titles: std::collections::HashMap<String, String> =
             if let Ok(raw) = load_decomposition(cfg, cwd, &run.run_id) {
                 if let Ok(dec) = serde_json::from_str::<crate::model::Decomposition>(&raw) {
-                    dec.tasks.iter().map(|t| (t.id.clone(), t.title.clone())).collect()
+                    dec.tasks
+                        .iter()
+                        .map(|t| (t.id.clone(), t.title.clone()))
+                        .collect()
                 } else {
                     Default::default()
                 }
@@ -684,7 +677,10 @@ pub fn list_cancellable_tasks(cfg: &Config, cwd: &Path) -> Vec<CancellableTask> 
             };
 
         for task in &run.tasks {
-            if !matches!(task.status, Status::Pending | Status::Running | Status::Done) {
+            if !matches!(
+                task.status,
+                Status::Pending | Status::Running | Status::Done
+            ) {
                 continue;
             }
             result.push(CancellableTask {
@@ -731,7 +727,10 @@ pub fn cross_run_conflicts(
 
     for run in open_runs(cfg, cwd) {
         let all_settled = run.tasks.iter().all(|t| {
-            matches!(t.status, Status::Verified | Status::Failed | Status::Cancelled)
+            matches!(
+                t.status,
+                Status::Verified | Status::Failed | Status::Cancelled
+            )
         });
         let is_active = !run.paused && !all_settled;
 
@@ -797,7 +796,14 @@ mod tests {
 
     #[test]
     fn status_roundtrip() {
-        for s in ["pending", "running", "done", "failed", "verified", "cancelled"] {
+        for s in [
+            "pending",
+            "running",
+            "done",
+            "failed",
+            "verified",
+            "cancelled",
+        ] {
             let st: Status = s.parse().unwrap();
             let json = serde_json::to_string(&st).unwrap();
             assert_eq!(json, format!("\"{s}\""));
@@ -838,9 +844,27 @@ mod tests {
             run_id: "r1".into(),
             goal: "g".into(),
             tasks: vec![
-                TaskState { id: "a".into(), status: Status::Verified, worktree: None, branch: None, updated_at: None },
-                TaskState { id: "b".into(), status: Status::Cancelled, worktree: None, branch: None, updated_at: None },
-                TaskState { id: "c".into(), status: Status::Pending, worktree: None, branch: None, updated_at: None },
+                TaskState {
+                    id: "a".into(),
+                    status: Status::Verified,
+                    worktree: None,
+                    branch: None,
+                    updated_at: None,
+                },
+                TaskState {
+                    id: "b".into(),
+                    status: Status::Cancelled,
+                    worktree: None,
+                    branch: None,
+                    updated_at: None,
+                },
+                TaskState {
+                    id: "c".into(),
+                    status: Status::Pending,
+                    worktree: None,
+                    branch: None,
+                    updated_at: None,
+                },
             ],
             paused: false,
             terminal_label: None,
@@ -969,7 +993,10 @@ mod tests {
         save_decomposition(&cfg, &tmp, run_id, json).unwrap();
         // final file exists
         let final_path = decomposition_path(&cfg, &tmp, run_id);
-        assert!(final_path.exists(), "decomposition .json must exist after save");
+        assert!(
+            final_path.exists(),
+            "decomposition .json must exist after save"
+        );
         // no stray .tmp remains
         let dir = final_path.parent().unwrap();
         let leftover_tmp = dir.join(format!("{run_id}.decomposition.json.tmp"));
@@ -1037,7 +1064,9 @@ mod tests {
 
         let after = now_secs();
         let reloaded = RunState::load(&cfg, &tmp, "run-ts").unwrap();
-        let ts = reloaded.tasks[0].updated_at.expect("updated_at must be Some after Set");
+        let ts = reloaded.tasks[0]
+            .updated_at
+            .expect("updated_at must be Some after Set");
         assert!(ts >= before, "timestamp must be >= before");
         assert!(ts <= after, "timestamp must be <= after");
 
@@ -1102,7 +1131,10 @@ mod tests {
             updated_at: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
-        assert!(ids.is_empty(), "Running task with no timestamp must not be stuck");
+        assert!(
+            ids.is_empty(),
+            "Running task with no timestamp must not be stuck"
+        );
     }
 
     // ── abandon_task helper ───────────────────────────────────────────────
@@ -1129,7 +1161,10 @@ mod tests {
         assert_eq!(t.status, Status::Pending);
         assert!(t.worktree.is_none(), "worktree must be cleared on abandon");
         assert!(t.branch.is_none(), "branch must be cleared on abandon");
-        assert!(t.updated_at.is_none(), "updated_at must be reset to None on abandon");
+        assert!(
+            t.updated_at.is_none(),
+            "updated_at must be reset to None on abandon"
+        );
     }
 
     /// A failed task can also be abandoned back to pending.
@@ -1176,7 +1211,11 @@ mod tests {
         ]);
         for t in &run.tasks {
             let is_abandonable = t.status == Status::Running || t.status == Status::Failed;
-            assert!(!is_abandonable, "task '{}' with status {:?} must not be abandonable", t.id, t.status);
+            assert!(
+                !is_abandonable,
+                "task '{}' with status {:?} must not be abandonable",
+                t.id, t.status
+            );
         }
     }
 
@@ -1256,7 +1295,10 @@ mod tests {
     #[test]
     fn bigram_jaccard_identical_strings() {
         let s = "ログインバグを修正する";
-        assert!((bigram_jaccard(s, s) - 1.0).abs() < 1e-6, "identical strings must score 1.0");
+        assert!(
+            (bigram_jaccard(s, s) - 1.0).abs() < 1e-6,
+            "identical strings must score 1.0"
+        );
     }
 
     #[test]
@@ -1335,7 +1377,10 @@ mod tests {
             },
         ]);
         let ids = stuck_task_ids(&run, ttl);
-        assert!(ids.is_empty(), "only Running tasks should be candidates for stuck detection");
+        assert!(
+            ids.is_empty(),
+            "only Running tasks should be candidates for stuck detection"
+        );
     }
 
     // ── loop core tests ────────────────────────────────────────────────────

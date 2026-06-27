@@ -113,14 +113,24 @@ fn run() -> Result<()> {
     let cfg = config::Config::load()?;
 
     match cli.command {
-        Command::Add { text, goal, success, kill } => {
+        Command::Add {
+            text,
+            goal,
+            success,
+            kill,
+        } => {
             let success = success.as_deref().map(Criterion::parse).transpose()?;
             let kill = kill.as_deref().map(Criterion::parse).transpose()?;
             let mut st = store::Store::load(&cfg)?;
             let id = st.add_with_criteria(text, goal, success, kill)?;
             println!("{id}");
         }
-        Command::Validate { id, evidence, measurement, run } => {
+        Command::Validate {
+            id,
+            evidence,
+            measurement,
+            run,
+        } => {
             let measurements = measurement
                 .iter()
                 .map(|m| parse_measurement(m))
@@ -128,7 +138,12 @@ fn run() -> Result<()> {
             let mut st = store::Store::load(&cfg)?;
             st.validate_with_measurements(&id, evidence, measurements, run)?;
         }
-        Command::Assume { id, text, risk, evidence } => {
+        Command::Assume {
+            id,
+            text,
+            risk,
+            evidence,
+        } => {
             let risk = Risk::parse(&risk)?;
             let evidence = Evidence::parse(&evidence)?;
             let mut st = store::Store::load(&cfg)?;
@@ -171,7 +186,9 @@ fn run() -> Result<()> {
         Command::List { status } => {
             let st = store::Store::load(&cfg)?;
             for h in st.list(status.as_deref()) {
-                let run_info = h.condukt_run.as_deref()
+                let run_info = h
+                    .condukt_run
+                    .as_deref()
                     .map(|r| format!(" (run: {})", r))
                     .unwrap_or_default();
                 let crit_info = match (&h.success_criterion, &h.kill_criterion) {
@@ -191,7 +208,10 @@ fn run() -> Result<()> {
                     .riskiest_assumption()
                     .map(|a| format!(" [RAT: {}]", a.text))
                     .unwrap_or_default();
-                println!("[{}] {} — {}{}{}{}", h.status, h.id, h.text, crit_info, rat_info, run_info);
+                println!(
+                    "[{}] {} — {}{}{}{}",
+                    h.status, h.id, h.text, crit_info, rat_info, run_info
+                );
             }
         }
         Command::Install { dry_run } => {

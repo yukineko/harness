@@ -13,8 +13,8 @@
 //!   condukt_prompts ≥ 5  → block: ask user each time
 
 mod backlog;
-mod config;
 mod condukt;
+mod config;
 mod insights;
 mod lock;
 mod state;
@@ -27,7 +27,11 @@ use config::Config;
 use state::Phase;
 
 #[derive(Parser)]
-#[command(name = "autoflow", version, about = "Session-end auto-flow gate for Claude Code.")]
+#[command(
+    name = "autoflow",
+    version,
+    about = "Session-end auto-flow gate for Claude Code."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

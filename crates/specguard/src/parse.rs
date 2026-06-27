@@ -54,7 +54,12 @@ pub fn parse(stdout: &str) -> Parsed {
 
     let needs_user = field(trailer, "needs_user")
         // Take only the first whitespace token so "yes (3 findings)" -> "yes".
-        .map(|v| v.split_whitespace().next().unwrap_or("").to_ascii_lowercase())
+        .map(|v| {
+            v.split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        })
         .map(|t| t.starts_with("yes"))
         .unwrap_or(false);
 
@@ -88,7 +93,8 @@ mod tests {
 
     #[test]
     fn parses_yes_with_report() {
-        let s = "# Report\n\nbody line\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: fix the thing";
+        let s =
+            "# Report\n\nbody line\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: fix the thing";
         let p = parse(s);
         assert!(p.marker_found);
         assert!(p.needs_user);

@@ -127,7 +127,11 @@ pub fn print_summary(report: &EvidenceReport) {
             "failed" => "✗",
             _ => "?",
         };
-        println!("  {icon} {req_id} [{status}]", req_id = item.req_id, status = item.status);
+        println!(
+            "  {icon} {req_id} [{status}]",
+            req_id = item.req_id,
+            status = item.status
+        );
         if let Some(tr) = &item.test_result {
             println!("     test: {tr}");
         }
@@ -141,8 +145,14 @@ pub fn print_summary(report: &EvidenceReport) {
     println!();
     match report.gate_status.as_str() {
         "agreed" => {
-            println!("Gate: AGREED ({})", report.agreement_reason.as_deref().unwrap_or(""));
-            println!("次: `specforge merge --id {}` でワークツリーを統合できます。", report.spec_id);
+            println!(
+                "Gate: AGREED ({})",
+                report.agreement_reason.as_deref().unwrap_or("")
+            );
+            println!(
+                "次: `specforge merge --id {}` でワークツリーを統合できます。",
+                report.spec_id
+            );
         }
         _ => {
             println!("Gate: PENDING (未合意)");

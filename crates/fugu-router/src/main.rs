@@ -184,9 +184,24 @@ fn route_decision(
 ) -> policy::Decision {
     let nb = rag::knn(title, files, eps, cfg.k, cfg.sim_threshold);
     if cfg.explore {
-        policy::decide_bandit(title, files, class, &nb, cfg.pass_threshold, cfg.min_samples, rng)
+        policy::decide_bandit(
+            title,
+            files,
+            class,
+            &nb,
+            cfg.pass_threshold,
+            cfg.min_samples,
+            rng,
+        )
     } else {
-        policy::decide(title, files, class, &nb, cfg.pass_threshold, cfg.min_samples)
+        policy::decide(
+            title,
+            files,
+            class,
+            &nb,
+            cfg.pass_threshold,
+            cfg.min_samples,
+        )
     }
 }
 
@@ -260,9 +275,11 @@ fn run_user(cmd: Command) -> Result<()> {
                     done_criteria,
                     notes,
                 };
-                store::append_playbook(&cfg.playbook_path(), &pb)
-                    .context("appending playbook")?;
-                eprintln!("recorded: {} \"{}\" pass={} (playbook saved)", ep.model, ep.title, pass);
+                store::append_playbook(&cfg.playbook_path(), &pb).context("appending playbook")?;
+                eprintln!(
+                    "recorded: {} \"{}\" pass={} (playbook saved)",
+                    ep.model, ep.title, pass
+                );
             } else {
                 eprintln!("recorded: {} \"{}\" pass={}", ep.model, ep.title, pass);
             }
@@ -317,7 +334,10 @@ fn run_user(cmd: Command) -> Result<()> {
             dry_run,
             dedup,
         } => cmd_import(&cfg, episodes, playbooks, dry_run, dedup),
-        Command::Sync { pull_only, push_only } => cmd_sync(&cfg, pull_only, push_only),
+        Command::Sync {
+            pull_only,
+            push_only,
+        } => cmd_sync(&cfg, pull_only, push_only),
         Command::Prompt => unreachable!("handled in main"),
     }
 }
@@ -403,7 +423,9 @@ fn cmd_import(
     }
 
     if episodes_src.is_none() && playbooks_src.is_none() {
-        anyhow::bail!("at least one of --episodes or --playbooks must be specified (or use --dedup)");
+        anyhow::bail!(
+            "at least one of --episodes or --playbooks must be specified (or use --dedup)"
+        );
     }
 
     if dry_run {
@@ -434,10 +456,9 @@ fn cmd_import(
 }
 
 fn cmd_sync(cfg: &config::Config, pull_only: bool, push_only: bool) -> Result<()> {
-    let repo_url = cfg
-        .sync_repo
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("sync_repo is not configured in ~/.fugu-router/config.toml"))?;
+    let repo_url = cfg.sync_repo.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("sync_repo is not configured in ~/.fugu-router/config.toml")
+    })?;
     let sync_dir = cfg.sync_dir_path();
 
     // --- pull phase ---
@@ -492,7 +513,13 @@ fn cmd_sync(cfg: &config::Config, pull_only: bool, push_only: bool) -> Result<()
 
     // Check if anything is actually staged before committing.
     let staged = std::process::Command::new("git")
-        .args(["-C", &sync_dir.to_string_lossy(), "diff", "--cached", "--quiet"])
+        .args([
+            "-C",
+            &sync_dir.to_string_lossy(),
+            "diff",
+            "--cached",
+            "--quiet",
+        ])
         .status()
         .context("running git diff --cached")?;
     if staged.success() {
@@ -501,7 +528,14 @@ fn cmd_sync(cfg: &config::Config, pull_only: bool, push_only: bool) -> Result<()
     }
 
     let commit = std::process::Command::new("git")
-        .args(["-C", &sync_dir.to_string_lossy(), "commit", "--no-verify", "-m", &commit_msg])
+        .args([
+            "-C",
+            &sync_dir.to_string_lossy(),
+            "commit",
+            "--no-verify",
+            "-m",
+            &commit_msg,
+        ])
         .output()
         .context("running git commit")?;
     if !commit.status.success() {
@@ -559,7 +593,11 @@ fn cmd_stats(cfg: &config::Config, as_json: bool) -> Result<()> {
         for (m, (n, p, c)) in &agg {
             println!(
                 "  {m:<6} {p}/{n} pass ({:.0}%)  avg ${:.4}",
-                if *n > 0 { *p as f64 / *n as f64 * 100.0 } else { 0.0 },
+                if *n > 0 {
+                    *p as f64 / *n as f64 * 100.0
+                } else {
+                    0.0
+                },
                 if *n > 0 { c / *n as f64 } else { 0.0 }
             );
         }

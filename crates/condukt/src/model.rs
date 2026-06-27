@@ -131,10 +131,9 @@ mod tests {
 
     #[test]
     fn task_with_size_is_populated() {
-        let dec: Decomposition = serde_json::from_str(
-            r#"{"goal":"g","tasks":[{"id":"a","size":"m"}]}"#,
-        )
-        .expect("decomposition with size should parse");
+        let dec: Decomposition =
+            serde_json::from_str(r#"{"goal":"g","tasks":[{"id":"a","size":"m"}]}"#)
+                .expect("decomposition with size should parse");
         assert_eq!(dec.tasks[0].size.as_deref(), Some("m"));
     }
 
@@ -170,19 +169,17 @@ mod tests {
 
     #[test]
     fn task_with_confidence_is_populated() {
-        let dec: Decomposition = serde_json::from_str(
-            r#"{"goal":"g","tasks":[{"id":"a","confidence":"low"}]}"#,
-        )
-        .expect("decomposition with confidence should parse");
+        let dec: Decomposition =
+            serde_json::from_str(r#"{"goal":"g","tasks":[{"id":"a","confidence":"low"}]}"#)
+                .expect("decomposition with confidence should parse");
         assert_eq!(dec.tasks[0].confidence.as_deref(), Some("low"));
     }
 
     #[test]
     fn task_with_experiment_class_parses() {
-        let dec: Decomposition = serde_json::from_str(
-            r#"{"goal":"g","tasks":[{"id":"x","class":"experiment"}]}"#,
-        )
-        .expect("decomposition with experiment class should parse");
+        let dec: Decomposition =
+            serde_json::from_str(r#"{"goal":"g","tasks":[{"id":"x","class":"experiment"}]}"#)
+                .expect("decomposition with experiment class should parse");
         assert_eq!(dec.tasks[0].class, Class::Experiment);
     }
 }

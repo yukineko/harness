@@ -198,7 +198,8 @@ pub fn check_swallowed_error(ctx: &Ctx, added: &[String], out: &mut Vec<Issue>) 
 // ---------------------------------------------------------------------------
 pub fn check_duplicate_function(ctx: &Ctx, out: &mut Vec<Issue>) {
     let py_def = re(r"^\+\s*def\s+([A-Za-z_][A-Za-z0-9_]{3,})\s*\(");
-    let js_def = re(r"^\+\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]{3,})\s*\(");
+    let js_def =
+        re(r"^\+\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]{3,})\s*\(");
     let sh_def = re(r"^\+\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]{3,})\s*\(\)\s*\{?");
     let common = &ctx.cfg.duplicate_function.common_names;
     let mut hits: Vec<String> = Vec::new();
@@ -244,7 +245,12 @@ pub fn check_duplicate_function(ctx: &Ctx, out: &mut Vec<Issue>) {
                 })
                 .collect();
             if !others.is_empty() {
-                let listed = others.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                let listed = others
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 hits.push(format!(
                     "  {name}()  defined in {file}; same name already in: {listed}"
                 ));
@@ -255,7 +261,9 @@ pub fn check_duplicate_function(ctx: &Ctx, out: &mut Vec<Issue>) {
         let sample = hits.iter().take(5).cloned().collect::<Vec<_>>().join("\n");
         out.push(Issue::block(
             "POSSIBLE DUPLICATE",
-            format!("POSSIBLE DUPLICATE function/signature (consider reusing existing impl):\n{sample}"),
+            format!(
+                "POSSIBLE DUPLICATE function/signature (consider reusing existing impl):\n{sample}"
+            ),
         ));
     }
 }
@@ -266,7 +274,9 @@ pub fn check_duplicate_function(ctx: &Ctx, out: &mut Vec<Issue>) {
 pub fn check_local_capture(ctx: &Ctx, out: &mut Vec<Issue>) {
     let errexit_a = re(r"(?m)^\s*set\s+-[A-Za-z]*e");
     let errexit_b = re(r"(?m)^\s*set\s+-o\s+errexit");
-    let pat = re(r"^\+\s*(local|declare|readonly|export|typeset)(\s+-\w+)?\s+[A-Za-z_][A-Za-z0-9_]*=(\$\(|`)");
+    let pat = re(
+        r"^\+\s*(local|declare|readonly|export|typeset)(\s+-\w+)?\s+[A-Za-z_][A-Za-z0-9_]*=(\$\(|`)",
+    );
     let mut hits: Vec<String> = Vec::new();
     'outer: for file in ctx.files {
         if ctx.cls.is_excluded(file) || ctx.cls.is_test(file) || !ctx.exists(file) {
@@ -314,7 +324,8 @@ pub fn check_markdown_links(ctx: &Ctx, out: &mut Vec<Issue>) {
     let skip_re = re(r"^(https?:|mailto:|#|<|\$)");
     let mut broken: Vec<String> = Vec::new();
     'outer: for file in ctx.files {
-        if ctx.cls.is_excluded(file) || ext_of(file).as_deref() != Some(".md") || !ctx.exists(file) {
+        if ctx.cls.is_excluded(file) || ext_of(file).as_deref() != Some(".md") || !ctx.exists(file)
+        {
             continue;
         }
         let content = match ctx.read_full(file) {
@@ -350,7 +361,12 @@ pub fn check_markdown_links(ctx: &Ctx, out: &mut Vec<Issue>) {
         }
     }
     if !broken.is_empty() {
-        let sample = broken.iter().take(8).cloned().collect::<Vec<_>>().join("\n");
+        let sample = broken
+            .iter()
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
         out.push(Issue::block(
             "BROKEN MARKDOWN LINKS",
             format!("BROKEN MARKDOWN LINKS in changed .md files:\n{sample}"),
@@ -395,9 +411,13 @@ pub fn check_line_endings(ctx: &Ctx, out: &mut Vec<Issue>) {
             }
         }
         if want_crlf && has_lf_only && !has_crlf {
-            fails.push(format!("  {file}: LF-only but must be CRLF (Windows script)"));
+            fails.push(format!(
+                "  {file}: LF-only but must be CRLF (Windows script)"
+            ));
         } else if want_lf && has_crlf {
-            fails.push(format!("  {file}: contains CRLF but must be LF (POSIX shebang)"));
+            fails.push(format!(
+                "  {file}: contains CRLF but must be LF (POSIX shebang)"
+            ));
         }
     }
     if !fails.is_empty() {
@@ -433,7 +453,12 @@ pub fn check_file_length(ctx: &Ctx, out: &mut Vec<Issue>) {
         }
     }
     if !warnings.is_empty() {
-        let sample = warnings.iter().take(8).cloned().collect::<Vec<_>>().join("\n");
+        let sample = warnings
+            .iter()
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
         out.push(Issue::warn(
             "FILE TOO LONG",
             format!(
@@ -527,7 +552,12 @@ pub fn check_custom_rules(ctx: &Ctx, out: &mut Vec<Issue>) {
         if hits[i].is_empty() {
             continue;
         }
-        let sample = hits[i].iter().take(8).cloned().collect::<Vec<_>>().join("\n");
+        let sample = hits[i]
+            .iter()
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
         let cat = r.id.to_uppercase();
         let msg = format!("{}:\n{sample}\n{}", cat, r.message);
         out.push(Issue {

@@ -149,8 +149,14 @@ pub fn run_gen(out: &Path, n: usize, filler_chars: usize) -> anyhow::Result<usiz
     let cases = generate_cases(n);
     let mut entries = Vec::with_capacity(cases.len());
     for c in &cases {
-        std::fs::write(out.join(format!("{}.off.txt", c.id)), render_prompt(c, false, filler_chars))?;
-        std::fs::write(out.join(format!("{}.on.txt", c.id)), render_prompt(c, true, filler_chars))?;
+        std::fs::write(
+            out.join(format!("{}.off.txt", c.id)),
+            render_prompt(c, false, filler_chars),
+        )?;
+        std::fs::write(
+            out.join(format!("{}.on.txt", c.id)),
+            render_prompt(c, true, filler_chars),
+        )?;
         entries.push(ManifestEntry {
             id: c.id.clone(),
             expected: c.expected.clone(),
@@ -158,7 +164,10 @@ pub fn run_gen(out: &Path, n: usize, filler_chars: usize) -> anyhow::Result<usiz
         });
     }
     let manifest = Manifest { cases: entries };
-    std::fs::write(out.join("manifest.json"), serde_json::to_string_pretty(&manifest)?)?;
+    std::fs::write(
+        out.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
     Ok(cases.len())
 }
 
@@ -199,7 +208,10 @@ fn judge(answer: &str, expected: &str) -> bool {
 /// costs. Unknown ids and unknown variants are ignored.
 fn score(cases: &[Case], anchor_bytes: &[(String, usize)], results: &[ResultRec]) -> Report {
     use std::collections::HashMap;
-    let expected: HashMap<&str, &str> = cases.iter().map(|c| (c.id.as_str(), c.expected.as_str())).collect();
+    let expected: HashMap<&str, &str> = cases
+        .iter()
+        .map(|c| (c.id.as_str(), c.expected.as_str()))
+        .collect();
     let bytes: HashMap<&str, usize> = anchor_bytes.iter().map(|(k, v)| (k.as_str(), *v)).collect();
 
     let mut r = Report::default();
@@ -239,8 +251,11 @@ pub fn run_score(manifest_path: &Path, results_path: &Path) -> anyhow::Result<Re
             expected: e.expected.clone(),
         })
         .collect();
-    let anchor_bytes: Vec<(String, usize)> =
-        manifest.cases.iter().map(|e| (e.id.clone(), e.anchor_bytes)).collect();
+    let anchor_bytes: Vec<(String, usize)> = manifest
+        .cases
+        .iter()
+        .map(|e| (e.id.clone(), e.anchor_bytes))
+        .collect();
 
     let mut results = Vec::new();
     for line in std::fs::read_to_string(results_path)?.lines() {
@@ -259,15 +274,33 @@ pub fn run_score(manifest_path: &Path, results_path: &Path) -> anyhow::Result<Re
 }
 
 fn print_report(r: &Report) {
-    println!("{:<10} {:>6} {:>8} {:>9}", "variant", "cases", "correct", "accuracy");
-    println!("{:<10} {:>6} {:>8} {:>8.0}%", "off", r.off_total, r.off_correct, r.off_pct());
-    println!("{:<10} {:>6} {:>8} {:>8.0}%", "on", r.on_total, r.on_correct, r.on_pct());
+    println!(
+        "{:<10} {:>6} {:>8} {:>9}",
+        "variant", "cases", "correct", "accuracy"
+    );
+    println!(
+        "{:<10} {:>6} {:>8} {:>8.0}%",
+        "off",
+        r.off_total,
+        r.off_correct,
+        r.off_pct()
+    );
+    println!(
+        "{:<10} {:>6} {:>8} {:>8.0}%",
+        "on",
+        r.on_total,
+        r.on_correct,
+        r.on_pct()
+    );
     let added_tok = r.added_bytes / 4; // same ~4 bytes/token estimate as transcript
     println!(
         "\nre-anchor 追加注入: {} bytes (~{} tok, /4) over {} ON case(s)",
         r.added_bytes, added_tok, r.on_total
     );
-    println!("Δ accuracy (on − off): {:+.0} pts", r.on_pct() - r.off_pct());
+    println!(
+        "Δ accuracy (on − off): {:+.0} pts",
+        r.on_pct() - r.off_pct()
+    );
     println!(
         "→ Δ が大きく正なら re-anchor は追加トークン分の価値あり。0付近〜負なら reanchor_min_band を上げる/無効化を検討。"
     );
@@ -300,7 +333,10 @@ mod tests {
         let c = &generate_cases(1)[0];
         let off = render_prompt(c, false, 200);
         let on = render_prompt(c, true, 200);
-        assert!(!off.contains("[ctxrot anchor]"), "off must not carry the anchor");
+        assert!(
+            !off.contains("[ctxrot anchor]"),
+            "off must not carry the anchor"
+        );
         assert!(on.contains("[ctxrot anchor]"), "on must carry the anchor");
         // The decision appears once in off (early) and twice in on (early + tail).
         assert_eq!(off.matches(&c.decision).count(), 1);
@@ -312,20 +348,46 @@ mod tests {
     #[test]
     fn scoring_tallies_accuracy_and_cost() {
         let cases = generate_cases(2);
-        let anchor_bytes: Vec<(String, usize)> =
-            cases.iter().map(|c| (c.id.clone(), c.anchor_block().len())).collect();
+        let anchor_bytes: Vec<(String, usize)> = cases
+            .iter()
+            .map(|c| (c.id.clone(), c.anchor_block().len()))
+            .collect();
         let exp0 = cases[0].expected.clone();
         let exp1 = cases[1].expected.clone();
         let results = vec![
             // off: one right, one wrong
-            ResultRec { id: cases[0].id.clone(), variant: "off".into(), answer: exp0.clone() },
-            ResultRec { id: cases[1].id.clone(), variant: "off".into(), answer: "わかりません".into() },
+            ResultRec {
+                id: cases[0].id.clone(),
+                variant: "off".into(),
+                answer: exp0.clone(),
+            },
+            ResultRec {
+                id: cases[1].id.clone(),
+                variant: "off".into(),
+                answer: "わかりません".into(),
+            },
             // on: both right
-            ResultRec { id: cases[0].id.clone(), variant: "on".into(), answer: format!("答えは {exp0}") },
-            ResultRec { id: cases[1].id.clone(), variant: "on".into(), answer: exp1 },
+            ResultRec {
+                id: cases[0].id.clone(),
+                variant: "on".into(),
+                answer: format!("答えは {exp0}"),
+            },
+            ResultRec {
+                id: cases[1].id.clone(),
+                variant: "on".into(),
+                answer: exp1,
+            },
             // unknown id / variant are ignored
-            ResultRec { id: "case-99".into(), variant: "on".into(), answer: "x".into() },
-            ResultRec { id: cases[0].id.clone(), variant: "weird".into(), answer: "x".into() },
+            ResultRec {
+                id: "case-99".into(),
+                variant: "on".into(),
+                answer: "x".into(),
+            },
+            ResultRec {
+                id: cases[0].id.clone(),
+                variant: "weird".into(),
+                answer: "x".into(),
+            },
         ];
         let r = score(&cases, &anchor_bytes, &results);
         assert_eq!(r.off_total, 2);
@@ -347,7 +409,8 @@ mod tests {
         assert!(dir.join("case-00.on.txt").exists());
         assert!(dir.join("case-00.off.txt").exists());
         let m: Manifest =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
         assert_eq!(m.cases.len(), 3);
         assert!(m.cases[0].anchor_bytes > 0);
         let _ = std::fs::remove_dir_all(&dir);

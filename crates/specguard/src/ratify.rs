@@ -166,8 +166,14 @@ mod tests {
         let lock = lock_with("a", "d", "", "");
         // Verify gates inactive: only audit + decisions are checked.
         assert!(drifted(&lock, &hashes("a", "d", "z", "z"), false, false).is_empty());
-        assert_eq!(drifted(&lock, &hashes("x", "d", "", ""), false, false), vec!["audit-prompt"]);
-        assert_eq!(drifted(&lock, &hashes("a", "y", "", ""), false, false), vec!["decisions-prompt"]);
+        assert_eq!(
+            drifted(&lock, &hashes("x", "d", "", ""), false, false),
+            vec!["audit-prompt"]
+        );
+        assert_eq!(
+            drifted(&lock, &hashes("a", "y", "", ""), false, false),
+            vec!["decisions-prompt"]
+        );
     }
 
     #[test]

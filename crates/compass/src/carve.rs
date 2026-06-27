@@ -89,11 +89,11 @@ impl CarveView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::interrogate::{Bundle, Fragment, Authority};
+    use harness_core::interrogate::{Authority, Bundle, Fragment};
 
     fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .join(format!("compass-carve-{}-{}", name, std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("compass-carve-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         root
     }

@@ -61,11 +61,7 @@ fn load_file() -> TrustFile {
 
 /// Every trusted project root, canonicalized.
 pub fn list() -> Vec<PathBuf> {
-    load_file()
-        .trusted
-        .into_iter()
-        .map(PathBuf::from)
-        .collect()
+    load_file().trusted.into_iter().map(PathBuf::from).collect()
 }
 
 /// Is this project root trusted to run commands sourced from its project-local
@@ -113,8 +109,7 @@ fn write_file(file: &TrustFile) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let body = toml::to_string(file)
-        .map_err(std::io::Error::other)?;
+    let body = toml::to_string(file).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, body)?;
     std::fs::rename(&tmp, &path)?;

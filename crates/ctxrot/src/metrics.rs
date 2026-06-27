@@ -213,7 +213,8 @@ mod tests {
     use serde_json::json;
 
     fn temp_cfg(name: &str) -> Config {
-        let dir = std::env::temp_dir().join(format!("ctxrot-metrics-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ctxrot-metrics-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Config {
             state_dir: dir,
@@ -224,11 +225,36 @@ mod tests {
     #[test]
     fn emit_and_summarize() {
         let cfg = temp_cfg("emit");
-        emit(&cfg, "S1", "budget", json!({"est_tokens": 100_000, "band": 1, "crossed": true}));
-        emit(&cfg, "S1", "budget", json!({"est_tokens": 150_000, "band": 2, "crossed": true}));
-        emit(&cfg, "S1", "rescue", json!({"trigger": "band-75%", "note_bytes": 2048}));
-        emit(&cfg, "S1", "gate", json!({"tool": "Read", "file_bytes": 1_900_000}));
-        emit(&cfg, "S2", "budget", json!({"est_tokens": 40_000, "band": 0, "crossed": false}));
+        emit(
+            &cfg,
+            "S1",
+            "budget",
+            json!({"est_tokens": 100_000, "band": 1, "crossed": true}),
+        );
+        emit(
+            &cfg,
+            "S1",
+            "budget",
+            json!({"est_tokens": 150_000, "band": 2, "crossed": true}),
+        );
+        emit(
+            &cfg,
+            "S1",
+            "rescue",
+            json!({"trigger": "band-75%", "note_bytes": 2048}),
+        );
+        emit(
+            &cfg,
+            "S1",
+            "gate",
+            json!({"tool": "Read", "file_bytes": 1_900_000}),
+        );
+        emit(
+            &cfg,
+            "S2",
+            "budget",
+            json!({"est_tokens": 40_000, "band": 0, "crossed": false}),
+        );
 
         let stats = summarize(&cfg);
         assert_eq!(stats.len(), 2);
@@ -252,10 +278,25 @@ mod tests {
     fn group_by_prefix_folds_matching_sessions() {
         let cfg = temp_cfg("group");
         // Two "A" runs (guard ON) under prefix "a-", one "B" run (guard OFF).
-        emit(&cfg, "a-run1", "budget", json!({"est_tokens": 120_000, "band": 2, "crossed": true}));
-        emit(&cfg, "a-run2", "budget", json!({"est_tokens": 90_000, "band": 1, "crossed": true}));
+        emit(
+            &cfg,
+            "a-run1",
+            "budget",
+            json!({"est_tokens": 120_000, "band": 2, "crossed": true}),
+        );
+        emit(
+            &cfg,
+            "a-run2",
+            "budget",
+            json!({"est_tokens": 90_000, "band": 1, "crossed": true}),
+        );
         emit(&cfg, "a-run2", "rescue", json!({"note_bytes": 1000}));
-        emit(&cfg, "b-run1", "budget", json!({"est_tokens": 180_000, "band": 3, "crossed": true}));
+        emit(
+            &cfg,
+            "b-run1",
+            "budget",
+            json!({"est_tokens": 180_000, "band": 3, "crossed": true}),
+        );
 
         let stats = summarize(&cfg);
         let (a, na) = group_by_prefix(&stats, "a-").unwrap();
@@ -277,10 +318,30 @@ mod tests {
     #[test]
     fn band_dwell_counts_and_folds() {
         let cfg = temp_cfg("dwell");
-        emit(&cfg, "on-1", "budget", json!({"est_tokens": 40_000, "band": 0}));
-        emit(&cfg, "on-1", "budget", json!({"est_tokens": 110_000, "band": 1}));
-        emit(&cfg, "on-1", "budget", json!({"est_tokens": 160_000, "band": 2}));
-        emit(&cfg, "on-2", "budget", json!({"est_tokens": 185_000, "band": 3}));
+        emit(
+            &cfg,
+            "on-1",
+            "budget",
+            json!({"est_tokens": 40_000, "band": 0}),
+        );
+        emit(
+            &cfg,
+            "on-1",
+            "budget",
+            json!({"est_tokens": 110_000, "band": 1}),
+        );
+        emit(
+            &cfg,
+            "on-1",
+            "budget",
+            json!({"est_tokens": 160_000, "band": 2}),
+        );
+        emit(
+            &cfg,
+            "on-2",
+            "budget",
+            json!({"est_tokens": 185_000, "band": 3}),
+        );
         emit(&cfg, "on-1", "inject", json!({"chars": 300, "blocks": 2}));
         emit(&cfg, "on-2", "inject", json!({"chars": 500, "blocks": 1}));
 

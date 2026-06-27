@@ -173,7 +173,9 @@ fn ingest(
         };
 
         let is_sub = force_bucket == Some(AGENT_SUB)
-            || v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false);
+            || v.get("isSidechain")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         if is_sub {
             saw_sub = true;
         }
@@ -257,7 +259,10 @@ mod tests {
 
     fn write_temp(name: &str, body: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("harness-core-usage-{}-{name}.jsonl", std::process::id()));
+        p.push(format!(
+            "harness-core-usage-{}-{name}.jsonl",
+            std::process::id()
+        ));
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(body.as_bytes()).unwrap();
         p
@@ -273,7 +278,11 @@ mod tests {
             cache_read: 3,
         };
         assert_eq!(u.total_tokens(), 36);
-        let other = ModelUsage { input: 5, output: 5, ..Default::default() };
+        let other = ModelUsage {
+            input: 5,
+            output: 5,
+            ..Default::default()
+        };
         u.add(&other);
         assert_eq!(u.input, 15);
         assert_eq!(u.output, 25);
@@ -358,7 +367,10 @@ mod tests {
 
         // Grand total includes both.
         assert_eq!(agg.turns, 2);
-        assert_eq!(agg.models.get("claude-opus-4-8").unwrap().total_tokens(), 230);
+        assert_eq!(
+            agg.models.get("claude-opus-4-8").unwrap().total_tokens(),
+            230
+        );
         // Split by bucket.
         assert_eq!(agg.agents.get(AGENT_MAIN).unwrap().total_tokens(), 200);
         assert_eq!(agg.agents.get(AGENT_SUB).unwrap().total_tokens(), 30);
@@ -370,10 +382,8 @@ mod tests {
     fn sibling_subagent_files_fold_into_sub_bucket() {
         // Newer layout: main transcript at <dir>/<stem>.jsonl, sub-agents under
         // <dir>/<stem>/subagents/*.jsonl. Build that tree in a temp dir.
-        let base = std::env::temp_dir().join(format!(
-            "harness-core-usage-sib-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("harness-core-usage-sib-{}", std::process::id()));
         let stem = "sess";
         let sub_dir = base.join(stem).join("subagents");
         std::fs::create_dir_all(&sub_dir).unwrap();

@@ -28,11 +28,13 @@ fn strip_ours(arr: &[Value]) -> Vec<Value> {
 fn add_hook(settings: &mut Value, event: &str, sub: &str, timeout: u64) -> Result<()> {
     let bin = binary_path();
     let root = settings.as_object_mut().unwrap();
-    let hooks = root.entry("hooks")
+    let hooks = root
+        .entry("hooks")
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .context("hooks is not an object")?;
-    let existing = hooks.get(event)
+    let existing = hooks
+        .get(event)
         .and_then(Value::as_array)
         .map(|a| strip_ours(a))
         .unwrap_or_default();
@@ -44,7 +46,9 @@ fn add_hook(settings: &mut Value, event: &str, sub: &str, timeout: u64) -> Resul
 
 pub fn install(dry_run: bool) -> Result<()> {
     let mut settings = harness_core::install::load_settings(&settings_path())?;
-    if !settings.is_object() { anyhow::bail!("settings.json is not a JSON object"); }
+    if !settings.is_object() {
+        anyhow::bail!("settings.json is not a JSON object");
+    }
     add_hook(&mut settings, "SessionStart", "session-start", 10)?;
     add_hook(&mut settings, "SessionEnd", "session-end", 30)?;
     if dry_run {
@@ -58,7 +62,9 @@ pub fn install(dry_run: bool) -> Result<()> {
 
 pub fn uninstall(dry_run: bool) -> Result<()> {
     let mut settings = harness_core::install::load_settings(&settings_path())?;
-    if !settings.is_object() { anyhow::bail!("settings.json is not a JSON object"); }
+    if !settings.is_object() {
+        anyhow::bail!("settings.json is not a JSON object");
+    }
     let root = settings.as_object_mut().unwrap();
     let mut removed = 0usize;
     for event in &["SessionStart", "SessionEnd"] {
@@ -67,8 +73,11 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
                 let before = arr.len();
                 let cleaned = strip_ours(arr);
                 removed += before - cleaned.len();
-                if cleaned.is_empty() { hooks.remove(*event); }
-                else { hooks.insert(event.to_string(), Value::Array(cleaned)); }
+                if cleaned.is_empty() {
+                    hooks.remove(*event);
+                } else {
+                    hooks.insert(event.to_string(), Value::Array(cleaned));
+                }
             }
         }
     }

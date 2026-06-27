@@ -389,7 +389,12 @@ fn main() {
                     }
                     println!("{}", dir.display());
                 }
-                NoteAction::Write { slug, cwd, session, require_sections } => {
+                NoteAction::Write {
+                    slug,
+                    cwd,
+                    session,
+                    require_sections,
+                } => {
                     let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
                     let body = read_stdin();
                     if require_sections {
@@ -419,7 +424,13 @@ fn main() {
                     }
                     let safe: String = slug
                         .chars()
-                        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+                        .map(|c| {
+                            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                                c
+                            } else {
+                                '-'
+                            }
+                        })
                         .collect();
                     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
                     // Tag with the session so restore can route this session back
@@ -448,7 +459,11 @@ fn main() {
                     println!(
                         "{} note(s) {}, {} kept (limit {}, distill floor {})",
                         res.removed.len(),
-                        if dry_run { "would be removed" } else { "removed" },
+                        if dry_run {
+                            "would be removed"
+                        } else {
+                            "removed"
+                        },
                         res.kept,
                         cfg.keep_notes_per_project,
                         cfg.keep_distill_min,
@@ -467,8 +482,15 @@ fn main() {
                     } else {
                         println!(
                             "{:<16} {:>7} {:>5} {:>4} {:>9} {:>9} {:>6} {:>4} {:>4}",
-                            "session", "prompts", "cross", "band", "peak_tok", "last_tok",
-                            "rescue", "gate", "dump"
+                            "session",
+                            "prompts",
+                            "cross",
+                            "band",
+                            "peak_tok",
+                            "last_tok",
+                            "rescue",
+                            "gate",
+                            "dump"
                         );
                         for s in &stats {
                             let sid: String = if s.session.chars().count() > 16 {
@@ -479,8 +501,15 @@ fn main() {
                             };
                             println!(
                                 "{:<16} {:>7} {:>5} {:>4} {:>9} {:>9} {:>6} {:>4} {:>4}",
-                                sid, s.prompts, s.crossings, s.max_band, s.peak_tokens,
-                                s.last_tokens, s.rescues, s.gates, s.tooldumps
+                                sid,
+                                s.prompts,
+                                s.crossings,
+                                s.max_band,
+                                s.peak_tokens,
+                                s.last_tokens,
+                                s.rescues,
+                                s.gates,
+                                s.tooldumps
                             );
                         }
                     }
@@ -502,14 +531,26 @@ fn main() {
                             let row = |label: &str, s: &metrics::SessionStat| {
                                 println!(
                                     "{:<14} {:>7} {:>5} {:>4} {:>9} {:>6} {:>4} {:>4}",
-                                    label, s.prompts, s.crossings, s.max_band, s.peak_tokens,
-                                    s.rescues, s.gates, s.tooldumps
+                                    label,
+                                    s.prompts,
+                                    s.crossings,
+                                    s.max_band,
+                                    s.peak_tokens,
+                                    s.rescues,
+                                    s.gates,
+                                    s.tooldumps
                                 );
                             };
                             println!(
                                 "{:<14} {:>7} {:>5} {:>4} {:>9} {:>6} {:>4} {:>4}",
-                                "group", "prompts", "cross", "band", "peak_tok", "rescue",
-                                "gate", "dump"
+                                "group",
+                                "prompts",
+                                "cross",
+                                "band",
+                                "peak_tok",
+                                "rescue",
+                                "gate",
+                                "dump"
                             );
                             row(&format!("A:{a} ({na})"), &ga);
                             row(&format!("B:{b} ({nb})"), &gb);
@@ -562,10 +603,19 @@ fn main() {
             }
         }
         Command::Eval { action } => match action {
-            EvalAction::Gen { out, cases, filler_chars } => match eval::run_gen(&out, cases, filler_chars) {
+            EvalAction::Gen {
+                out,
+                cases,
+                filler_chars,
+            } => match eval::run_gen(&out, cases, filler_chars) {
                 Ok(n) => {
-                    println!("wrote {n} case(s) ×2 variants + manifest.json to {}", out.display());
-                    println!("next: feed each *.on.txt / *.off.txt to a model, then `ctxrot eval score`");
+                    println!(
+                        "wrote {n} case(s) ×2 variants + manifest.json to {}",
+                        out.display()
+                    );
+                    println!(
+                        "next: feed each *.on.txt / *.off.txt to a model, then `ctxrot eval score`"
+                    );
                     println!("(or run eval/run-recall.sh, which drives `claude -p` end-to-end)");
                 }
                 Err(e) => {
@@ -588,15 +638,24 @@ fn main() {
                 println!("{line}");
             }
         }
-        Command::Usage { transcript, session } => {
+        Command::Usage {
+            transcript,
+            session,
+        } => {
             let cfg = Config::load();
-            let path = transcript.map(|p| p.to_string_lossy().into_owned()).or_else(|| {
-                let sid = session
-                    .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
-                    .unwrap_or_default();
-                usage::find_transcript_for_session(&sid).map(|p| p.to_string_lossy().into_owned())
-            });
-            match path.as_deref().and_then(harness_core::transcript::estimate_tokens) {
+            let path = transcript
+                .map(|p| p.to_string_lossy().into_owned())
+                .or_else(|| {
+                    let sid = session
+                        .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+                        .unwrap_or_default();
+                    usage::find_transcript_for_session(&sid)
+                        .map(|p| p.to_string_lossy().into_owned())
+                });
+            match path
+                .as_deref()
+                .and_then(harness_core::transcript::estimate_tokens)
+            {
                 Some((tokens, _src)) => {
                     let pct = usage::pct_from_tokens(&cfg, tokens);
                     println!("{}", usage::line(&cfg, pct, Some(tokens)));
@@ -609,7 +668,8 @@ fn main() {
         }
         Command::Ctx { action } => {
             let cfg = Config::load();
-            let resolve = |c: Option<PathBuf>| c.unwrap_or_else(|| std::env::current_dir().unwrap());
+            let resolve =
+                |c: Option<PathBuf>| c.unwrap_or_else(|| std::env::current_dir().unwrap());
             match action {
                 CtxAction::Pin { item, cwd } => {
                     ctx_mutate(&cfg, resolve(cwd), "pinned", &item, |ls| ls.pin(&item))
@@ -618,15 +678,22 @@ fn main() {
                     ctx_mutate(&cfg, resolve(cwd), "unpinned", &item, |ls| ls.unpin(&item))
                 }
                 CtxAction::Drop { item, cwd } => {
-                    ctx_mutate(&cfg, resolve(cwd), "dropped", &item, |ls| ls.drop_item(&item))
+                    ctx_mutate(&cfg, resolve(cwd), "dropped", &item, |ls| {
+                        ls.drop_item(&item)
+                    })
                 }
                 CtxAction::Undrop { item, cwd } => {
-                    ctx_mutate(&cfg, resolve(cwd), "undropped", &item, |ls| ls.undrop(&item))
+                    ctx_mutate(&cfg, resolve(cwd), "undropped", &item, |ls| {
+                        ls.undrop(&item)
+                    })
                 }
                 CtxAction::List { cwd } => {
                     let cwd = resolve(cwd);
                     let ls = loadset::LoadSet::load(&cfg.state_dir, &cwd);
-                    println!("loadset: {}", loadset::path_for(&cfg.state_dir, &cwd).display());
+                    println!(
+                        "loadset: {}",
+                        loadset::path_for(&cfg.state_dir, &cwd).display()
+                    );
                     if ls.is_empty() {
                         println!("(空: このプロジェクトの pin / drop / use-note はまだありません)");
                         return;
@@ -685,7 +752,11 @@ fn main() {
                 }
             }
         }
-        Command::DistillBg { session, transcript, cwd } => run_hook(move || {
+        Command::DistillBg {
+            session,
+            transcript,
+            cwd,
+        } => run_hook(move || {
             // Detached worker: respects the same global kill-switch and stays
             // silent on any failure (the rescue note is the safety net).
             if Config::disabled() {
@@ -730,8 +801,12 @@ fn statusline_from(cfg: &Config, raw: &str) -> Option<String> {
         .and_then(|c| c.get("used_percentage"))
         .and_then(serde_json::Value::as_f64);
     let tokens = cw.and_then(|c| {
-        let inp = c.get("total_input_tokens").and_then(serde_json::Value::as_u64);
-        let out = c.get("total_output_tokens").and_then(serde_json::Value::as_u64);
+        let inp = c
+            .get("total_input_tokens")
+            .and_then(serde_json::Value::as_u64);
+        let out = c
+            .get("total_output_tokens")
+            .and_then(serde_json::Value::as_u64);
         match (inp, out) {
             (Some(i), Some(o)) => Some(i + o),
             (Some(i), None) => Some(i),
@@ -742,7 +817,9 @@ fn statusline_from(cfg: &Config, raw: &str) -> Option<String> {
         return Some(usage::line(cfg, p.round() as u64, tokens));
     }
     // Fallback: estimate from the transcript when Claude didn't supply a %.
-    let path = v.get("transcript_path").and_then(serde_json::Value::as_str)?;
+    let path = v
+        .get("transcript_path")
+        .and_then(serde_json::Value::as_str)?;
     let (t, _src) = harness_core::transcript::estimate_tokens(path)?;
     Some(usage::line(cfg, usage::pct_from_tokens(cfg, t), Some(t)))
 }

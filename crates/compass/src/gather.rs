@@ -79,8 +79,10 @@ fn gather_charter(out: &mut Vec<Fragment>, charter: &Charter) {
 fn gather_git(out: &mut Vec<Fragment>, repo_root: &Path) {
     // Last N commit subjects, newest first. `score` decays with recency rank so
     // the newest commit ranks highest.
-    if let Some(log) = git_stdout(repo_root, &["log", "--oneline", "-n", &RECENT_COMMITS.to_string()])
-    {
+    if let Some(log) = git_stdout(
+        repo_root,
+        &["log", "--oneline", "-n", &RECENT_COMMITS.to_string()],
+    ) {
         for (rank, line) in log.lines().filter(|l| !l.trim().is_empty()).enumerate() {
             out.push(Fragment {
                 text: line.trim().to_string(),

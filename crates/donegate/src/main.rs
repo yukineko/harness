@@ -90,7 +90,10 @@ fn trust_cmd() -> anyhow::Result<()> {
     println!("trusted {}", key.display());
     let proj = Config::project_path(&root);
     if proj.exists() {
-        println!("donegate will now run the [[check]] commands in {}", proj.display());
+        println!(
+            "donegate will now run the [[check]] commands in {}",
+            proj.display()
+        );
     } else {
         println!(
             "(no {} yet — run `donegate init` to create one)",

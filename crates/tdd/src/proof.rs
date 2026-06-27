@@ -54,7 +54,9 @@ fn judge_green(passed: bool, has_red: bool) -> Result<()> {
         bail!("no RED proof found — run `tdd red --task <id>` before implementing.");
     }
     if !passed {
-        bail!("tests still failing — keep implementing until they pass, then run `tdd green` again.");
+        bail!(
+            "tests still failing — keep implementing until they pass, then run `tdd green` again."
+        );
     }
     Ok(())
 }

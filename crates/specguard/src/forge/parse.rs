@@ -51,12 +51,22 @@ pub fn parse(stdout: &str) -> Parsed {
     let trailer = &lines[marker_idx + 1..];
 
     let rigor_pass = field(trailer, "rigor")
-        .map(|v| v.split_whitespace().next().unwrap_or("").to_ascii_lowercase())
+        .map(|v| {
+            v.split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        })
         .map(|t| t.starts_with("pass"))
         .unwrap_or(false);
 
     let needs_user = field(trailer, "needs_user")
-        .map(|v| v.split_whitespace().next().unwrap_or("").to_ascii_lowercase())
+        .map(|v| {
+            v.split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        })
         .map(|t| t.starts_with("yes"))
         .unwrap_or(false);
 

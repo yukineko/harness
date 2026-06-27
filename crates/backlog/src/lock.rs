@@ -105,8 +105,7 @@ pub fn acquire_at(
         acquired_at: now_unix(),
     };
     let json = serde_json::to_string_pretty(&info)?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("write lock file {}", path.display()))?;
+    std::fs::write(&path, json).with_context(|| format!("write lock file {}", path.display()))?;
 
     Ok(())
 }
@@ -220,7 +219,10 @@ mod tests {
         // Write a lockfile with a pid that should not exist.
         let stale_pid: u32 = 99_999_999;
         // Confirm /proc/<pid> really doesn't exist (it won't on Linux for that pid).
-        assert!(!pid_alive(stale_pid), "assumption: pid {stale_pid} should not be alive");
+        assert!(
+            !pid_alive(stale_pid),
+            "assumption: pid {stale_pid} should not be alive"
+        );
 
         let info = LockInfo {
             session_id: "stale-sess".to_string(),

@@ -45,7 +45,11 @@ const EXIT_NO_FIX_COMMIT: u8 = 6;
 const EXIT_TESTAUDIT_FINDINGS: u8 = 7;
 
 #[derive(Parser)]
-#[command(name = "specguard", version, about = "Spec/implementation drift audit harness")]
+#[command(
+    name = "specguard",
+    version,
+    about = "Spec/implementation drift audit harness"
+)]
 struct Cli {
     /// Path to the config file.
     #[arg(short, long, default_value = "specguard.toml", global = true)]
@@ -233,7 +237,12 @@ fn run(cli: &Cli) -> Result<u8> {
         .clone()
         .or_else(|| std::env::var("SPECGUARD_BASELINE_REF").ok());
 
-    let scope = scope::resolve(&l.cfg, &l.repo_root, override_ref.as_deref(), last_ref.as_deref())?;
+    let scope = scope::resolve(
+        &l.cfg,
+        &l.repo_root,
+        override_ref.as_deref(),
+        last_ref.as_deref(),
+    )?;
     let shards = prompt::shards(&l.cfg, &scope);
 
     match cli.command {
@@ -324,7 +333,12 @@ fn ratification_block(l: &Loaded) -> Result<Option<u8>> {
             Ok(Some(EXIT_UNRATIFIED))
         }
         Some(lock) => {
-            let drift = ratify::drifted(&lock, &hashes, l.cfg.verify.enabled, l.cfg.verify.completeness);
+            let drift = ratify::drifted(
+                &lock,
+                &hashes,
+                l.cfg.verify.enabled,
+                l.cfg.verify.completeness,
+            );
             if !drift.is_empty() {
                 eprintln!(
                     "specguard: prompt (メタ正典) に未批准の変更があります: {}\n  内容を確認し、合意できるなら `specguard accept-prompt -m \"理由\"` で再批准してください。",
@@ -370,7 +384,10 @@ fn finish(
             );
         } else {
             report::advance_baseline(paths, &head)?;
-            println!("specguard: 監査対象なし (report: {})", paths.report.display());
+            println!(
+                "specguard: 監査対象なし (report: {})",
+                paths.report.display()
+            );
         }
         return Ok(EXIT_OK);
     }
@@ -454,7 +471,10 @@ fn finish(
     } else {
         // Fully clean: advance the baseline.
         report::advance_baseline(paths, &head)?;
-        println!("specguard: 修正候補なし (report: {})", paths.report.display());
+        println!(
+            "specguard: 修正候補なし (report: {})",
+            paths.report.display()
+        );
     }
     Ok(EXIT_OK)
 }
@@ -516,7 +536,10 @@ fn emit_prompt_json(l: &Loaded, scope: &scope::Scope, shards: &[prompt::Shard]) 
         marker: parse::MARKER,
         shards: shards_json,
     };
-    println!("{}", serde_json::to_string_pretty(&env).context("serializing prompt JSON")?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&env).context("serializing prompt JSON")?
+    );
     Ok(())
 }
 
@@ -543,8 +566,11 @@ fn read_ingest(
         }
     };
     let parsed: IngestJson = serde_json::from_str(&raw).context("parsing ingest JSON")?;
-    let mut by_label: std::collections::HashMap<String, IngestShard> =
-        parsed.shards.into_iter().map(|s| (s.label.clone(), s)).collect();
+    let mut by_label: std::collections::HashMap<String, IngestShard> = parsed
+        .shards
+        .into_iter()
+        .map(|s| (s.label.clone(), s))
+        .collect();
     let outs = shards
         .iter()
         .map(|&sh| {
@@ -680,7 +706,13 @@ fn run_testaudit(repo_root: &std::path::Path, json: bool) -> Result<u8> {
     } else {
         println!("specguard testaudit: {} finding(s)\n", findings.len());
         for f in &findings {
-            println!("  [{}] {}:{} — {}", f.kind.as_str(), f.file, f.name, f.reason);
+            println!(
+                "  [{}] {}:{} — {}",
+                f.kind.as_str(),
+                f.file,
+                f.name,
+                f.reason
+            );
         }
     }
     Ok(EXIT_TESTAUDIT_FINDINGS)
@@ -702,7 +734,10 @@ fn ack(paths: &report::Paths, repo_root: &std::path::Path, force: bool) -> Resul
         }
     }
     match std::fs::remove_file(&paths.sentinel) {
-        Ok(()) => println!("specguard: sentinel をクリアした ({})", paths.sentinel.display()),
+        Ok(()) => println!(
+            "specguard: sentinel をクリアした ({})",
+            paths.sentinel.display()
+        ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             println!("specguard: sentinel は無い ({})", paths.sentinel.display());
         }
@@ -746,10 +781,16 @@ fn accept_prompt(l: &Loaded, reason: &str) -> Result<u8> {
     // contract-checked only when their gate is active (consent is scoped to the
     // live policy surface; see ratify::drifted).
     let mut violations: Vec<(&str, Vec<&'static str>)> = vec![
-        ("audit-prompt", prompt::missing_placeholders(&l.template, prompt::AUDIT_PLACEHOLDERS)),
+        (
+            "audit-prompt",
+            prompt::missing_placeholders(&l.template, prompt::AUDIT_PLACEHOLDERS),
+        ),
         (
             "decisions-prompt",
-            prompt::missing_placeholders(prompt::DECISIONS_TEMPLATE, prompt::DECISIONS_PLACEHOLDERS),
+            prompt::missing_placeholders(
+                prompt::DECISIONS_TEMPLATE,
+                prompt::DECISIONS_PLACEHOLDERS,
+            ),
         ),
     ];
     if l.cfg.verify.enabled {
@@ -788,7 +829,10 @@ fn accept_prompt(l: &Loaded, reason: &str) -> Result<u8> {
         hashes.completeness = String::new();
     }
     let path = ratify::write_lock(&l.repo_root, &hashes, &head, &l.date, reason)?;
-    println!("specguard: prompt (メタ正典) を批准した -> {}", path.display());
+    println!(
+        "specguard: prompt (メタ正典) を批准した -> {}",
+        path.display()
+    );
     println!("  canon commit に pin (canon_commit: {head})");
     let mut pinned = vec!["audit", "decisions"];
     if l.cfg.verify.enabled {
@@ -823,8 +867,14 @@ fn print_prompts(l: &Loaded, scope: &scope::Scope, shards: &[prompt::Shard]) {
         if i > 0 {
             println!();
         }
-        println!("===== shard: {} =====", prompt::shard_label(&l.cfg, scope, sh));
-        print!("{}", prompt::render_shard(&l.template, &l.cfg, scope, sh, &l.date));
+        println!(
+            "===== shard: {} =====",
+            prompt::shard_label(&l.cfg, scope, sh)
+        );
+        print!(
+            "{}",
+            prompt::render_shard(&l.template, &l.cfg, scope, sh, &l.date)
+        );
     }
 }
 
@@ -848,9 +898,17 @@ fn merge_report(
     // Provenance: the canon commit this verdict was judged against, so a past
     // report is reproducible and B/C classification has a temporal anchor.
     out.push_str(&format!("- canon commit (HEAD): `{head}`\n"));
-    out.push_str(&format!("- 変更ファイル数: {}\n", scope.changed_files.len()));
-    out.push_str(&format!("- shard: {}\n", join(&labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())));
-    out.push_str("- 各 shard は独立した read-only エージェント (fresh context) で監査し、ここに統合した。\n");
+    out.push_str(&format!(
+        "- 変更ファイル数: {}\n",
+        scope.changed_files.len()
+    ));
+    out.push_str(&format!(
+        "- shard: {}\n",
+        join(&labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    ));
+    out.push_str(
+        "- 各 shard は独立した read-only エージェント (fresh context) で監査し、ここに統合した。\n",
+    );
     for (label, p) in parsed {
         out.push_str(&format!("\n---\n\n## shard: {label}\n\n"));
         out.push_str(p.report.trim_end());
@@ -904,7 +962,12 @@ fn print_scope(cfg: &Config, scope: &scope::Scope) {
     println!("skipped areas: {}", join(&scope.skipped_areas));
     println!(
         "invariants (always): {}",
-        join(&cfg.invariants.iter().map(|i| i.name.clone()).collect::<Vec<_>>())
+        join(
+            &cfg.invariants
+                .iter()
+                .map(|i| i.name.clone())
+                .collect::<Vec<_>>()
+        )
     );
     println!("decision records (D3): {}", scope.decision_files.len());
 }
@@ -1004,7 +1067,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sentinel = dir.path().join("sentinel.txt");
         // A different (old) commit sha → new commits exist.
-        std::fs::write(&sentinel, "date: 2026-06-25\nraised_at: 0000000000000000000000000000000000000000\n").unwrap();
+        std::fs::write(
+            &sentinel,
+            "date: 2026-06-25\nraised_at: 0000000000000000000000000000000000000000\n",
+        )
+        .unwrap();
         let paths = make_paths(sentinel.clone());
         let result = ack(&paths, &repo_root(), false).unwrap();
         assert_eq!(result, EXIT_OK);
@@ -1016,7 +1083,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sentinel = dir.path().join("sentinel.txt");
         // Old-format sentinel with no raised_at field — guard is skipped.
-        std::fs::write(&sentinel, "date: 2026-01-01\nreport: reports/spec-audit/2026-01-01.md\nsummary: some drift\n").unwrap();
+        std::fs::write(
+            &sentinel,
+            "date: 2026-01-01\nreport: reports/spec-audit/2026-01-01.md\nsummary: some drift\n",
+        )
+        .unwrap();
         let paths = make_paths(sentinel.clone());
         let result = ack(&paths, &repo_root(), false).unwrap();
         assert_eq!(result, EXIT_OK);

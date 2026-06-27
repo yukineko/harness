@@ -112,8 +112,10 @@ mod tests {
         fn new(tag: &str) -> Self {
             static N: AtomicU32 = AtomicU32::new(0);
             let n = N.fetch_add(1, Ordering::Relaxed);
-            let p = std::env::temp_dir()
-                .join(format!("harness-core-ledger-{tag}-{}-{n}", std::process::id()));
+            let p = std::env::temp_dir().join(format!(
+                "harness-core-ledger-{tag}-{}-{n}",
+                std::process::id()
+            ));
             std::fs::create_dir_all(&p).unwrap();
             TmpDir(p)
         }
@@ -175,7 +177,10 @@ mod tests {
         std::fs::write(&p, b"{ this is not valid json").unwrap();
 
         // load_checked surfaces corruption rather than silently resetting.
-        assert!(matches!(Ledger::load_checked(d.path()), Err(LoadError::Corrupt)));
+        assert!(matches!(
+            Ledger::load_checked(d.path()),
+            Err(LoadError::Corrupt)
+        ));
         // The caller (gate) must not have overwritten it — verify the bytes
         // are still the corrupt original (preserved, not reset to "{}").
         let after = std::fs::read_to_string(&p).unwrap();

@@ -53,18 +53,11 @@ fn desktop(cfg: &Config, note: &Note) -> bool {
                 applescript_escape(&note.title),
             );
             if let Some(sound) = &cfg.sound {
-                script.push_str(&format!(
-                    " sound name \"{}\"",
-                    applescript_escape(sound)
-                ));
+                script.push_str(&format!(" sound name \"{}\"", applescript_escape(sound)));
             }
             run_quiet(Command::new("osascript").arg("-e").arg(script))
         }
-        "linux" => run_quiet(
-            Command::new("notify-send")
-                .arg(&note.title)
-                .arg(&note.body),
-        ),
+        "linux" => run_quiet(Command::new("notify-send").arg(&note.title).arg(&note.body)),
         _ => false,
     }
 }
@@ -95,21 +88,18 @@ fn run_command(cmd: &str, note: &Note) -> bool {
 }
 
 fn curl_post_json(url: &str, body: &str) -> bool {
-    run_quiet(
-        Command::new("curl")
-            .args([
-                "-sS",
-                "--max-time",
-                "8",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "--data-binary",
-                body,
-                url,
-            ]),
-    )
+    run_quiet(Command::new("curl").args([
+        "-sS",
+        "--max-time",
+        "8",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        body,
+        url,
+    ]))
 }
 
 /// Run a command with stdio discarded; true if it spawned and exited 0.

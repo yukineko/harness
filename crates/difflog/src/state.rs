@@ -16,8 +16,15 @@ pub struct SessionState {
 }
 
 fn session_path(log_dir: &Path, session_id: &str) -> PathBuf {
-    let safe: String = session_id.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+    let safe: String = session_id
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     log_dir.join("sessions").join(format!("{safe}.json"))
 }

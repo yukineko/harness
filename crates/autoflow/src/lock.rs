@@ -81,7 +81,10 @@ mod tests {
             let p = std::env::temp_dir().join(format!("autoflow-lock-{}-{n}", std::process::id()));
             std::fs::create_dir_all(p.join(".backlog")).unwrap();
             std::env::set_var("HOME", &p);
-            TmpHome { path: p, _guard: guard }
+            TmpHome {
+                path: p,
+                _guard: guard,
+            }
         }
         fn lock_path(&self) -> std::path::PathBuf {
             self.path.join(".backlog").join("run.lock")
@@ -106,14 +109,20 @@ mod tests {
         // A lock owned by THIS process (definitely alive) is active.
         std::fs::write(
             h.lock_path(),
-            format!(r#"{{"pid":{},"session_id":"x","project":"/p","acquired_at":0}}"#, std::process::id()),
+            format!(
+                r#"{{"pid":{},"session_id":"x","project":"/p","acquired_at":0}}"#,
+                std::process::id()
+            ),
         )
         .unwrap();
         assert!(backlog_driver_active(), "live owner → active");
 
         // A lock owned by an impossible pid (dead) reads as inactive.
         std::fs::write(h.lock_path(), r#"{"pid":2147483646}"#).unwrap();
-        assert!(!backlog_driver_active(), "dead owner → inactive (not wedged)");
+        assert!(
+            !backlog_driver_active(),
+            "dead owner → inactive (not wedged)"
+        );
 
         // Garbage parses to inactive.
         std::fs::write(h.lock_path(), b"not json").unwrap();

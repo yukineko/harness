@@ -87,7 +87,10 @@ pub fn scaffold(
     std::fs::create_dir_all(&d).with_context(|| format!("creating {}", d.display()))?;
     let path = d.join(format!("{id}.md"));
     if path.exists() && !force {
-        anyhow::bail!("{} already exists (use --force to overwrite)", path.display());
+        anyhow::bail!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        );
     }
     let body = format!(
         "---\n\

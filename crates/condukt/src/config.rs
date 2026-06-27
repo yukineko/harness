@@ -170,7 +170,9 @@ impl Config {
 
     /// Global kill switch for the hooks (`CONDUKT_DISABLE=1`).
     pub fn disabled() -> bool {
-        std::env::var("CONDUKT_DISABLE").map(|v| v == "1").unwrap_or(false)
+        std::env::var("CONDUKT_DISABLE")
+            .map(|v| v == "1")
+            .unwrap_or(false)
     }
 }
 

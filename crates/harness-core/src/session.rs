@@ -63,7 +63,11 @@ impl SessionRecord {
             cwd: cwd.into(),
             models: agg.models,
             turns: agg.turns,
-            tools: if track_tools { agg.tools } else { BTreeMap::new() },
+            tools: if track_tools {
+                agg.tools
+            } else {
+                BTreeMap::new()
+            },
             first_ts: agg.first_ts,
             last_ts: agg.last_ts,
             agents: agg.agents,
@@ -73,11 +77,17 @@ impl SessionRecord {
 
     /// USD spent by each agent bucket (main / sub-agent), via `session_cost`.
     /// Empty when the record predates per-agent attribution.
-    pub fn agent_costs(&self, overrides: &[crate::pricing::PriceOverride]) -> BTreeMap<String, f64> {
+    pub fn agent_costs(
+        &self,
+        overrides: &[crate::pricing::PriceOverride],
+    ) -> BTreeMap<String, f64> {
         self.agents
             .iter()
             .map(|(name, a)| {
-                (name.clone(), crate::pricing::session_cost(a.models.iter(), overrides))
+                (
+                    name.clone(),
+                    crate::pricing::session_cost(a.models.iter(), overrides),
+                )
             })
             .collect()
     }
@@ -188,8 +198,13 @@ mod tests {
     }
 
     fn sample_aggregate() -> Aggregate {
-        let usage =
-            Usage { input: 5, output: 7, cache_write_5m: 0, cache_write_1h: 0, cache_read: 1 };
+        let usage = Usage {
+            input: 5,
+            output: 7,
+            cache_write_5m: 0,
+            cache_write_1h: 0,
+            cache_read: 1,
+        };
         let mut models = BTreeMap::new();
         models.insert("claude-x".to_string(), usage.clone());
         let mut tools = BTreeMap::new();
@@ -198,10 +213,19 @@ mod tests {
         let mut agents = BTreeMap::new();
         let mut main_models = BTreeMap::new();
         main_models.insert("claude-x".to_string(), usage.clone());
-        agents.insert(AGENT_MAIN.to_string(), AgentUsage { models: main_models, turns: 3 });
+        agents.insert(
+            AGENT_MAIN.to_string(),
+            AgentUsage {
+                models: main_models,
+                turns: 3,
+            },
+        );
         agents.insert(
             AGENT_SUB.to_string(),
-            AgentUsage { models: BTreeMap::new(), turns: 1 },
+            AgentUsage {
+                models: BTreeMap::new(),
+                turns: 1,
+            },
         );
         Aggregate {
             models,
@@ -216,7 +240,12 @@ mod tests {
     #[test]
     fn from_aggregate_tracks_tools_when_enabled() {
         let rec = SessionRecord::from_aggregate(
-            "sid", "proj", "/cwd", sample_aggregate(), true, "2026-06-27T02:00:01Z",
+            "sid",
+            "proj",
+            "/cwd",
+            sample_aggregate(),
+            true,
+            "2026-06-27T02:00:01Z",
         );
         assert_eq!(rec.session_id, "sid");
         assert_eq!(rec.turns, 4);
@@ -227,9 +256,8 @@ mod tests {
 
     #[test]
     fn from_aggregate_drops_tools_when_disabled() {
-        let rec = SessionRecord::from_aggregate(
-            "sid", "proj", "/cwd", sample_aggregate(), false, "ts",
-        );
+        let rec =
+            SessionRecord::from_aggregate("sid", "proj", "/cwd", sample_aggregate(), false, "ts");
         assert!(rec.tools.is_empty());
         assert_eq!(rec.turns, 4); // turns/models still kept
     }
@@ -237,9 +265,8 @@ mod tests {
     #[test]
     fn upsert_then_load_one_roundtrips() {
         let dir = TempDir::new().unwrap();
-        let rec = SessionRecord::from_aggregate(
-            "sess-1", "proj", "/cwd", sample_aggregate(), true, "ts",
-        );
+        let rec =
+            SessionRecord::from_aggregate("sess-1", "proj", "/cwd", sample_aggregate(), true, "ts");
         upsert(dir.path(), &rec);
 
         let loaded = load_one(dir.path(), "sess-1").expect("record present");
@@ -256,9 +283,8 @@ mod tests {
 
     #[test]
     fn agent_costs_split_by_bucket() {
-        let rec = SessionRecord::from_aggregate(
-            "sid", "proj", "/cwd", sample_aggregate(), true, "ts",
-        );
+        let rec =
+            SessionRecord::from_aggregate("sid", "proj", "/cwd", sample_aggregate(), true, "ts");
         let costs = rec.agent_costs(&[]);
         // Main carried the tokens; sub-agent bucket had none → 0 USD.
         assert!(costs.contains_key(AGENT_MAIN));
@@ -268,9 +294,8 @@ mod tests {
     #[test]
     fn load_one_matches_load_all() {
         let dir = TempDir::new().unwrap();
-        let rec = SessionRecord::from_aggregate(
-            "sess-2", "proj", "/cwd", sample_aggregate(), true, "ts",
-        );
+        let rec =
+            SessionRecord::from_aggregate("sess-2", "proj", "/cwd", sample_aggregate(), true, "ts");
         upsert(dir.path(), &rec);
         let all = load_all(dir.path());
         let one = load_one(dir.path(), "sess-2").unwrap();

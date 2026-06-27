@@ -526,7 +526,10 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                     .as_deref()
                     .map(|l| format!(" @{l}"))
                     .unwrap_or_default();
-                println!("{}\t{}/{}\t{}{}{}", rs.run_id, done, total, rs.goal, paused_tag, label_tag);
+                println!(
+                    "{}\t{}/{}\t{}{}{}",
+                    rs.run_id, done, total, rs.goal, paused_tag, label_tag
+                );
             }
         }
         StateAction::Stats => {
@@ -538,12 +541,9 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             let total_runs = all.len();
             let complete = all.iter().filter(|s| s.is_complete).count();
             let rate = (complete * 100).checked_div(total_runs).unwrap_or(0);
-            eprintln!(
-                "condukt stats: {complete}/{total_runs} complete ({rate}%)\n"
-            );
+            eprintln!("condukt stats: {complete}/{total_runs} complete ({rate}%)\n");
             // Header
-            println!("{:<32}  {:>6}  {:>6}  goal",
-                "run_id", "done", "total");
+            println!("{:<32}  {:>6}  {:>6}  goal", "run_id", "done", "total");
             println!("{}", "-".repeat(72));
             for s in &all {
                 let marker = if s.is_complete { "✓" } else { " " };
@@ -582,7 +582,9 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             let mut verified_count = 0usize;
 
             for ts in &rs.tasks {
-                let base = dec_map.get(&ts.id).map(|t| serde_json::to_value(t).unwrap_or_default());
+                let base = dec_map
+                    .get(&ts.id)
+                    .map(|t| serde_json::to_value(t).unwrap_or_default());
                 let entry = serde_json::json!({
                     "id": ts.id,
                     "status": format!("{:?}", ts.status).to_lowercase(),
@@ -613,7 +615,11 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             let rs = state::RunState::load(cfg, cwd, &run)?;
             state::run_tests(cfg, cwd, &rs)?;
         }
-        StateAction::Abandon { run, task, all_stuck } => {
+        StateAction::Abandon {
+            run,
+            task,
+            all_stuck,
+        } => {
             let mut rs = state::RunState::load(cfg, cwd, &run)?;
             let ids: Vec<String> = if let Some(task_id) = task {
                 // Specific task: validate it exists and is running/failed.
@@ -734,7 +740,8 @@ fn init(cfg: &Config) -> Result<()> {
         cfg.default_branch,
         cfg.max_parallel
     );
-    std::fs::write(&cfg_path, default).with_context(|| format!("writing {}", cfg_path.display()))?;
+    std::fs::write(&cfg_path, default)
+        .with_context(|| format!("writing {}", cfg_path.display()))?;
     eprintln!("wrote {}", cfg_path.display());
     Ok(())
 }
@@ -826,8 +833,16 @@ mod state_set_tests {
             t.branch = new_branch;
         }
 
-        assert_eq!(t.worktree.as_deref(), Some("/path/to/tree"), "worktree must be preserved");
-        assert_eq!(t.branch.as_deref(), Some("feature/x"), "branch must be preserved");
+        assert_eq!(
+            t.worktree.as_deref(),
+            Some("/path/to/tree"),
+            "worktree must be preserved"
+        );
+        assert_eq!(
+            t.branch.as_deref(),
+            Some("feature/x"),
+            "branch must be preserved"
+        );
         assert_eq!(t.status, Status::Running);
         assert!(t.updated_at.is_some());
     }

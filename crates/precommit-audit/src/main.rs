@@ -183,8 +183,9 @@ fn emit_and_exit(
     files: &[String],
     issues: Vec<model::Issue>,
 ) {
-    let (blocking, warnings): (Vec<_>, Vec<_>) =
-        issues.into_iter().partition(|i| i.severity == Severity::Block);
+    let (blocking, warnings): (Vec<_>, Vec<_>) = issues
+        .into_iter()
+        .partition(|i| i.severity == Severity::Block);
 
     // Advisory warnings always print, never affect the exit code.
     if !warnings.is_empty() {

@@ -289,7 +289,10 @@ fn init(force: bool) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let path = Config::project_path(&root);
     if path.exists() && !force {
-        anyhow::bail!("{} already exists (use --force to overwrite)", path.display());
+        anyhow::bail!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        );
     }
     std::fs::write(&path, STARTER_CONFIG)?;
     println!("wrote {}", path.display());

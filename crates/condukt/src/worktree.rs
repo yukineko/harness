@@ -105,7 +105,9 @@ pub fn create(repo: &Path, worktree_base: &Path, topic: &str, branch: &str) -> R
         bail!("worktree path already exists: {}", path.display());
     }
     if branch_checked_out(repo, branch)? {
-        bail!("branch '{branch}' is already checked out in another worktree (one dir = one branch)");
+        bail!(
+            "branch '{branch}' is already checked out in another worktree (one dir = one branch)"
+        );
     }
 
     if let Some(parent) = path.parent() {
@@ -150,8 +152,7 @@ pub fn merge(repo: &Path, branch: &str, default_branch: &str) -> Result<()> {
     // `git merge --no-commit --no-ff` either succeeds with a staged merge or
     // fails immediately when conflicts exist. In both cases we abort and then
     // re-run the real merge only when there are no conflicts.
-    let (trial_ok, _, trial_stderr) =
-        git_try(repo, &["merge", "--no-commit", "--no-ff", branch])?;
+    let (trial_ok, _, trial_stderr) = git_try(repo, &["merge", "--no-commit", "--no-ff", branch])?;
 
     if !trial_ok {
         // Trial merge reported conflicts. Abort to restore clean state.
@@ -214,11 +215,7 @@ mod worktree_remove_tests {
         git(repo, &["checkout", "-b", branch]).unwrap();
         fs::write(repo.join(file), content).unwrap();
         git(repo, &["add", "."]).unwrap();
-        git(
-            repo,
-            &["commit", "-m", &format!("add {file} on {branch}")],
-        )
-        .unwrap();
+        git(repo, &["commit", "-m", &format!("add {file} on {branch}")]).unwrap();
         git(repo, &["checkout", "main"]).unwrap();
     }
 
@@ -247,21 +244,13 @@ mod worktree_remove_tests {
 
         // Branch: modify line2 to "branch version"
         git(&repo, &["checkout", "-b", "conflict-branch"]).unwrap();
-        fs::write(
-            repo.join(conflict_file),
-            "line1\nbranch version\nline3\n",
-        )
-        .unwrap();
+        fs::write(repo.join(conflict_file), "line1\nbranch version\nline3\n").unwrap();
         git(&repo, &["add", "."]).unwrap();
         git(&repo, &["commit", "-m", "branch edit"]).unwrap();
 
         // Main: modify line2 differently → creates a real conflict
         git(&repo, &["checkout", "main"]).unwrap();
-        fs::write(
-            repo.join(conflict_file),
-            "line1\nmain version\nline3\n",
-        )
-        .unwrap();
+        fs::write(repo.join(conflict_file), "line1\nmain version\nline3\n").unwrap();
         git(&repo, &["add", "."]).unwrap();
         git(&repo, &["commit", "-m", "main edit"]).unwrap();
 
@@ -422,8 +411,14 @@ mod tests {
         assert!(validate_topic("").is_err());
         assert!(validate_topic("..").is_err());
         assert!(validate_topic("../evil").is_err());
-        assert!(validate_topic("a/b").is_err(), "path separator must be rejected");
-        assert!(validate_topic("-rf").is_err(), "leading '-' must be rejected");
+        assert!(
+            validate_topic("a/b").is_err(),
+            "path separator must be rejected"
+        );
+        assert!(
+            validate_topic("-rf").is_err(),
+            "leading '-' must be rejected"
+        );
         assert!(validate_topic(".hidden").is_err());
         assert!(validate_topic("a b").is_err(), "spaces must be rejected");
         assert!(validate_topic("a;rm -rf").is_err());
@@ -436,7 +431,10 @@ mod tests {
         assert!(validate_branch("feature/x.y_z-1").is_ok());
         // Dangerous forms.
         assert!(validate_branch("").is_err());
-        assert!(validate_branch("-b").is_err(), "leading '-' must be rejected");
+        assert!(
+            validate_branch("-b").is_err(),
+            "leading '-' must be rejected"
+        );
         assert!(validate_branch("/abs").is_err());
         assert!(validate_branch("trailing/").is_err());
         assert!(validate_branch("a..b").is_err());
@@ -481,12 +479,26 @@ mod tests {
         fs::create_dir_all(&wt_base).unwrap();
         let wt_path = wt_base.join("merged-wt");
         // Create a new branch for the worktree (identical content to main).
-        git(&repo, &["worktree", "add", wt_path.to_str().unwrap(), "-b", "feat/wt-merged"]).unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "feat/wt-merged",
+            ],
+        )
+        .unwrap();
         // Merge it.
         git(&repo, &["merge", "--no-edit", "feat/wt-merged"]).unwrap();
         // Now remove: branch -d should succeed because it is merged.
         let result = remove(&repo, &wt_path, Some("feat/wt-merged")).unwrap();
-        assert_eq!(result, None, "merged branch should be deleted: got {:?}", result);
+        assert_eq!(
+            result, None,
+            "merged branch should be deleted: got {:?}",
+            result
+        );
     }
 
     /// remove() returns Ok(Some(branch)) when the branch is NOT merged.
@@ -500,7 +512,17 @@ mod tests {
         let wt_base = tmp.path().join("worktrees");
         fs::create_dir_all(&wt_base).unwrap();
         let wt_path = wt_base.join("unmerged-wt");
-        git(&repo, &["worktree", "add", wt_path.to_str().unwrap(), "-b", "feat/unmerged"]).unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "feat/unmerged",
+            ],
+        )
+        .unwrap();
 
         // Add a commit to the worktree so it diverges from main.
         let extra = wt_path.join("extra.txt");
@@ -559,7 +581,17 @@ mod tests {
         let wt_base = tmp.path().join("worktrees");
         fs::create_dir_all(&wt_base).unwrap();
         let wt_path = wt_base.join("registered");
-        git(&repo, &["worktree", "add", wt_path.to_str().unwrap(), "-b", "feat/reg"]).unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "feat/reg",
+            ],
+        )
+        .unwrap();
 
         let found = orphans(&repo, &wt_base).unwrap();
         assert!(

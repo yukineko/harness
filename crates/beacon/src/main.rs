@@ -225,12 +225,22 @@ fn status() {
     println!("enabled:          {}", cfg.enabled);
     println!("on_stop:          {}", cfg.on_stop);
     println!("on_notification:  {}", cfg.on_notification);
-    println!("include_snippet:  {} ({} chars)", cfg.include_snippet, cfg.snippet_chars);
-    println!("desktop:          {} (os: {})", cfg.desktop, std::env::consts::OS);
+    println!(
+        "include_snippet:  {} ({} chars)",
+        cfg.include_snippet, cfg.snippet_chars
+    );
+    println!(
+        "desktop:          {} (os: {})",
+        cfg.desktop,
+        std::env::consts::OS
+    );
     println!("sound:            {}", cfg.sound.as_deref().unwrap_or("-"));
     println!("slack_webhook:    {}", mask(&cfg.slack_webhook));
     println!("webhook:          {}", mask(&cfg.webhook));
-    println!("command:          {}", cfg.command.as_deref().unwrap_or("-"));
+    println!(
+        "command:          {}",
+        cfg.command.as_deref().unwrap_or("-")
+    );
     println!("log:              {}", cfg.log);
     println!("state_dir:        {}", cfg.state_dir.display());
     println!("\nrun `beacon test` to fire a sample notification.");
@@ -271,7 +281,10 @@ fn init(force: bool) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let path = Config::project_path(&root);
     if path.exists() && !force {
-        anyhow::bail!("{} already exists (use --force to overwrite)", path.display());
+        anyhow::bail!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        );
     }
     std::fs::write(&path, STARTER)?;
     println!("wrote {}", path.display());

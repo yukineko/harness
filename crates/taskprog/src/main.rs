@@ -51,7 +51,11 @@ fn session_start_hook(input: &HookInput) -> Result<Option<String>> {
     if config::disabled_env() {
         return Ok(None);
     }
-    let cwd = if input.cwd.is_empty() { "." } else { &input.cwd };
+    let cwd = if input.cwd.is_empty() {
+        "."
+    } else {
+        &input.cwd
+    };
     let cfg = config::Config::load(cwd);
     if !cfg.enabled {
         return Ok(None);
@@ -64,7 +68,11 @@ fn stop_hook(input: &HookInput) -> Result<()> {
     if config::disabled_env() {
         return Ok(());
     }
-    let cwd = if input.cwd.is_empty() { "." } else { &input.cwd };
+    let cwd = if input.cwd.is_empty() {
+        "."
+    } else {
+        &input.cwd
+    };
     let cfg = config::Config::load(cwd);
     if !cfg.enabled {
         return Ok(());

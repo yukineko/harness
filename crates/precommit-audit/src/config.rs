@@ -199,7 +199,6 @@ pub struct SwallowedError {
     pub extra_patterns: Vec<String>,
 }
 
-
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DuplicateFunction {
@@ -211,12 +210,52 @@ impl Default for DuplicateFunction {
     fn default() -> Self {
         DuplicateFunction {
             common_names: strs(&[
-                "__init__", "__main__", "setUp", "tearDown", "get", "post", "put", "delete",
-                "list", "create", "update", "read", "write", "load", "save", "main", "init",
-                "setup", "start", "stop", "run", "close", "open", "shutdown", "cleanup",
-                "connect", "disconnect", "enable", "disable", "handle", "process", "transform",
-                "wrap", "unwrap", "compute", "calculate", "check", "verify", "validate", "parse",
-                "format", "encode", "decode", "serialize", "deserialize", "test",
+                "__init__",
+                "__main__",
+                "setUp",
+                "tearDown",
+                "get",
+                "post",
+                "put",
+                "delete",
+                "list",
+                "create",
+                "update",
+                "read",
+                "write",
+                "load",
+                "save",
+                "main",
+                "init",
+                "setup",
+                "start",
+                "stop",
+                "run",
+                "close",
+                "open",
+                "shutdown",
+                "cleanup",
+                "connect",
+                "disconnect",
+                "enable",
+                "disable",
+                "handle",
+                "process",
+                "transform",
+                "wrap",
+                "unwrap",
+                "compute",
+                "calculate",
+                "check",
+                "verify",
+                "validate",
+                "parse",
+                "format",
+                "encode",
+                "decode",
+                "serialize",
+                "deserialize",
+                "test",
             ]),
         }
     }
@@ -229,7 +268,6 @@ pub struct LocalCapture {
     /// Reason link surfaced in the message (project doc reference).
     pub doc_ref: String,
 }
-
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]

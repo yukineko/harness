@@ -79,8 +79,22 @@ fn warn_untrusted(path: &Path) {
 
 fn default_impl_globs() -> Vec<String> {
     [
-        "**/*.rs", "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.go", "**/*.java",
-        "**/*.rb", "**/*.c", "**/*.cc", "**/*.cpp", "**/*.h", "**/*.hpp", "**/*.kt", "**/*.swift",
+        "**/*.rs",
+        "**/*.py",
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.js",
+        "**/*.jsx",
+        "**/*.go",
+        "**/*.java",
+        "**/*.rb",
+        "**/*.c",
+        "**/*.cc",
+        "**/*.cpp",
+        "**/*.h",
+        "**/*.hpp",
+        "**/*.kt",
+        "**/*.swift",
     ]
     .iter()
     .map(|s| s.to_string())

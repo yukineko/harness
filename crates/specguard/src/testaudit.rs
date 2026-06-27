@@ -203,9 +203,7 @@ pub fn find_unincluded_mods(
                 kind: TestFindingKind::UnincludedMod,
                 file: candidate.to_string(),
                 name: stem.to_string(),
-                reason: format!(
-                    "`mod {stem};` not found in parent `{parent_path}`"
-                ),
+                reason: format!("`mod {stem};` not found in parent `{parent_path}`"),
             });
         }
     }
@@ -434,14 +432,18 @@ pub fn collect_mod_graph(
     let mut result = Vec::new();
     for (dir, files) in &by_dir {
         // Find the parent file (lib.rs, main.rs, or mod.rs).
-        let parent = ["lib.rs", "main.rs", "mod.rs"]
-            .iter()
-            .find_map(|name| {
-                let p = dir.join(name);
-                if files.contains(&p) { Some(p) } else { None }
-            });
+        let parent = ["lib.rs", "main.rs", "mod.rs"].iter().find_map(|name| {
+            let p = dir.join(name);
+            if files.contains(&p) {
+                Some(p)
+            } else {
+                None
+            }
+        });
         let Some(parent_path) = parent else { continue };
-        let Ok(parent_src) = std::fs::read_to_string(&parent_path) else { continue };
+        let Ok(parent_src) = std::fs::read_to_string(&parent_path) else {
+            continue;
+        };
         let parent_rel = parent_path
             .strip_prefix(repo_root)
             .unwrap_or(&parent_path)
@@ -475,7 +477,9 @@ fn collect_rs_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn collect_rs_files_inner(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name();
@@ -537,7 +541,10 @@ fn normal_test() {
 }
 "#;
         let findings = scan_source(src, "src/lib.rs");
-        assert!(findings.is_empty(), "normal test should not be flagged: {findings:?}");
+        assert!(
+            findings.is_empty(),
+            "normal test should not be flagged: {findings:?}"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -558,7 +565,10 @@ mod hidden {
             .iter()
             .filter(|f| f.kind == TestFindingKind::CfgGated)
             .collect();
-        assert!(!cfg_gated.is_empty(), "expected CfgGated finding: {findings:?}");
+        assert!(
+            !cfg_gated.is_empty(),
+            "expected CfgGated finding: {findings:?}"
+        );
         assert_eq!(cfg_gated[0].name, "unreachable_test");
     }
 
@@ -574,7 +584,10 @@ fn windows_only_test() {}
             .iter()
             .filter(|f| f.kind == TestFindingKind::CfgGated)
             .collect();
-        assert!(!cfg_gated.is_empty(), "expected CfgGated finding: {findings:?}");
+        assert!(
+            !cfg_gated.is_empty(),
+            "expected CfgGated finding: {findings:?}"
+        );
         assert_eq!(cfg_gated[0].name, "windows_only_test");
     }
 
@@ -633,7 +646,10 @@ mod beta;
         // lib.rs and main.rs are never `mod`-declared.
         let candidates = &["src/lib.rs", "src/main.rs"];
         let findings = find_unincluded_mods(parent_src, "src/lib.rs", candidates);
-        assert!(findings.is_empty(), "lib/main should be ignored: {findings:?}");
+        assert!(
+            findings.is_empty(),
+            "lib/main should be ignored: {findings:?}"
+        );
     }
 
     #[test]
@@ -657,7 +673,10 @@ mod beta;
             .iter()
             .filter(|f| f.kind == TestFindingKind::IntegrationTest)
             .collect();
-        assert!(!it.is_empty(), "expected IntegrationTest finding: {findings:?}");
+        assert!(
+            !it.is_empty(),
+            "expected IntegrationTest finding: {findings:?}"
+        );
     }
 
     #[test]
@@ -668,7 +687,10 @@ mod beta;
             .iter()
             .filter(|f| f.kind == TestFindingKind::IntegrationTest)
             .collect();
-        assert!(it.is_empty(), "src/lib.rs should not be flagged: {findings:?}");
+        assert!(
+            it.is_empty(),
+            "src/lib.rs should not be flagged: {findings:?}"
+        );
     }
 
     #[test]
@@ -679,7 +701,9 @@ mod beta;
 fn ignored_integration() {}
 "#;
         let findings = scan_source(src, "tests/ignored_suite.rs");
-        assert!(findings.iter().any(|f| f.kind == TestFindingKind::IntegrationTest));
+        assert!(findings
+            .iter()
+            .any(|f| f.kind == TestFindingKind::IntegrationTest));
         assert!(findings.iter().any(|f| f.kind == TestFindingKind::Ignored));
     }
 
@@ -696,15 +720,13 @@ fn ignored_integration() {}
 
         // lib.rs doesn't declare `mod test_foo;`
         fs::write(src_dir.join("lib.rs"), "pub fn foo() {}\n").unwrap();
-        fs::write(
-            src_dir.join("test_foo.rs"),
-            "#[test]\nfn it_works() {}\n",
-        ).unwrap();
+        fs::write(src_dir.join("test_foo.rs"), "#[test]\nfn it_works() {}\n").unwrap();
 
         let findings = scan_repo(tmp.path());
         assert!(
-            findings.iter().any(|f| f.kind == TestFindingKind::UnincludedMod
-                && f.name == "test_foo"),
+            findings
+                .iter()
+                .any(|f| f.kind == TestFindingKind::UnincludedMod && f.name == "test_foo"),
             "expected UnincludedMod for test_foo.rs: {findings:?}"
         );
     }
@@ -714,7 +736,10 @@ fn ignored_integration() {}
         assert_eq!(TestFindingKind::Ignored.as_str(), "ignored");
         assert_eq!(TestFindingKind::CfgGated.as_str(), "cfg_gated");
         assert_eq!(TestFindingKind::UnincludedMod.as_str(), "unincluded_mod");
-        assert_eq!(TestFindingKind::IntegrationTest.as_str(), "integration_test");
+        assert_eq!(
+            TestFindingKind::IntegrationTest.as_str(),
+            "integration_test"
+        );
     }
 
     #[test]
@@ -732,6 +757,9 @@ fn ignored_integration() {}
             .iter()
             .filter(|f| f.kind == TestFindingKind::UnincludedMod)
             .collect();
-        assert!(unincluded.is_empty(), "should be no unincluded mods: {unincluded:?}");
+        assert!(
+            unincluded.is_empty(),
+            "should be no unincluded mods: {unincluded:?}"
+        );
     }
 }

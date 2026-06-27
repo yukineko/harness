@@ -47,7 +47,11 @@ const EXIT_UNRATIFIED_SPEC: u8 = 6;
 const EXIT_INTAKE_SHORTFALL: u8 = 7;
 
 #[derive(Parser)]
-#[command(name = "specforge", version, about = "Spec generation harness (entry gate: normalize + rigor)")]
+#[command(
+    name = "specforge",
+    version,
+    about = "Spec generation harness (entry gate: normalize + rigor)"
+)]
 struct Cli {
     #[arg(short, long, default_value = "specforge.toml", global = true)]
     config: PathBuf,
@@ -198,7 +202,14 @@ fn run(cli: &Cli) -> Result<u8> {
             let _ = title;
             let requirement = read_requirement(req.as_deref())?;
             let template = load_template(&l)?;
-            let out = prompt::render(&template, &l.cfg.project.name, id, &requirement, canon, &l.date);
+            let out = prompt::render(
+                &template,
+                &l.cfg.project.name,
+                id,
+                &requirement,
+                canon,
+                &l.date,
+            );
             print!("{out}");
             Ok(EXIT_OK)
         }
@@ -213,16 +224,17 @@ fn run(cli: &Cli) -> Result<u8> {
 }
 
 /// ②normalize + §5.3 rigor pre-flight. The agent decides; the harness gates.
-fn draft(
-    l: &Loaded,
-    id: &str,
-    title: &str,
-    req: Option<&Path>,
-    canon: &[String],
-) -> Result<u8> {
+fn draft(l: &Loaded, id: &str, title: &str, req: Option<&Path>, canon: &[String]) -> Result<u8> {
     let requirement = read_requirement(req)?;
     let template = load_template(l)?;
-    let rendered = prompt::render(&template, &l.cfg.project.name, id, &requirement, canon, &l.date);
+    let rendered = prompt::render(
+        &template,
+        &l.cfg.project.name,
+        id,
+        &requirement,
+        canon,
+        &l.date,
+    );
 
     let out = agent::run(&l.cfg.agent, &l.repo_root, &rendered);
     if out.code != 0 {
@@ -289,7 +301,10 @@ fn draft(
     if !violations.is_empty() {
         let body = format!(
             "agent は rigor:pass を主張したが、ハーネスの契約チェックで以下に違反:\n{}",
-            violations.iter().map(|v| format!("- {v}\n")).collect::<String>()
+            violations
+                .iter()
+                .map(|v| format!("- {v}\n"))
+                .collect::<String>()
         );
         write_sentinel(l, id, "rigor:pass の過大主張をハーネスが棄却", &body)?;
         println!(
@@ -304,7 +319,9 @@ fn draft(
 
     let path = write_spec(l, id, &spec)?;
     println!("specforge: draft を書いた -> {}", path.display());
-    println!("  内容を確認し、合意できるなら `specforge ratify --id {id} -m \"理由\"` で昇格 (HOTL)。");
+    println!(
+        "  内容を確認し、合意できるなら `specforge ratify --id {id} -m \"理由\"` で昇格 (HOTL)。"
+    );
     Ok(EXIT_OK)
 }
 
@@ -315,7 +332,10 @@ fn ratify(l: &Loaded, id: &str, reason: &str) -> Result<u8> {
     }
     let path = spec_path(l, id);
     if !path.exists() {
-        anyhow::bail!("spec が無い: {} (先に `specforge draft --id {id}`)", path.display());
+        anyhow::bail!(
+            "spec が無い: {} (先に `specforge draft --id {id}`)",
+            path.display()
+        );
     }
     let mut spec = ir::Spec::load(&path)?;
 
@@ -340,7 +360,10 @@ fn ratify(l: &Loaded, id: &str, reason: &str) -> Result<u8> {
         fingerprint,
     });
     write_spec(l, id, &spec)?;
-    println!("specforge: spec を批准した (draft -> ratified) -> {}", path.display());
+    println!(
+        "specforge: spec を批准した (draft -> ratified) -> {}",
+        path.display()
+    );
     println!("  canon commit に pin (canon_commit: {head})");
     println!("  理由: {reason}");
     println!("  以後、内容を編集すると fingerprint が変わり再批准が必要 (DESIGN.md §5)。");
@@ -422,9 +445,7 @@ fn print_gather_summary(bundle: &gather::Bundle) {
         };
         println!(
             "  [{auth} score={}] {} ({})",
-            f.score,
-            f.anchor,
-            f.source_path
+            f.score, f.anchor, f.source_path
         );
     }
 }
@@ -442,8 +463,7 @@ fn write_bundle(l: &Loaded, key: &str, bundle: &gather::Bundle) -> Result<PathBu
             .with_context(|| format!("creating bundle dir {}", dir.display()))?;
     }
     let json = serde_json::to_string_pretty(bundle).context("serializing gather bundle")?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("writing bundle {}", path.display()))?;
+    std::fs::write(&path, json).with_context(|| format!("writing bundle {}", path.display()))?;
     Ok(path)
 }
 
@@ -534,7 +554,9 @@ fn load_template(l: &Loaded) -> Result<String> {
 }
 
 fn spec_path(l: &Loaded, id: &str) -> PathBuf {
-    l.repo_root.join(&l.cfg.output.spec_dir).join(format!("{id}.toml"))
+    l.repo_root
+        .join(&l.cfg.output.spec_dir)
+        .join(format!("{id}.toml"))
 }
 
 fn write_spec(l: &Loaded, id: &str, spec: &ir::Spec) -> Result<PathBuf> {
@@ -564,7 +586,8 @@ fn write_sentinel(l: &Loaded, id: &str, summary: &str, body: &str) -> Result<()>
         summary,
         body.trim_end()
     );
-    std::fs::write(&path, content).with_context(|| format!("writing sentinel {}", path.display()))?;
+    std::fs::write(&path, content)
+        .with_context(|| format!("writing sentinel {}", path.display()))?;
     Ok(())
 }
 
@@ -708,7 +731,11 @@ fn cmd_implement(l: &Loaded, id: &str) -> Result<u8> {
     println!();
     evidence::print_summary(&report);
     println!();
-    println!("結果: {}  証拠: {}", results_path.display(), ev_path.display());
+    println!(
+        "結果: {}  証拠: {}",
+        results_path.display(),
+        ev_path.display()
+    );
     Ok(EXIT_OK)
 }
 
@@ -747,7 +774,10 @@ fn cmd_agree(l: &Loaded, id: &str, reason: &str) -> Result<u8> {
     let report = load_or_build_evidence(l, id)?;
     evidence::write(&impl_dir(l), &report)?;
     let report = evidence::record_agreement(&impl_dir(l), id, reason)?;
-    println!("specforge: 合意を記録した (gate: agreed) — {} requirements", report.total);
+    println!(
+        "specforge: 合意を記録した (gate: agreed) — {} requirements",
+        report.total
+    );
     println!("  次: `specforge merge --id {id}` で passing worktrees を統合できます。");
     Ok(EXIT_OK)
 }
@@ -791,7 +821,10 @@ fn cmd_merge(l: &Loaded, id: &str, req_filter: Option<&str>) -> Result<u8> {
             .arg("-C")
             .arg(&l.repo_root)
             .args(["merge", "--no-ff", "-m"])
-            .arg(format!("specforge: merge {id}/{} (evidence agreed)", item.req_id))
+            .arg(format!(
+                "specforge: merge {id}/{} (evidence agreed)",
+                item.req_id
+            ))
             .arg(&branch)
             .output()
             .context("git merge")?;
@@ -810,6 +843,9 @@ fn cmd_merge(l: &Loaded, id: &str, req_filter: Option<&str>) -> Result<u8> {
             eprintln!("  ✗ merge {} failed: {}", item.req_id, stderr.trim());
         }
     }
-    println!("specforge: {merged}/{} worktrees をマージした。", items_to_merge.len());
+    println!(
+        "specforge: {merged}/{} worktrees をマージした。",
+        items_to_merge.len()
+    );
     Ok(EXIT_OK)
 }

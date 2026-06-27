@@ -41,7 +41,11 @@ pub struct AreaHit {
 }
 
 /// Decide the baseline ref: explicit override > recorded last-ref > fallback.
-pub fn resolve_baseline(cfg: &Config, override_ref: Option<&str>, last_ref: Option<&str>) -> String {
+pub fn resolve_baseline(
+    cfg: &Config,
+    override_ref: Option<&str>,
+    last_ref: Option<&str>,
+) -> String {
     if let Some(r) = override_ref {
         if !r.trim().is_empty() {
             return r.trim().to_string();
@@ -166,14 +170,14 @@ fn canon_file(pointer: &str) -> &str {
 pub fn classify(changed: &[String], areas: &[Area]) -> Result<(Vec<AreaHit>, Vec<String>)> {
     let mut in_scope = Vec::new();
     let mut skipped = Vec::new();
-    let changed_set: std::collections::HashSet<&str> =
-        changed.iter().map(|s| s.as_str()).collect();
+    let changed_set: std::collections::HashSet<&str> = changed.iter().map(|s| s.as_str()).collect();
 
     for (idx, area) in areas.iter().enumerate() {
         let mut builder = GlobSetBuilder::new();
         for g in &area.globs {
             builder.add(
-                Glob::new(g).with_context(|| format!("invalid glob '{g}' in area '{}'", area.name))?,
+                Glob::new(g)
+                    .with_context(|| format!("invalid glob '{g}' in area '{}'", area.name))?,
             );
         }
         let set = builder.build().context("building glob set")?;
@@ -251,7 +255,10 @@ mod tests {
 
     #[test]
     fn classify_matches_recursive_glob() {
-        let areas = vec![area("logging", &["aegis_logging/**"]), area("web", &["web/**"])];
+        let areas = vec![
+            area("logging", &["aegis_logging/**"]),
+            area("web", &["web/**"]),
+        ];
         let changed = vec![
             "aegis_logging/signature.py".to_string(),
             "aegis_logging/vector/cfg.toml".to_string(),

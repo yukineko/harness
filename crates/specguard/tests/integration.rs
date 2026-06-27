@@ -64,7 +64,14 @@ canon = ["docs/spec.md"]
 fn run_specguard(repo: &Path, baseline: &str, sub: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_specguard"))
         .current_dir(repo)
-        .args(["--config", "specguard.toml", "--baseline", baseline, "--date", "2026-01-01"])
+        .args([
+            "--config",
+            "specguard.toml",
+            "--baseline",
+            baseline,
+            "--date",
+            "2026-01-01",
+        ])
         .args(sub)
         .output()
         .expect("specguard runs")
@@ -88,7 +95,11 @@ fn run_with_findings_writes_report_and_sentinel() {
     );
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
     assert!(report.contains("Demo audit"));
@@ -120,13 +131,22 @@ fn run_without_findings_writes_no_sentinel() {
     git(repo, &["add", "-A"]);
     git(repo, &["commit", "-q", "-m", "x"]);
 
-    write_config(repo, "# clean\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし");
+    write_config(
+        repo,
+        "# clean\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし",
+    );
     let out = run_specguard(repo, &base, &["run"]);
     assert!(out.status.success());
     assert!(repo.join("reports/2026-01-01.md").exists());
-    assert!(!repo.join(".pending").exists(), "no sentinel when no findings");
+    assert!(
+        !repo.join(".pending").exists(),
+        "no sentinel when no findings"
+    );
     // A fully clean run advances the baseline.
-    assert!(repo.join("reports/.last-ref").exists(), "clean run advances baseline");
+    assert!(
+        repo.join("reports/.last-ref").exists(),
+        "clean run advances baseline"
+    );
 }
 
 #[test]
@@ -177,11 +197,21 @@ globs = ["src/**"]
     fs::write(repo.join("specguard.toml"), cfg).unwrap();
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert_eq!(out.status.code(), Some(4), "agent failure -> EXIT_AGENT_FAILED");
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "agent failure -> EXIT_AGENT_FAILED"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("code 3"), "true agent code on stderr: {stderr}");
+    assert!(
+        stderr.contains("code 3"),
+        "true agent code on stderr: {stderr}"
+    );
     assert!(!repo.join(".pending").exists());
-    assert!(!repo.join("reports/2026-01-01.md").exists(), "no report on agent failure");
+    assert!(
+        !repo.join("reports/2026-01-01.md").exists(),
+        "no report on agent failure"
+    );
 }
 
 #[test]
@@ -203,7 +233,11 @@ fn ack_clears_the_sentinel() {
     assert!(repo.join(".pending").exists(), "sentinel raised");
 
     // Make a fix commit so the ack guard passes.
-    fs::write(repo.join("src/main.rs").as_path(), "fn main() { /* fixed */ }\n").unwrap();
+    fs::write(
+        repo.join("src/main.rs").as_path(),
+        "fn main() { /* fixed */ }\n",
+    )
+    .unwrap();
     git(repo, &["add", "-A"]);
     git(repo, &["commit", "-q", "-m", "fix drift"]);
 
@@ -222,14 +256,20 @@ fn ack_rejected_when_no_fix_commit() {
     git(repo, &["add", "-A"]);
     git(repo, &["commit", "-q", "-m", "add src"]);
 
-    write_config(repo, "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift");
+    write_config(
+        repo,
+        "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift",
+    );
     let out = run_specguard(repo, &base, &["run"]);
     assert!(out.status.success());
     assert!(repo.join(".pending").exists(), "sentinel raised");
 
     // ack without a new commit should be rejected
     let out = run_specguard(repo, &base, &["ack"]);
-    assert!(!out.status.success(), "ack should be rejected without fix commit");
+    assert!(
+        !out.status.success(),
+        "ack should be rejected without fix commit"
+    );
     assert!(repo.join(".pending").exists(), "sentinel still present");
 }
 
@@ -243,15 +283,24 @@ fn ack_force_bypasses_commit_guard() {
     git(repo, &["add", "-A"]);
     git(repo, &["commit", "-q", "-m", "add src"]);
 
-    write_config(repo, "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift");
+    write_config(
+        repo,
+        "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift",
+    );
     let out = run_specguard(repo, &base, &["run"]);
     assert!(out.status.success());
     assert!(repo.join(".pending").exists(), "sentinel raised");
 
     // --force bypasses the guard
     let out = run_specguard(repo, &base, &["ack", "--force"]);
-    assert!(out.status.success(), "ack --force should clear without commit");
-    assert!(!repo.join(".pending").exists(), "sentinel cleared by --force");
+    assert!(
+        out.status.success(),
+        "ack --force should clear without commit"
+    );
+    assert!(
+        !repo.join(".pending").exists(),
+        "sentinel cleared by --force"
+    );
 }
 
 #[test]
@@ -265,26 +314,45 @@ fn pending_sentinel_holds_baseline_until_ack() {
     git(repo, &["commit", "-q", "-m", "add src"]);
 
     // 1. Findings run: sentinel raised, baseline held.
-    write_config(repo, "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift");
+    write_config(
+        repo,
+        "# audit\n\n<<<SPEC_AUDIT>>>\nneeds_user: yes\nsummary: drift",
+    );
     assert!(run_specguard(repo, &base, &["run"]).status.success());
     assert!(repo.join(".pending").exists());
     assert!(!repo.join("reports/.last-ref").exists(), "held on findings");
 
     // 2. Clean run while the sentinel is still pending: baseline stays held,
     //    sentinel left untouched.
-    write_config(repo, "# clean\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし");
+    write_config(
+        repo,
+        "# clean\n\n<<<SPEC_AUDIT>>>\nneeds_user: no\nsummary: なし",
+    );
     assert!(run_specguard(repo, &base, &["run"]).status.success());
-    assert!(repo.join(".pending").exists(), "sentinel untouched while pending");
-    assert!(!repo.join("reports/.last-ref").exists(), "still held pre-ack");
+    assert!(
+        repo.join(".pending").exists(),
+        "sentinel untouched while pending"
+    );
+    assert!(
+        !repo.join("reports/.last-ref").exists(),
+        "still held pre-ack"
+    );
 
     // 3. After ack, a clean run advances the baseline.
     // Add a fix commit so the ack guard passes.
-    fs::write(repo.join("src/main.rs").as_path(), "fn main() { /* fixed */ }\n").unwrap();
+    fs::write(
+        repo.join("src/main.rs").as_path(),
+        "fn main() { /* fixed */ }\n",
+    )
+    .unwrap();
     git(repo, &["add", "-A"]);
     git(repo, &["commit", "-q", "-m", "fix drift"]);
     assert!(run_specguard(repo, &base, &["ack"]).status.success());
     assert!(run_specguard(repo, &base, &["run"]).status.success());
-    assert!(repo.join("reports/.last-ref").exists(), "advanced after ack + clean");
+    assert!(
+        repo.join("reports/.last-ref").exists(),
+        "advanced after ack + clean"
+    );
 }
 
 #[test]
@@ -319,9 +387,16 @@ fn unresolvable_baseline_falls_back_to_all_tracked() {
 
     write_config(repo, "unused");
     let out = run_specguard(repo, "does-not-exist-ref", &["scope"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("- src"), "src area should be in scope via all-tracked fallback:\n{stdout}");
+    assert!(
+        stdout.contains("- src"),
+        "src area should be in scope via all-tracked fallback:\n{stdout}"
+    );
 }
 
 #[test]
@@ -406,7 +481,11 @@ fi"#;
     write_fanout_config(repo, script);
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
     // All three shards are present and merged (each got its own focused prompt).
@@ -420,7 +499,10 @@ fi"#;
     // needs_user is OR'd across shards: beta alone flagged -> sentinel raised.
     // Exactly one flagged shard -> summary is verbatim (no label prefix).
     let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
-    assert!(sentinel.contains("summary: beta drift"), "sentinel:\n{sentinel}");
+    assert!(
+        sentinel.contains("summary: beta drift"),
+        "sentinel:\n{sentinel}"
+    );
     // Findings pending -> baseline held.
     assert!(!repo.join("reports/.last-ref").exists());
 }
@@ -444,11 +526,21 @@ fi"#;
     write_fanout_config(repo, script);
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
-    assert!(sentinel.contains("[alpha] alpha drift"), "sentinel:\n{sentinel}");
-    assert!(sentinel.contains("[beta] beta drift"), "sentinel:\n{sentinel}");
+    assert!(
+        sentinel.contains("[alpha] alpha drift"),
+        "sentinel:\n{sentinel}"
+    );
+    assert!(
+        sentinel.contains("[beta] beta drift"),
+        "sentinel:\n{sentinel}"
+    );
 }
 
 // --- `specguard pending`: SessionStart hook entry point (fix-offer). ---
@@ -475,7 +567,10 @@ fn pending_is_silent_without_sentinel_and_offers_fix_with_one() {
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("未処理の仕様ドリフト"), "surfaces drift: {s}");
-    assert!(s.contains("reports/2026-01-01.md"), "includes the report path");
+    assert!(
+        s.contains("reports/2026-01-01.md"),
+        "includes the report path"
+    );
     assert!(s.contains("fix the drift"), "includes the summary");
     assert!(s.contains("AskUserQuestion"), "drives the active fix-offer");
 }
@@ -492,7 +587,11 @@ fn brief_renders_prompt_and_runs_agent() {
     // --prompt: render only (no agent). Task is embedded, every area's canon is
     // listed, and no placeholder leaks.
     let p = run_specguard(repo, "HEAD", &["brief", "Add a new endpoint", "--prompt"]);
-    assert!(p.status.success(), "stderr: {}", String::from_utf8_lossy(&p.stderr));
+    assert!(
+        p.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&p.stderr)
+    );
     let ps = String::from_utf8_lossy(&p.stdout);
     assert!(ps.contains("Add a new endpoint"), "task embedded: {ps}");
     assert!(ps.contains("docs/spec.md"), "area canon listed");
@@ -500,7 +599,11 @@ fn brief_renders_prompt_and_runs_agent() {
 
     // default: runs the (fake) agent and prints its brief verbatim.
     let r = run_specguard(repo, "HEAD", &["brief", "Add a new endpoint"]);
-    assert!(r.status.success(), "stderr: {}", String::from_utf8_lossy(&r.stderr));
+    assert!(
+        r.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
     assert!(String::from_utf8_lossy(&r.stdout).contains("spec-brief: do X"));
 }
 
@@ -521,14 +624,21 @@ fn init_scaffolds_config_and_hook_idempotently() {
     let repo = tmp.path();
 
     let out = specguard_init(repo, &[]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let cfg = fs::read_to_string(repo.join("specguard.toml")).unwrap();
     assert!(cfg.contains("[[area]]"), "starter config scaffolded");
 
     let settings = fs::read_to_string(repo.join(".claude/settings.json")).unwrap();
     assert!(settings.contains("SessionStart"));
-    assert!(settings.contains("specguard pending"), "hook delegates to the binary");
+    assert!(
+        settings.contains("specguard pending"),
+        "hook delegates to the binary"
+    );
     assert_eq!(settings.matches("\"matcher\"").count(), 1, "one hook group");
 
     // Re-running init must not duplicate the hook nor clobber the config.
@@ -536,7 +646,11 @@ fn init_scaffolds_config_and_hook_idempotently() {
     let out2 = specguard_init(repo, &[]);
     assert!(out2.status.success());
     let settings2 = fs::read_to_string(repo.join(".claude/settings.json")).unwrap();
-    assert_eq!(settings2.matches("\"matcher\"").count(), 1, "hook not duplicated");
+    assert_eq!(
+        settings2.matches("\"matcher\"").count(),
+        1,
+        "hook not duplicated"
+    );
     assert_eq!(
         fs::read_to_string(repo.join("specguard.toml")).unwrap(),
         "name = \"edited\"\n",
@@ -545,7 +659,9 @@ fn init_scaffolds_config_and_hook_idempotently() {
 
     // --force overwrites the config back to the example.
     assert!(specguard_init(repo, &["--force"]).status.success());
-    assert!(fs::read_to_string(repo.join("specguard.toml")).unwrap().contains("[[area]]"));
+    assert!(fs::read_to_string(repo.join("specguard.toml"))
+        .unwrap()
+        .contains("[[area]]"));
 }
 
 #[test]
@@ -560,7 +676,11 @@ fn init_preserves_existing_settings() {
     .unwrap();
 
     let out = specguard_init(repo, &[]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let s = fs::read_to_string(repo.join(".claude/settings.json")).unwrap();
     assert!(s.contains("\"model\""), "unrelated keys preserved");
@@ -579,7 +699,11 @@ fn decide_scaffolds_pinned_record_idempotently() {
     write_config(repo, "unused");
 
     let out = run_specguard(repo, &base, &["decide", "Single signing path"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let rec = repo.join("decisions/2026-01-01-single-signing-path.md");
     let body = fs::read_to_string(&rec).expect("record written");
@@ -592,12 +716,18 @@ fn decide_scaffolds_pinned_record_idempotently() {
     fs::write(&rec, "edited\n").unwrap();
     let dup = run_specguard(repo, &base, &["decide", "Single signing path"]);
     assert_eq!(dup.status.code(), Some(2), "duplicate id rejected");
-    assert_eq!(fs::read_to_string(&rec).unwrap(), "edited\n", "not overwritten");
+    assert_eq!(
+        fs::read_to_string(&rec).unwrap(),
+        "edited\n",
+        "not overwritten"
+    );
 
     // --force overwrites.
     let forced = run_specguard(repo, &base, &["decide", "Single signing path", "--force"]);
     assert!(forced.status.success());
-    assert!(fs::read_to_string(&rec).unwrap().contains("status: proposed"));
+    assert!(fs::read_to_string(&rec)
+        .unwrap()
+        .contains("status: proposed"));
 }
 
 #[test]
@@ -661,7 +791,11 @@ canon = ["docs/spec.md"]
     fs::write(repo.join("specguard.toml"), cfg).unwrap();
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
     assert!(report.contains("## shard: src"), "report:\n{report}");
     assert!(report.contains("## shard: decisions"), "report:\n{report}");
@@ -719,16 +853,32 @@ fi"#;
     write_verify_config(repo, script, "[verify]\nenabled = true");
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
     // Transparency: both the original finding and the refutation are present.
-    assert!(report.contains("D1 finding X"), "original finding kept in report:\n{report}");
-    assert!(report.contains("反証 (verify)"), "refutation section present");
+    assert!(
+        report.contains("D1 finding X"),
+        "original finding kept in report:\n{report}"
+    );
+    assert!(
+        report.contains("反証 (verify)"),
+        "refutation section present"
+    );
     assert!(report.contains("引用が verdict を支持せず"));
     // Refuted away -> no sentinel, and a fully clean run advances the baseline.
-    assert!(!repo.join(".pending").exists(), "false positive refuted -> no sentinel");
-    assert!(repo.join("reports/.last-ref").exists(), "clean post-verify advances baseline");
+    assert!(
+        !repo.join(".pending").exists(),
+        "false positive refuted -> no sentinel"
+    );
+    assert!(
+        repo.join("reports/.last-ref").exists(),
+        "clean post-verify advances baseline"
+    );
 }
 
 #[test]
@@ -748,12 +898,22 @@ fi"#;
     write_verify_config(repo, script, "[verify]\nenabled = true");
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
     // Post-verify summary takes over from the audit's.
-    assert!(sentinel.contains("summary: drift X 確定"), "sentinel:\n{sentinel}");
-    assert!(!repo.join("reports/.last-ref").exists(), "findings hold the baseline");
+    assert!(
+        sentinel.contains("summary: drift X 確定"),
+        "sentinel:\n{sentinel}"
+    );
+    assert!(
+        !repo.join("reports/.last-ref").exists(),
+        "findings hold the baseline"
+    );
 }
 
 #[test]
@@ -775,10 +935,20 @@ fi"#;
 
     let out = run_specguard(repo, &base, &["run"]);
     // The run still succeeds (verify failure is non-fatal) and keeps the finding.
-    assert!(out.status.success(), "verify failure must not abort the run; stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(repo.join(".pending").exists(), "fail-safe: finding kept -> sentinel raised");
+    assert!(
+        out.status.success(),
+        "verify failure must not abort the run; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        repo.join(".pending").exists(),
+        "fail-safe: finding kept -> sentinel raised"
+    );
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
-    assert!(report.contains("反証不能"), "inconclusive annotated:\n{report}");
+    assert!(
+        report.contains("反証不能"),
+        "inconclusive annotated:\n{report}"
+    );
 }
 
 #[test]
@@ -798,14 +968,27 @@ fi"#;
     write_verify_config(repo, script, "[verify]\ncompleteness = true");
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
-    assert!(report.contains("## shard: completeness:src"), "critic shard merged:\n{report}");
+    assert!(
+        report.contains("## shard: completeness:src"),
+        "critic shard merged:\n{report}"
+    );
     assert!(report.contains("未照合ルール R5"));
     let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
-    assert!(sentinel.contains("R5 未照合"), "missed rule raises the sentinel:\n{sentinel}");
-    assert!(!repo.join("reports/.last-ref").exists(), "held while sentinel pending");
+    assert!(
+        sentinel.contains("R5 未照合"),
+        "missed rule raises the sentinel:\n{sentinel}"
+    );
+    assert!(
+        !repo.join("reports/.last-ref").exists(),
+        "held while sentinel pending"
+    );
 }
 
 #[test]
@@ -826,16 +1009,24 @@ fi"#;
     write_verify_config(repo, script, "");
 
     let out = run_specguard(repo, &base, &["run"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
-    assert!(!report.contains("反証 (verify)"), "no verify section when off");
+    assert!(
+        !report.contains("反証 (verify)"),
+        "no verify section when off"
+    );
     assert!(repo.join(".pending").exists());
 }
 
 // --- Prompt ratification gate (meta-canon acceptance). ---
 
 /// A minimal but contract-valid custom audit template (all required placeholders).
-const VALID_TMPL: &str = "{{PROJECT_NAME}} {{DATE}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}\n{{MARKER}}\n";
+const VALID_TMPL: &str =
+    "{{PROJECT_NAME}} {{DATE}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}\n{{MARKER}}\n";
 
 fn write_ratify_config(repo: &Path, template_body: &str) {
     fs::write(repo.join("tmpl.md"), template_body).unwrap();
@@ -880,12 +1071,20 @@ fn run_blocked_until_prompt_ratified_then_passes() {
 
     // Unratified prompt -> run is gated (exit 5), no report.
     let blocked = run_specguard(repo, &base, &["run"]);
-    assert_eq!(blocked.status.code(), Some(5), "unratified prompt blocks run");
+    assert_eq!(
+        blocked.status.code(),
+        Some(5),
+        "unratified prompt blocks run"
+    );
     assert!(!repo.join("reports/2026-01-01.md").exists());
 
     // Ratify with a rationale -> lock written, pinned to a canon commit.
     let acc = run_specguard(repo, &base, &["accept-prompt", "-m", "initial policy ok"]);
-    assert!(acc.status.success(), "stderr: {}", String::from_utf8_lossy(&acc.stderr));
+    assert!(
+        acc.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&acc.stderr)
+    );
     let lock = fs::read_to_string(repo.join(".specguard-prompt.lock")).unwrap();
     assert!(lock.contains("audit_hash ="));
     assert!(lock.contains("reason = \"initial policy ok\""));
@@ -893,7 +1092,11 @@ fn run_blocked_until_prompt_ratified_then_passes() {
 
     // Now the run proceeds.
     let ok = run_specguard(repo, &base, &["run"]);
-    assert!(ok.status.success(), "stderr: {}", String::from_utf8_lossy(&ok.stderr));
+    assert!(
+        ok.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
     assert!(repo.join("reports/2026-01-01.md").exists());
 }
 
@@ -904,16 +1107,26 @@ fn changed_prompt_reblocks_until_reratified() {
     let base = init_repo(repo);
     seed_src(repo);
     write_ratify_config(repo, VALID_TMPL);
-    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "ok"]).status.success());
+    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "ok"])
+        .status
+        .success());
     assert!(run_specguard(repo, &base, &["run"]).status.success());
 
     // Edit the prompt (still contract-valid) -> fingerprint changes -> gated.
-    fs::write(repo.join("tmpl.md"), format!("{VALID_TMPL}\n<!-- policy tweak -->\n")).unwrap();
+    fs::write(
+        repo.join("tmpl.md"),
+        format!("{VALID_TMPL}\n<!-- policy tweak -->\n"),
+    )
+    .unwrap();
     let blocked = run_specguard(repo, &base, &["run"]);
     assert_eq!(blocked.status.code(), Some(5), "changed prompt re-blocks");
 
     // Re-ratify -> passes again.
-    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "reviewed tweak"]).status.success());
+    assert!(
+        run_specguard(repo, &base, &["accept-prompt", "-m", "reviewed tweak"])
+            .status
+            .success()
+    );
     assert!(run_specguard(repo, &base, &["run"]).status.success());
 }
 
@@ -924,13 +1137,22 @@ fn accept_prompt_refuses_contract_violating_template() {
     let base = init_repo(repo);
     seed_src(repo);
     // Template missing {{MARKER}} -> contradicts the parser contract.
-    write_ratify_config(repo, "{{PROJECT_NAME}} {{DATE}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}\n");
+    write_ratify_config(
+        repo,
+        "{{PROJECT_NAME}} {{DATE}} {{SCOPE_SUMMARY}} {{AREAS}} {{INVARIANTS}}\n",
+    );
 
     let out = run_specguard(repo, &base, &["accept-prompt", "-m", "x"]);
     assert_eq!(out.status.code(), Some(2), "contract violation refused");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("MARKER"), "names the missing placeholder: {stderr}");
-    assert!(!repo.join(".specguard-prompt.lock").exists(), "no lock on refusal");
+    assert!(
+        stderr.contains("MARKER"),
+        "names the missing placeholder: {stderr}"
+    );
+    assert!(
+        !repo.join(".specguard-prompt.lock").exists(),
+        "no lock on refusal"
+    );
 }
 
 /// Ratify config with an extra `[verify]` table injected verbatim.
@@ -970,23 +1192,48 @@ fn enabling_verify_gate_forces_reratification() {
 
     // 1. Ratify with verify OFF -> audit-only consent; the refute slot stays empty.
     write_ratify_config_with(repo, VALID_TMPL, "");
-    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "audit only"]).status.success());
+    assert!(
+        run_specguard(repo, &base, &["accept-prompt", "-m", "audit only"])
+            .status
+            .success()
+    );
     assert!(run_specguard(repo, &base, &["run"]).status.success());
     let lock = fs::read_to_string(repo.join(".specguard-prompt.lock")).unwrap();
-    assert!(lock.contains("refute_hash = \"\""), "refute unpinned while gate off:\n{lock}");
+    assert!(
+        lock.contains("refute_hash = \"\""),
+        "refute unpinned while gate off:\n{lock}"
+    );
 
     // 2. Turn the refute gate ON -> the now-active policy was never ratified -> blocked.
     write_ratify_config_with(repo, VALID_TMPL, "[verify]\nenabled = true");
     let blocked = run_specguard(repo, &base, &["run"]);
-    assert_eq!(blocked.status.code(), Some(5), "enabling verify re-blocks until ratified");
+    assert_eq!(
+        blocked.status.code(),
+        Some(5),
+        "enabling verify re-blocks until ratified"
+    );
     let stderr = String::from_utf8_lossy(&blocked.stderr);
-    assert!(stderr.contains("refute-prompt"), "names the unratified verify policy: {stderr}");
+    assert!(
+        stderr.contains("refute-prompt"),
+        "names the unratified verify policy: {stderr}"
+    );
 
     // 3. Re-ratify (now pins the refute policy) -> run passes again.
-    let acc = run_specguard(repo, &base, &["accept-prompt", "-m", "reviewed refute policy"]);
-    assert!(acc.status.success(), "stderr: {}", String::from_utf8_lossy(&acc.stderr));
+    let acc = run_specguard(
+        repo,
+        &base,
+        &["accept-prompt", "-m", "reviewed refute policy"],
+    );
+    assert!(
+        acc.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&acc.stderr)
+    );
     let lock2 = fs::read_to_string(repo.join(".specguard-prompt.lock")).unwrap();
-    assert!(!lock2.contains("refute_hash = \"\""), "refute now pinned:\n{lock2}");
+    assert!(
+        !lock2.contains("refute_hash = \"\""),
+        "refute now pinned:\n{lock2}"
+    );
     assert!(run_specguard(repo, &base, &["run"]).status.success());
 }
 
@@ -1004,7 +1251,14 @@ fn run_specguard_stdin(
     use std::io::Write;
     let mut child = Command::new(env!("CARGO_BIN_EXE_specguard"))
         .current_dir(repo)
-        .args(["--config", "specguard.toml", "--baseline", baseline, "--date", "2026-01-01"])
+        .args([
+            "--config",
+            "specguard.toml",
+            "--baseline",
+            baseline,
+            "--date",
+            "2026-01-01",
+        ])
         .args(sub)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1036,13 +1290,20 @@ fn prompt_json_then_ingest_reproduces_run() {
 
     // 1. Harness renders the shard prompts (no agent).
     let pj = run_specguard(repo, &base, &["prompt", "--json"]);
-    assert!(pj.status.success(), "stderr: {}", String::from_utf8_lossy(&pj.stderr));
+    assert!(
+        pj.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&pj.stderr)
+    );
     let env: serde_json::Value = serde_json::from_slice(&pj.stdout).expect("valid JSON envelope");
     assert_eq!(env["marker"], "<<<SPEC_AUDIT>>>");
     let shards = env["shards"].as_array().expect("shards array");
     assert_eq!(shards.len(), 1, "one in-scope area => one shard");
     let label = shards[0]["label"].as_str().unwrap().to_string();
-    assert!(shards[0]["prompt"].as_str().unwrap().contains("docs/spec.md"));
+    assert!(shards[0]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("docs/spec.md"));
 
     // 2. The plugin would dispatch each prompt to a read-only subagent; here we
     // hand-build the outputs and feed them back via `ingest`.
@@ -1053,15 +1314,25 @@ fn prompt_json_then_ingest_reproduces_run() {
     })
     .to_string();
     let ing = run_specguard_stdin(repo, &base, &["ingest"], &ingest_input);
-    assert!(ing.status.success(), "stderr: {}", String::from_utf8_lossy(&ing.stderr));
+    assert!(
+        ing.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&ing.stderr)
+    );
 
     // Same outcome as `run`: report written, sentinel raised, baseline held.
     let report = fs::read_to_string(repo.join("reports/2026-01-01.md")).unwrap();
     assert!(report.contains("body"));
     assert!(!report.contains("<<<SPEC_AUDIT>>>"), "trailer stripped");
     let sentinel = fs::read_to_string(repo.join(".pending")).unwrap();
-    assert!(sentinel.contains("summary: ingested drift"), "sentinel:\n{sentinel}");
-    assert!(!repo.join("reports/.last-ref").exists(), "findings hold the baseline");
+    assert!(
+        sentinel.contains("summary: ingested drift"),
+        "sentinel:\n{sentinel}"
+    );
+    assert!(
+        !repo.join("reports/.last-ref").exists(),
+        "findings hold the baseline"
+    );
 }
 
 #[test]
@@ -1077,9 +1348,16 @@ fn ingest_missing_shard_output_maps_to_agent_failure() {
 
     // A shard the plugin failed to return -> harness treats it as a failed shard.
     let ing = run_specguard_stdin(repo, &base, &["ingest"], r#"{"shards":[]}"#);
-    assert_eq!(ing.status.code(), Some(4), "missing shard output => EXIT_AGENT_FAILED");
+    assert_eq!(
+        ing.status.code(),
+        Some(4),
+        "missing shard output => EXIT_AGENT_FAILED"
+    );
     let stderr = String::from_utf8_lossy(&ing.stderr);
-    assert!(stderr.contains("no output provided"), "stderr names the gap: {stderr}");
+    assert!(
+        stderr.contains("no output provided"),
+        "stderr names the gap: {stderr}"
+    );
 }
 
 #[test]
@@ -1091,7 +1369,9 @@ fn audit_only_project_never_asked_to_ratify_verify() {
     let base = init_repo(repo);
     seed_src(repo);
     write_ratify_config_with(repo, VALID_TMPL, "");
-    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "ok"]).status.success());
+    assert!(run_specguard(repo, &base, &["accept-prompt", "-m", "ok"])
+        .status
+        .success());
     // Repeated runs stay green with no verify table present.
     assert!(run_specguard(repo, &base, &["run"]).status.success());
     assert!(run_specguard(repo, &base, &["run"]).status.success());

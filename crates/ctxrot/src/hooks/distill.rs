@@ -98,7 +98,8 @@ pub fn run_bg(session_id: &str, transcript_path: &str, cwd: &Path, cfg: &Config)
     if transcript_path.is_empty() {
         return;
     }
-    let turns = transcript::recent_turns(transcript_path, DISTILL_MAX_TURNS, DISTILL_MAX_TURN_CHARS);
+    let turns =
+        transcript::recent_turns(transcript_path, DISTILL_MAX_TURNS, DISTILL_MAX_TURN_CHARS);
     if turns.is_empty() {
         return;
     }
@@ -124,7 +125,10 @@ pub fn run_bg(session_id: &str, transcript_path: &str, cwd: &Path, cfg: &Config)
 
     // Signal the next guard turn to re-inject this note (post-compact recovery).
     let _ = std::fs::create_dir_all(&cfg.state_dir);
-    let _ = std::fs::write(marker_path(cfg, session_id), path.to_string_lossy().as_bytes());
+    let _ = std::fs::write(
+        marker_path(cfg, session_id),
+        path.to_string_lossy().as_bytes(),
+    );
 
     crate::metrics::emit(
         cfg,
@@ -140,7 +144,10 @@ pub fn run_bg(session_id: &str, transcript_path: &str, cwd: &Path, cfg: &Config)
 
 /// Render the bounded transcript + the distill contract into the model prompt.
 fn build_prompt(cwd: &Path, turns: &[Turn]) -> String {
-    let proj = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("project");
+    let proj = cwd
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project");
     let mut s = String::new();
     s.push_str(
         "あなたは会話の蒸留器です。以下は context compaction 直前の会話ログ（直近の抜粋）です。\n\
@@ -155,7 +162,11 @@ fn build_prompt(cwd: &Path, turns: &[Turn]) -> String {
     );
     s.push_str(&format!("project: {proj}\n\n---- 会話ログ ----\n\n"));
     for t in turns {
-        let who = if t.role == "user" { "🧑 user" } else { "🤖 assistant" };
+        let who = if t.role == "user" {
+            "🧑 user"
+        } else {
+            "🤖 assistant"
+        };
         s.push_str(&format!("**{who}:** {}\n\n", t.text.replace('\n', " ")));
     }
     s
@@ -221,8 +232,13 @@ fn finalize_note(cwd: &Path, session_id: &str, raw: &str) -> String {
         }
     }
 
-    let proj = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("project");
-    let iso = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let proj = cwd
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project");
+    let iso = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let mut s = String::new();
     s.push_str("---\n");
     s.push_str("type: ctxrot-distill\n");
@@ -262,7 +278,11 @@ mod tests {
     fn finalize_adds_missing_required_headings() {
         // Model returned only Decisions → Open todos must be appended as a
         // conformant empty section so restore can consume it.
-        let note = finalize_note(Path::new("/tmp/proj"), "sess-x", "## 決定事項 / Decisions\n\n- A を採用\n");
+        let note = finalize_note(
+            Path::new("/tmp/proj"),
+            "sess-x",
+            "## 決定事項 / Decisions\n\n- A を採用\n",
+        );
         assert!(has_section(&note, &["決定事項", "Decisions"]));
         assert!(has_section(&note, &["残課題", "Open todos", "todos"]));
         assert!(super::super::restore::missing_sections(&note).is_empty());

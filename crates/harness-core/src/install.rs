@@ -15,7 +15,8 @@ pub fn load_settings(path: &Path) -> Result<Value> {
     if !path.exists() {
         return Ok(json!({}));
     }
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     if text.trim().is_empty() {
         return Ok(json!({}));
     }
@@ -67,7 +68,10 @@ pub fn group_matches(group: &Value, markers: &[&str]) -> bool {
 /// Drop every group matching `markers` from an event array; returns the cleaned
 /// array (foreign groups preserved).
 pub fn strip_matching(arr: &[Value], markers: &[&str]) -> Vec<Value> {
-    arr.iter().filter(|g| !group_matches(g, markers)).cloned().collect()
+    arr.iter()
+        .filter(|g| !group_matches(g, markers))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -78,7 +82,8 @@ mod tests {
     fn group_matches_any_marker() {
         let g = json!({"hooks":[{"type":"command","command":"/x/ctxrot guard"}]});
         assert!(group_matches(&g, &["ctxrot", "context-rot-guard"]));
-        let legacy = json!({"hooks":[{"type":"command","command":"python3 .../context-rot-guard.py"}]});
+        let legacy =
+            json!({"hooks":[{"type":"command","command":"python3 .../context-rot-guard.py"}]});
         assert!(group_matches(&legacy, &["ctxrot", "context-rot-guard"]));
         let other = json!({"hooks":[{"type":"command","command":"prettier --write"}]});
         assert!(!group_matches(&other, &["ctxrot", "context-rot-guard"]));
@@ -96,7 +101,8 @@ mod tests {
 
     #[test]
     fn load_settings_tolerates_missing_and_empty() {
-        let missing = std::env::temp_dir().join(format!("harness-no-such-{}.json", std::process::id()));
+        let missing =
+            std::env::temp_dir().join(format!("harness-no-such-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&missing);
         assert_eq!(load_settings(&missing).unwrap(), json!({}));
     }

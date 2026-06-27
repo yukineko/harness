@@ -100,8 +100,7 @@ fn save(root: &Path, outcomes: &[Outcome]) -> Result<()> {
     // Write to a temp sibling then rename (mirror the hypothesis store).
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("renaming into {}", path.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
     Ok(())
 }
 
@@ -194,8 +193,13 @@ mod tests {
         assert_eq!(loaded[0], rec);
 
         // a second record gets a monotonic seq and becomes the latest.
-        let rec2 = record(root, &charter(), Verdict::Backward, vec!["errors up".to_string()])
-            .expect("record 2");
+        let rec2 = record(
+            root,
+            &charter(),
+            Verdict::Backward,
+            vec!["errors up".to_string()],
+        )
+        .expect("record 2");
         assert_eq!(rec2.seq, 1);
         assert_eq!(latest(root).expect("latest"), Some(rec2));
     }
@@ -206,8 +210,7 @@ mod tests {
         let root = dir.path();
 
         // all-empty / whitespace-only evidence is refused.
-        let err = record(root, &charter(), Verdict::Forward, vec!["   ".to_string()])
-            .unwrap_err();
+        let err = record(root, &charter(), Verdict::Forward, vec!["   ".to_string()]).unwrap_err();
         assert!(err.to_string().contains("requires measured evidence"));
 
         let err2 = record(root, &charter(), Verdict::Unchanged, vec![]).unwrap_err();

@@ -310,8 +310,30 @@ fn content_text(content: &serde_json::Value) -> String {
 // ── lexical scoring (DESIGN-INTAKE.md §3: topic × fragment overlap, CJK per-char) ──
 
 const STOP: &[&str] = &[
-    "the", "and", "for", "with", "this", "that", "you", "your", "are", "was", "from", "have",
-    "してください", "を", "に", "は", "が", "の", "で", "と", "も", "して", "する", "した",
+    "the",
+    "and",
+    "for",
+    "with",
+    "this",
+    "that",
+    "you",
+    "your",
+    "are",
+    "was",
+    "from",
+    "have",
+    "してください",
+    "を",
+    "に",
+    "は",
+    "が",
+    "の",
+    "で",
+    "と",
+    "も",
+    "して",
+    "する",
+    "した",
 ];
 
 /// Tokenize to a lowercase set: ASCII alphanumeric words (len ≥ 2) plus CJK
@@ -476,17 +498,28 @@ mod tests {
             raw("alpha only", Authority::High, "decision.md"),             // score 1
         ];
         let out = rank(topic, raws, 1, 10);
-        assert_eq!(out.len(), 2, "authority must not drop the lower-authority fragment");
-        assert_eq!(out[0].authority, Authority::High, "High sorts first despite lower score");
+        assert_eq!(
+            out.len(),
+            2,
+            "authority must not drop the lower-authority fragment"
+        );
+        assert_eq!(
+            out[0].authority,
+            Authority::High,
+            "High sorts first despite lower score"
+        );
         assert_eq!(out[1].authority, Authority::Low);
-        assert!(out[1].score > out[0].score, "the Low one is actually more relevant");
+        assert!(
+            out[1].score > out[0].score,
+            "the Low one is actually more relevant"
+        );
     }
 
     #[test]
     fn min_score_drops_only_on_relevance() {
         let topic = "needle";
         let raws = vec![
-            raw("needle present", Authority::Low, "a"),  // score 1
+            raw("needle present", Authority::Low, "a"),    // score 1
             raw("nothing matching", Authority::High, "b"), // score 0 → dropped
         ];
         let out = rank(topic, raws, 1, 10);
@@ -520,7 +553,10 @@ mod tests {
         assert_eq!(extract_prompt(hook).as_deref(), Some("direct prompt"));
 
         // assistant turns and garbage produce nothing.
-        assert_eq!(extract_prompt(r#"{"type":"assistant","message":{"content":"hi"}}"#), None);
+        assert_eq!(
+            extract_prompt(r#"{"type":"assistant","message":{"content":"hi"}}"#),
+            None
+        );
         assert_eq!(extract_prompt("not json at all"), None);
     }
 
@@ -546,7 +582,9 @@ mod tests {
         std::fs::write(docs.join("unrelated.md"), "# Misc\nnothing relevant\n").unwrap();
 
         // transcripts (Low) under <transcripts>/<enc-cwd>/.
-        let tdir = root.join("transcripts").join(encode_cwd(Path::new("/some/cwd")));
+        let tdir = root
+            .join("transcripts")
+            .join(encode_cwd(Path::new("/some/cwd")));
         std::fs::create_dir_all(&tdir).unwrap();
         std::fs::write(
             tdir.join("s.jsonl"),

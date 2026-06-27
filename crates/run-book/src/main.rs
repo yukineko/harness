@@ -209,7 +209,10 @@ fn new(name: &str, description: &str, global: bool, force: bool) -> anyhow::Resu
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{slug}.md"));
     if path.exists() && !force {
-        anyhow::bail!("{} already exists (use --force to overwrite)", path.display());
+        anyhow::bail!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        );
     }
     std::fs::write(&path, scaffold(&slug, description))?;
     println!("wrote {}", path.display());
@@ -235,7 +238,10 @@ fn init() -> anyhow::Result<()> {
     }
     println!("runbook dir ready: {}", dir.display());
     println!("sample: {}", sample.display());
-    println!("Try a prompt containing `!example`, or `!{}` for the index.", cfg.index_token);
+    println!(
+        "Try a prompt containing `!example`, or `!{}` for the index.",
+        cfg.index_token
+    );
     Ok(())
 }
 

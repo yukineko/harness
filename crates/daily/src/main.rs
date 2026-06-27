@@ -14,7 +14,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Parser)]
-#[command(name = "daily", version, about = "Run tasks once per calendar day at SessionStart")]
+#[command(
+    name = "daily",
+    version,
+    about = "Run tasks once per calendar day at SessionStart"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -188,7 +192,10 @@ mod tests {
         // An execution error is a different message and carries the error text.
         let failed = audit_message(&AuditOutcome::Failed("boom".to_string())).unwrap();
         assert!(failed.contains("boom"));
-        assert_ne!(missing, failed, "tool-missing and exec-error must be distinct");
+        assert_ne!(
+            missing, failed,
+            "tool-missing and exec-error must be distinct"
+        );
 
         // Findings carry the summary through.
         let findings = audit_message(&AuditOutcome::Findings("RUSTSEC-0001".to_string())).unwrap();
@@ -197,7 +204,8 @@ mod tests {
 
     #[test]
     fn summarize_picks_error_lines() {
-        let output = "some preamble\nerror[A001]: advisory blah\nwarning: license issue\nignored line";
+        let output =
+            "some preamble\nerror[A001]: advisory blah\nwarning: license issue\nignored line";
         let s = summarize_deny_output(output);
         assert!(s.contains("error") || s.contains("warning"));
     }

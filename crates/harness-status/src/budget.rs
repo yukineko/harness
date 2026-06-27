@@ -17,7 +17,11 @@ pub struct BudgetStatus {
 pub fn read(today: &str) -> BudgetStatus {
     let state_dir = ledger::default_state_dir();
     if !state_dir.join("ledger.json").exists() {
-        return BudgetStatus { today_usd: 0.0, session_count_today: 0, ledger_present: false };
+        return BudgetStatus {
+            today_usd: 0.0,
+            session_count_today: 0,
+            ledger_present: false,
+        };
     }
     let ledger = Ledger::load(&state_dir);
     let day = ledger.days.get(today);

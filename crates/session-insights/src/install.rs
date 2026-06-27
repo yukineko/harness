@@ -95,7 +95,9 @@ pub fn install(dry_run: bool) -> Result<()> {
         return Ok(());
     }
     harness_core::install::write_settings(&settings_path(), &settings)?;
-    println!("\nInstalled PostToolUse + Stop + SessionEnd hooks → {bin} record / stop / sessionend");
+    println!(
+        "\nInstalled PostToolUse + Stop + SessionEnd hooks → {bin} record / stop / sessionend"
+    );
     Ok(())
 }
 

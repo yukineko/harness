@@ -81,7 +81,10 @@ impl LedgerLock {
             return true;
         };
         match meta.modified() {
-            Ok(mtime) => mtime.elapsed().map(|age| age >= STALE_AFTER).unwrap_or(false),
+            Ok(mtime) => mtime
+                .elapsed()
+                .map(|age| age >= STALE_AFTER)
+                .unwrap_or(false),
             Err(_) => false,
         }
     }

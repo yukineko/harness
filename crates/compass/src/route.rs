@@ -169,8 +169,14 @@ fn centrality_cmp(a: &Task, b: &Task, tasks: &[Task]) -> std::cmp::Ordering {
         other => return other.reverse(),
     }
     // 3. earlier input order wins → reverse index comparison.
-    let a_idx = tasks.iter().position(|t| t.id == a.id).unwrap_or(usize::MAX);
-    let b_idx = tasks.iter().position(|t| t.id == b.id).unwrap_or(usize::MAX);
+    let a_idx = tasks
+        .iter()
+        .position(|t| t.id == a.id)
+        .unwrap_or(usize::MAX);
+    let b_idx = tasks
+        .iter()
+        .position(|t| t.id == b.id)
+        .unwrap_or(usize::MAX);
     a_idx.cmp(&b_idx).reverse()
 }
 
@@ -212,7 +218,10 @@ fn right_size_zero_edge(tasks: &[Task]) -> Option<RouteEdge> {
     if tasks.is_empty() {
         return None;
     }
-    let xs = tasks.iter().filter(|t| t.size.as_deref() == Some("xs")).count();
+    let xs = tasks
+        .iter()
+        .filter(|t| t.size.as_deref() == Some("xs"))
+        .count();
     let big = tasks
         .iter()
         .filter(|t| matches!(t.size.as_deref(), Some("l") | Some("xl")))
@@ -363,7 +372,13 @@ mod tests {
         let r = route(&d, &Config::default());
         // Only the chosen central move (t1) goes to condukt; its dependents are
         // NOT pulled in (closure follows deps, not dependents). Siblings parked.
-        assert_eq!(r.to_condukt.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["t1"]);
+        assert_eq!(
+            r.to_condukt
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["t1"]
+        );
         assert_eq!(
             r.parked.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
             vec!["t2", "t3"]

@@ -52,18 +52,32 @@ impl Config {
         let mut cfg = Config::default();
         let path = {
             let p = root.join("difflog.toml");
-            if p.exists() { Some(p) } else {
+            if p.exists() {
+                Some(p)
+            } else {
                 let h = base_dir().join("config.toml");
-                if h.exists() { Some(h) } else { None }
+                if h.exists() {
+                    Some(h)
+                } else {
+                    None
+                }
             }
         };
         if let Some(path) = path {
             if let Ok(text) = std::fs::read_to_string(&path) {
                 if let Ok(fc) = toml::from_str::<FileConfig>(&text) {
-                    if let Some(v) = fc.enabled { cfg.enabled = v; }
-                    if let Some(v) = fc.log_dir { cfg.log_dir = expand_tilde(&v); }
-                    if let Some(v) = fc.diff_body_limit { cfg.diff_body_limit = v; }
-                    if !fc.exclude_globs.is_empty() { cfg.exclude_globs = fc.exclude_globs; }
+                    if let Some(v) = fc.enabled {
+                        cfg.enabled = v;
+                    }
+                    if let Some(v) = fc.log_dir {
+                        cfg.log_dir = expand_tilde(&v);
+                    }
+                    if let Some(v) = fc.diff_body_limit {
+                        cfg.diff_body_limit = v;
+                    }
+                    if !fc.exclude_globs.is_empty() {
+                        cfg.exclude_globs = fc.exclude_globs;
+                    }
                 }
             }
         }

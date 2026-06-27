@@ -62,10 +62,20 @@ pub fn render(
 }
 
 /// Render all prompts for a ratified spec, returning `(req_id, prompt)` pairs.
-pub fn render_all(template: &str, project_name: &str, spec: &Spec, date: &str) -> Vec<(String, String)> {
+pub fn render_all(
+    template: &str,
+    project_name: &str,
+    spec: &Spec,
+    date: &str,
+) -> Vec<(String, String)> {
     spec.requirements
         .iter()
-        .map(|r| (r.id.clone(), render(template, project_name, spec.spec.id.as_str(), r, date)))
+        .map(|r| {
+            (
+                r.id.clone(),
+                render(template, project_name, spec.spec.id.as_str(), r, date),
+            )
+        })
         .collect()
 }
 

@@ -187,7 +187,9 @@ fn find_transcript(session_id: &str) -> String {
     if session_id.is_empty() {
         return String::new();
     }
-    let projects = harness_core::config::home().join(".claude").join("projects");
+    let projects = harness_core::config::home()
+        .join(".claude")
+        .join("projects");
     let Ok(entries) = std::fs::read_dir(&projects) else {
         return String::new();
     };

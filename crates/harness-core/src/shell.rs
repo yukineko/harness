@@ -43,7 +43,10 @@ mod tests {
     #[test]
     fn command_runs_a_trivial_line() {
         // `exit 0` on sh, also valid on cmd. Just confirm it spawns and succeeds.
-        let ok = command("exit 0").status().map(|s| s.success()).unwrap_or(false);
+        let ok = command("exit 0")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         assert!(ok);
     }
 }

@@ -163,8 +163,13 @@ mod tests {
         };
 
         // record one outcome, then mirror what `gap_command` does.
-        outcome::record(root, &charter, Verdict::Forward, vec!["p95 fell 20%".to_string()])
-            .expect("record");
+        outcome::record(
+            root,
+            &charter,
+            Verdict::Forward,
+            vec!["p95 fell 20%".to_string()],
+        )
+        .expect("record");
 
         let mut inputs = assemble_gap_inputs(&charter, &Bundle { fragments: vec![] });
         inputs.last_outcome = outcome::latest(root).expect("latest");

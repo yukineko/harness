@@ -72,9 +72,8 @@ fn install_hook(target_dir: &Path) -> Result<()> {
     let mut root: serde_json::Value = if settings_path.exists() {
         let text = std::fs::read_to_string(&settings_path)
             .with_context(|| format!("reading {}", settings_path.display()))?;
-        serde_json::from_str(&text).with_context(|| {
-            format!("parsing {} (must be valid JSON)", settings_path.display())
-        })?
+        serde_json::from_str(&text)
+            .with_context(|| format!("parsing {} (must be valid JSON)", settings_path.display()))?
     } else {
         serde_json::json!({})
     };

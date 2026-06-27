@@ -12,12 +12,15 @@ use crate::config::Config;
 /// Run at Stop. If no progress file exists yet, suggest creating one.
 /// If it does exist, ask the LLM to keep it current.
 pub fn on_stop(input: &HookInput, cfg: &Config) -> Result<()> {
-    let cwd = if input.cwd.is_empty() { "." } else { &input.cwd };
+    let cwd = if input.cwd.is_empty() {
+        "."
+    } else {
+        &input.cwd
+    };
     let path = cfg.resolve_progress_path(cwd);
 
     let (verb, current_block) = if path.exists() {
-        let content = crate::progress::read_file(&path, 0)
-            .unwrap_or_else(|| "(empty)".to_string());
+        let content = crate::progress::read_file(&path, 0).unwrap_or_else(|| "(empty)".to_string());
         (
             "update",
             format!(

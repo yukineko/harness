@@ -14,7 +14,9 @@ use crate::state::{self, SessionState};
 /// SessionStart: snapshot HEAD so we know where the session began.
 pub fn on_session_start(input: &HookInput, cfg: &Config) {
     let cwd = input.cwd_or_current();
-    let Some(sha) = git::head_sha(&cwd) else { return };
+    let Some(sha) = git::head_sha(&cwd) else {
+        return;
+    };
 
     let started_at = {
         use chrono::Utc;
@@ -33,7 +35,9 @@ pub fn on_session_start(input: &HookInput, cfg: &Config) {
 /// SessionEnd: generate and write the diff-log.
 pub fn on_session_end(input: &HookInput, cfg: &Config) {
     let cwd = input.cwd_or_current();
-    let Some(st) = state::load(&cfg.log_dir, &input.session_id) else { return };
+    let Some(st) = state::load(&cfg.log_dir, &input.session_id) else {
+        return;
+    };
 
     let stat = git::diff_stat(&cwd, &st.start_sha);
     if stat.trim().is_empty() {
@@ -82,19 +86,35 @@ struct DiffLogCtx<'a> {
 }
 
 fn render_log(ctx: DiffLogCtx) -> String {
-    let files_added: Vec<_> = ctx.name_status.iter()
-        .filter(|(s, _)| *s == 'A').map(|(_, p)| p.as_str()).collect();
-    let files_modified: Vec<_> = ctx.name_status.iter()
-        .filter(|(s, _)| *s == 'M').map(|(_, p)| p.as_str()).collect();
-    let files_deleted: Vec<_> = ctx.name_status.iter()
-        .filter(|(s, _)| *s == 'D').map(|(_, p)| p.as_str()).collect();
+    let files_added: Vec<_> = ctx
+        .name_status
+        .iter()
+        .filter(|(s, _)| *s == 'A')
+        .map(|(_, p)| p.as_str())
+        .collect();
+    let files_modified: Vec<_> = ctx
+        .name_status
+        .iter()
+        .filter(|(s, _)| *s == 'M')
+        .map(|(_, p)| p.as_str())
+        .collect();
+    let files_deleted: Vec<_> = ctx
+        .name_status
+        .iter()
+        .filter(|(s, _)| *s == 'D')
+        .map(|(_, p)| p.as_str())
+        .collect();
 
     let mut out = String::new();
     out.push_str(&format!("# difflog — {}\n\n", ctx.project));
     out.push_str(&format!("- **session**: `{}`\n", ctx.session_id));
     out.push_str(&format!("- **started**: {}\n", ctx.started_at));
     out.push_str(&format!("- **ended**:   {}\n", ctx.ended_at));
-    out.push_str(&format!("- **range**:   `{}..{}`\n\n", &ctx.start_sha[..8.min(ctx.start_sha.len())], &ctx.head_sha[..8.min(ctx.head_sha.len())]));
+    out.push_str(&format!(
+        "- **range**:   `{}..{}`\n\n",
+        &ctx.start_sha[..8.min(ctx.start_sha.len())],
+        &ctx.head_sha[..8.min(ctx.head_sha.len())]
+    ));
 
     if !ctx.commits.trim().is_empty() {
         out.push_str("## Commits\n\n```\n");
@@ -105,17 +125,23 @@ fn render_log(ctx: DiffLogCtx) -> String {
     out.push_str("## Files changed\n\n");
     if !files_added.is_empty() {
         out.push_str(&format!("**Added** ({})\n", files_added.len()));
-        for f in &files_added { out.push_str(&format!("- `{f}`\n")); }
+        for f in &files_added {
+            out.push_str(&format!("- `{f}`\n"));
+        }
         out.push('\n');
     }
     if !files_modified.is_empty() {
         out.push_str(&format!("**Modified** ({})\n", files_modified.len()));
-        for f in &files_modified { out.push_str(&format!("- `{f}`\n")); }
+        for f in &files_modified {
+            out.push_str(&format!("- `{f}`\n"));
+        }
         out.push('\n');
     }
     if !files_deleted.is_empty() {
         out.push_str(&format!("**Deleted** ({})\n", files_deleted.len()));
-        for f in &files_deleted { out.push_str(&format!("- `{f}`\n")); }
+        for f in &files_deleted {
+            out.push_str(&format!("- `{f}`\n"));
+        }
         out.push('\n');
     }
 
@@ -134,7 +160,8 @@ fn render_log(ctx: DiffLogCtx) -> String {
 
 fn write_log(log_dir: &Path, date: &str, session_id: &str, content: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(log_dir)?;
-    let safe_id: String = session_id.chars()
+    let safe_id: String = session_id
+        .chars()
         .take(8)
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect();

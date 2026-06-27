@@ -217,7 +217,11 @@ fn render_note(
 
     s.push_str("## Raw 抽出（直近の会話）\n\n");
     for t in turns {
-        let who = if t.role == "user" { "🧑 user" } else { "🤖 assistant" };
+        let who = if t.role == "user" {
+            "🧑 user"
+        } else {
+            "🤖 assistant"
+        };
         s.push_str(&format!("**{who}:** {}\n\n", t.text.replace('\n', " ")));
     }
     s
@@ -273,18 +277,24 @@ mod tests {
         };
 
         let p1 = write(&input, &cfg, "band-80%").expect("first preemptive writes");
-        assert!(std::fs::read_to_string(&p1).unwrap().contains("trigger: band-80%"));
+        assert!(std::fs::read_to_string(&p1)
+            .unwrap()
+            .contains("trigger: band-80%"));
 
         // Second preemptive within the window → coalesced: same path, no new file,
         // original content untouched.
         let p2 = write(&input, &cfg, "band-85%").expect("coalesced path returned");
         assert_eq!(p1, p2);
-        assert!(std::fs::read_to_string(&p2).unwrap().contains("trigger: band-80%"));
+        assert!(std::fs::read_to_string(&p2)
+            .unwrap()
+            .contains("trigger: band-80%"));
 
         // PreCompact is never coalesced — it writes a fresh note (here onto the
         // same per-second slug, so content flips to the precompact trigger).
         let p3 = write(&input, &cfg, "precompact").expect("precompact always writes");
-        assert!(std::fs::read_to_string(&p3).unwrap().contains("trigger: precompact"));
+        assert!(std::fs::read_to_string(&p3)
+            .unwrap()
+            .contains("trigger: precompact"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

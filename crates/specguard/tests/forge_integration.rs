@@ -80,21 +80,40 @@ fn rigor_pass_writes_draft_no_sentinel() {
 
     let out = forge(
         repo,
-        &["draft", "--id", "login", "--title", "ログイン制限", "--req", "req.md",
-          "--canon", "docs/auth.md#rate-limit"],
+        &[
+            "draft",
+            "--id",
+            "login",
+            "--title",
+            "ログイン制限",
+            "--req",
+            "req.md",
+            "--canon",
+            "docs/auth.md#rate-limit",
+        ],
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let spec = fs::read_to_string(repo.join("specs/login.toml")).unwrap();
     assert!(spec.contains("status = \"draft\""), "draft status:\n{spec}");
     assert!(spec.contains("id = \"login\""));
-    assert!(spec.contains("provenance_commit = "), "pinned to canon commit");
+    assert!(
+        spec.contains("provenance_commit = "),
+        "pinned to canon commit"
+    );
     assert!(spec.contains("[[requirement]]"));
     assert!(spec.contains("Retry-After"));
     // The trailer must not leak into the persisted spec.
     assert!(!spec.contains("<<<SPEC_DRAFT>>>"));
     // Rigor passed cleanly -> no escalation sentinel.
-    assert!(!repo.join(".forge-pending").exists(), "no sentinel on clean rigor");
+    assert!(
+        !repo.join(".forge-pending").exists(),
+        "no sentinel on clean rigor"
+    );
 }
 
 /// What a REAL model actually emits (the staged-C PoC surfaced this): a reasoning
@@ -132,21 +151,45 @@ fn rigor_pass_extracts_toml_from_prose_and_fence() {
 
     let out = forge(
         repo,
-        &["draft", "--id", "clamp", "--req", "req.md", "--canon", "canon/clamp.md"],
+        &[
+            "draft",
+            "--id",
+            "clamp",
+            "--req",
+            "req.md",
+            "--canon",
+            "canon/clamp.md",
+        ],
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let spec = fs::read_to_string(repo.join("specs/clamp.toml")).unwrap();
-    assert!(spec.contains("status = \"draft\""), "draft written:\n{spec}");
+    assert!(
+        spec.contains("status = \"draft\""),
+        "draft written:\n{spec}"
+    );
     assert!(spec.contains("id = \"R1\""));
     assert!(spec.contains("clamp_score"));
     assert!(spec.contains("falsifiable = true"));
     // The extraction worked, not just "didn't crash": neither the prose preamble
     // nor the fence markers leak into the persisted spec.
-    assert!(!spec.contains("読みました"), "prose preamble must not leak:\n{spec}");
-    assert!(!spec.contains("```"), "fence markers must not leak:\n{spec}");
+    assert!(
+        !spec.contains("読みました"),
+        "prose preamble must not leak:\n{spec}"
+    );
+    assert!(
+        !spec.contains("```"),
+        "fence markers must not leak:\n{spec}"
+    );
     assert!(!spec.contains("<<<SPEC_DRAFT>>>"), "trailer must not leak");
-    assert!(!repo.join(".forge-pending").exists(), "clean rigor -> no sentinel");
+    assert!(
+        !repo.join(".forge-pending").exists(),
+        "clean rigor -> no sentinel"
+    );
 }
 
 #[test]
@@ -162,15 +205,28 @@ fn rigor_fail_raises_sentinel_and_writes_no_draft() {
     fs::write(repo.join("req.md"), "ログインを制限したい\n").unwrap();
 
     let out = forge(repo, &["draft", "--id", "login", "--req", "req.md"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // HOTL: no draft fabricated.
-    assert!(!repo.join("specs/login.toml").exists(), "no draft on rigor fail");
+    assert!(
+        !repo.join("specs/login.toml").exists(),
+        "no draft on rigor fail"
+    );
     // Sentinel raised with the request body for the human to pull.
     let sentinel = fs::read_to_string(repo.join(".forge-pending")).unwrap();
     assert!(sentinel.contains("spec: login"));
-    assert!(sentinel.contains("summary: 閾値が canon に未定義 (G2 沈黙)"), "sentinel:\n{sentinel}");
-    assert!(sentinel.contains("docs/auth.md に rate-limit"), "request body carried:\n{sentinel}");
+    assert!(
+        sentinel.contains("summary: 閾値が canon に未定義 (G2 沈黙)"),
+        "sentinel:\n{sentinel}"
+    );
+    assert!(
+        sentinel.contains("docs/auth.md に rate-limit"),
+        "request body carried:\n{sentinel}"
+    );
 }
 
 #[test]
@@ -185,10 +241,20 @@ fn harness_rejects_overclaimed_rigor() {
     fs::write(repo.join("req.md"), "速くしたい\n").unwrap();
 
     let out = forge(repo, &["draft", "--id", "x", "--req", "req.md"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(!repo.join("specs/x.toml").exists(), "no draft persisted for over-claim");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !repo.join("specs/x.toml").exists(),
+        "no draft persisted for over-claim"
+    );
     let sentinel = fs::read_to_string(repo.join(".forge-pending")).unwrap();
-    assert!(sentinel.contains("過大主張") || sentinel.contains("契約"), "sentinel:\n{sentinel}");
+    assert!(
+        sentinel.contains("過大主張") || sentinel.contains("契約"),
+        "sentinel:\n{sentinel}"
+    );
 }
 
 #[test]
@@ -227,7 +293,10 @@ sentinel = ".forge-pending"
     let out = forge(repo, &["draft", "--id", "x", "--req", "req.md"]);
     assert_eq!(out.status.code(), Some(4));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("code 7"), "true agent code on stderr: {stderr}");
+    assert!(
+        stderr.contains("code 7"),
+        "true agent code on stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -237,11 +306,30 @@ fn ratify_promotes_draft_and_pins_consent() {
     init_repo(repo);
     write_config(repo, GOOD_DRAFT);
     fs::write(repo.join("req.md"), "x\n").unwrap();
-    assert!(forge(repo, &["draft", "--id", "login", "--req", "req.md",
-                          "--canon", "docs/auth.md#rate-limit"]).status.success());
+    assert!(forge(
+        repo,
+        &[
+            "draft",
+            "--id",
+            "login",
+            "--req",
+            "req.md",
+            "--canon",
+            "docs/auth.md#rate-limit"
+        ]
+    )
+    .status
+    .success());
 
-    let out = forge(repo, &["ratify", "--id", "login", "-m", "受け入れ条件に合意"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = forge(
+        repo,
+        &["ratify", "--id", "login", "-m", "受け入れ条件に合意"],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let spec = fs::read_to_string(repo.join("specs/login.toml")).unwrap();
     assert!(spec.contains("status = \"ratified\""), "promoted:\n{spec}");
     assert!(spec.contains("[spec.ratification]"));
@@ -257,8 +345,20 @@ fn ratify_requires_reason() {
     init_repo(repo);
     write_config(repo, GOOD_DRAFT);
     fs::write(repo.join("req.md"), "x\n").unwrap();
-    assert!(forge(repo, &["draft", "--id", "login", "--req", "req.md",
-                          "--canon", "docs/auth.md#rate-limit"]).status.success());
+    assert!(forge(
+        repo,
+        &[
+            "draft",
+            "--id",
+            "login",
+            "--req",
+            "req.md",
+            "--canon",
+            "docs/auth.md#rate-limit"
+        ]
+    )
+    .status
+    .success());
 
     let out = forge(repo, &["ratify", "--id", "login", "-m", "   "]);
     assert_eq!(out.status.code(), Some(2), "blank reason rejected");
@@ -282,8 +382,18 @@ fn prompt_subcommand_renders_without_agent() {
     write_config(repo, "unused");
     fs::write(repo.join("req.md"), "ログインを制限したい\n").unwrap();
 
-    let out = forge(repo, &["prompt", "--id", "login", "--req", "req.md",
-                            "--canon", "docs/auth.md#rate-limit"]);
+    let out = forge(
+        repo,
+        &[
+            "prompt",
+            "--id",
+            "login",
+            "--req",
+            "req.md",
+            "--canon",
+            "docs/auth.md#rate-limit",
+        ],
+    );
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Demo"));
@@ -303,7 +413,9 @@ fn ack_clears_escalation_sentinel() {
         "不足。\n\n<<<SPEC_DRAFT>>>\nrigor: fail\nneeds_user: yes\nsummary: 不足",
     );
     fs::write(repo.join("req.md"), "x\n").unwrap();
-    assert!(forge(repo, &["draft", "--id", "login", "--req", "req.md"]).status.success());
+    assert!(forge(repo, &["draft", "--id", "login", "--req", "req.md"])
+        .status
+        .success());
     assert!(repo.join(".forge-pending").exists(), "sentinel raised");
 
     assert!(forge(repo, &["ack"]).status.success());

@@ -24,13 +24,35 @@ pub struct Decision {
 }
 
 const DESIGN_KW: &[&str] = &[
-    "design", "architecture", "refactor", "migrate", "migration", "schema",
-    "security", "auth", "concurren", "protocol", "algorithm", "crypto", "race",
+    "design",
+    "architecture",
+    "refactor",
+    "migrate",
+    "migration",
+    "schema",
+    "security",
+    "auth",
+    "concurren",
+    "protocol",
+    "algorithm",
+    "crypto",
+    "race",
     "performance",
 ];
 const TRIVIAL_KW: &[&str] = &[
-    "rename", "typo", "format", "comment", "doc", "docs", "readme", "whitespace",
-    "lint", "bump", "copy", "label", "wording",
+    "rename",
+    "typo",
+    "format",
+    "comment",
+    "doc",
+    "docs",
+    "readme",
+    "whitespace",
+    "lint",
+    "bump",
+    "copy",
+    "label",
+    "wording",
 ];
 
 /// Cold-start model guess from task text + file count (mirrors the interpreter's
@@ -71,7 +93,10 @@ struct ModelStat {
 fn aggregate(neighbors: &[Neighbor]) -> BTreeMap<String, ModelStat> {
     let mut m: BTreeMap<String, ModelStat> = BTreeMap::new();
     for n in neighbors {
-        let s = m.entry(n.ep.model.clone()).or_insert(ModelStat { count: 0, passes: 0 });
+        let s = m.entry(n.ep.model.clone()).or_insert(ModelStat {
+            count: 0,
+            passes: 0,
+        });
         s.count += 1;
         if n.ep.pass {
             s.passes += 1;
@@ -139,7 +164,12 @@ pub fn decide(
                     min_samples
                 )
             };
-            (p.to_string(), "prior", "low", format!("{why} -> heuristic prior: {p}"))
+            (
+                p.to_string(),
+                "prior",
+                "low",
+                format!("{why} -> heuristic prior: {p}"),
+            )
         }
     };
 
@@ -182,7 +212,10 @@ pub fn decide_bandit(
 
     let stats = aggregate(neighbors);
     let posterior = |tier: &str| -> (f64, f64, usize) {
-        let (count, passes) = stats.get(tier).map(|s| (s.count, s.passes)).unwrap_or((0, 0));
+        let (count, passes) = stats
+            .get(tier)
+            .map(|s| (s.count, s.passes))
+            .unwrap_or((0, 0));
         let a = 1.0 + passes as f64;
         let b = 1.0 + (count - passes) as f64;
         let mean = a / (a + b);
@@ -224,11 +257,19 @@ pub fn decide_bandit(
                     t.to_string(),
                     "bandit",
                     "low",
-                    format!("no tier sampled the bar → exploit best mean {:.0}% ({t})", mean * 100.0),
+                    format!(
+                        "no tier sampled the bar → exploit best mean {:.0}% ({t})",
+                        mean * 100.0
+                    ),
                 ),
                 None => {
                     let p = prior_model(title, files.len());
-                    (p.to_string(), "prior", "low", format!("no history → prior {p}"))
+                    (
+                        p.to_string(),
+                        "prior",
+                        "low",
+                        format!("no history → prior {p}"),
+                    )
                 }
             }
         }
@@ -287,7 +328,12 @@ mod tests {
     #[test]
     fn learned_picks_cheapest_that_clears() {
         // haiku passes 3/3 on similar tasks → choose haiku even if sonnet also passes.
-        let neighbors = vec![nb("haiku", true), nb("haiku", true), nb("haiku", true), nb("sonnet", true)];
+        let neighbors = vec![
+            nb("haiku", true),
+            nb("haiku", true),
+            nb("haiku", true),
+            nb("sonnet", true),
+        ];
         let d = decide("implement endpoint", &[], "parallel", &neighbors, 0.7, 2);
         assert_eq!(d.worker_model, "haiku");
         assert_eq!(d.basis, "learned");
@@ -296,7 +342,12 @@ mod tests {
     #[test]
     fn learned_escalates_when_cheap_fails() {
         // haiku fails 0/2, sonnet passes 2/2 → choose sonnet.
-        let neighbors = vec![nb("haiku", false), nb("haiku", false), nb("sonnet", true), nb("sonnet", true)];
+        let neighbors = vec![
+            nb("haiku", false),
+            nb("haiku", false),
+            nb("sonnet", true),
+            nb("sonnet", true),
+        ];
         let d = decide("implement endpoint", &[], "parallel", &neighbors, 0.7, 2);
         assert_eq!(d.worker_model, "sonnet");
         assert_eq!(d.basis, "learned");
@@ -306,7 +357,14 @@ mod tests {
     fn too_few_samples_falls_back_to_prior() {
         // only one haiku pass — below min_samples=2 → prior, not learned.
         let neighbors = vec![nb("haiku", true)];
-        let d = decide("tweak something ordinary", &[], "parallel", &neighbors, 0.7, 2);
+        let d = decide(
+            "tweak something ordinary",
+            &[],
+            "parallel",
+            &neighbors,
+            0.7,
+            2,
+        );
         assert_eq!(d.basis, "prior");
     }
 
@@ -316,7 +374,15 @@ mod tests {
         let mut m: BTreeMap<String, usize> = BTreeMap::new();
         for i in 0..iters {
             let mut rng = Rng::new(i + 1);
-            let d = decide_bandit("implement an endpoint", &[], "parallel", neighbors, 0.7, 2, &mut rng);
+            let d = decide_bandit(
+                "implement an endpoint",
+                &[],
+                "parallel",
+                neighbors,
+                0.7,
+                2,
+                &mut rng,
+            );
             *m.entry(d.worker_model).or_insert(0) += 1;
         }
         m
@@ -325,30 +391,59 @@ mod tests {
     #[test]
     fn bandit_exploits_strong_history() {
         // haiku passes 5/5 → it should dominate.
-        let neighbors = vec![nb("haiku", true), nb("haiku", true), nb("haiku", true), nb("haiku", true), nb("haiku", true)];
+        let neighbors = vec![
+            nb("haiku", true),
+            nb("haiku", true),
+            nb("haiku", true),
+            nb("haiku", true),
+            nb("haiku", true),
+        ];
         let t = tally_picks(&neighbors, 300);
-        assert!(t.get("haiku").copied().unwrap_or(0) > 230, "haiku picks: {t:?}");
+        assert!(
+            t.get("haiku").copied().unwrap_or(0) > 230,
+            "haiku picks: {t:?}"
+        );
     }
 
     #[test]
     fn bandit_explores_untested_cheaper_tier() {
         // sonnet has a track record; haiku is untested. The bandit must still try
         // the cheaper haiku sometimes (exploration), while favouring sonnet.
-        let neighbors = vec![nb("sonnet", true), nb("sonnet", true), nb("sonnet", true), nb("sonnet", true)];
+        let neighbors = vec![
+            nb("sonnet", true),
+            nb("sonnet", true),
+            nb("sonnet", true),
+            nb("sonnet", true),
+        ];
         let t = tally_picks(&neighbors, 300);
-        assert!(t.get("haiku").copied().unwrap_or(0) > 20, "expected some haiku exploration: {t:?}");
-        assert!(t.get("sonnet").copied().unwrap_or(0) > t.get("opus").copied().unwrap_or(0), "{t:?}");
+        assert!(
+            t.get("haiku").copied().unwrap_or(0) > 20,
+            "expected some haiku exploration: {t:?}"
+        );
+        assert!(
+            t.get("sonnet").copied().unwrap_or(0) > t.get("opus").copied().unwrap_or(0),
+            "{t:?}"
+        );
     }
 
     #[test]
     fn bandit_avoids_failing_cheap_tier() {
         // haiku fails 0/4, sonnet passes 4/4 → haiku should rarely be chosen.
         let neighbors = vec![
-            nb("haiku", false), nb("haiku", false), nb("haiku", false), nb("haiku", false),
-            nb("sonnet", true), nb("sonnet", true), nb("sonnet", true), nb("sonnet", true),
+            nb("haiku", false),
+            nb("haiku", false),
+            nb("haiku", false),
+            nb("haiku", false),
+            nb("sonnet", true),
+            nb("sonnet", true),
+            nb("sonnet", true),
+            nb("sonnet", true),
         ];
         let t = tally_picks(&neighbors, 300);
-        assert!(t.get("haiku").copied().unwrap_or(0) < 50, "haiku over-chosen: {t:?}");
+        assert!(
+            t.get("haiku").copied().unwrap_or(0) < 50,
+            "haiku over-chosen: {t:?}"
+        );
         assert!(t.get("sonnet").copied().unwrap_or(0) > 150, "{t:?}");
     }
 

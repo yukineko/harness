@@ -144,7 +144,11 @@ pub fn render(records: &[SessionRecord], overrides: &[PriceOverride]) -> String 
     // --- by project ---
     out.push_str("\nプロジェクト別\n");
     let mut projects: Vec<_> = by_project.into_iter().collect();
-    projects.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
+    projects.sort_by(|a, b| {
+        b.1 .0
+            .partial_cmp(&a.1 .0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     for (name, (cost, toks, sessions)) in projects.iter().take(15) {
         out.push_str(&format!(
             "  {:<24} {:>9}  {:>8}  {} sess\n",
@@ -158,7 +162,11 @@ pub fn render(records: &[SessionRecord], overrides: &[PriceOverride]) -> String 
     // --- by model ---
     out.push_str("\nモデル別\n");
     let mut models: Vec<_> = by_model.into_iter().collect();
-    models.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
+    models.sort_by(|a, b| {
+        b.1 .0
+            .partial_cmp(&a.1 .0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     for (name, (cost, u)) in models.iter() {
         out.push_str(&format!(
             "  {:<24} {:>9}  in {} / out {} / cache r {} w {} ({} hit)\n",
@@ -176,7 +184,11 @@ pub fn render(records: &[SessionRecord], overrides: &[PriceOverride]) -> String 
     if !by_agent.is_empty() {
         out.push_str("\nエージェント別 (main vs sub-agent)\n");
         let mut agents: Vec<_> = by_agent.into_iter().collect();
-        agents.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
+        agents.sort_by(|a, b| {
+            b.1 .0
+                .partial_cmp(&a.1 .0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         for (name, (cost, toks, turns)) in agents.iter() {
             out.push_str(&format!(
                 "  {:<12} {:>9}  {:>8}  {} turns\n",
@@ -265,17 +277,35 @@ mod tests {
         };
         rec.models.insert(
             "claude-opus-4-8".to_string(),
-            Usage { input: 150, output: 150, ..Default::default() },
+            Usage {
+                input: 150,
+                output: 150,
+                ..Default::default()
+            },
         );
-        let mut main = AgentUsage { turns: 1, ..Default::default() };
+        let mut main = AgentUsage {
+            turns: 1,
+            ..Default::default()
+        };
         main.models.insert(
             "claude-opus-4-8".to_string(),
-            Usage { input: 100, output: 100, ..Default::default() },
+            Usage {
+                input: 100,
+                output: 100,
+                ..Default::default()
+            },
         );
-        let mut sub = AgentUsage { turns: 1, ..Default::default() };
+        let mut sub = AgentUsage {
+            turns: 1,
+            ..Default::default()
+        };
         sub.models.insert(
             "claude-opus-4-8".to_string(),
-            Usage { input: 50, output: 50, ..Default::default() },
+            Usage {
+                input: 50,
+                output: 50,
+                ..Default::default()
+            },
         );
         rec.agents.insert("main".to_string(), main);
         rec.agents.insert("sub-agent".to_string(), sub);

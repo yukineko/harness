@@ -17,7 +17,9 @@ use serde_json::{json, Value};
 
 /// ISO-8601 local timestamp with offset, e.g. `2026-06-22T13:24:05+09:00`.
 pub fn now_iso() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string()
 }
 
 /// Append one event line `{ts, session, event, ...extra}` to `sink`. `extra` must
@@ -38,7 +40,11 @@ pub fn emit(sink: &Path, session: &str, event: &str, extra: Value) {
     if let Some(parent) = sink.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(sink) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(sink)
+    {
         let _ = writeln!(f, "{line}");
     }
 }
@@ -54,7 +60,12 @@ mod tests {
             .join("metrics.jsonl");
         let _ = std::fs::remove_file(&sink);
 
-        emit(&sink, "S1", "budget", json!({"est_tokens": 100_000, "band": 1}));
+        emit(
+            &sink,
+            "S1",
+            "budget",
+            json!({"est_tokens": 100_000, "band": 1}),
+        );
         emit(&sink, "S1", "rescue", json!({"note_bytes": 2048}));
 
         let text = std::fs::read_to_string(&sink).unwrap();

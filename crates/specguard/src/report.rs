@@ -75,9 +75,8 @@ pub fn write_sentinel(
     } else {
         summary.trim()
     };
-    let body = format!(
-        "date: {date}\nreport: {report_rel}\nsummary: {summary}\nraised_at: {raised_at}\n"
-    );
+    let body =
+        format!("date: {date}\nreport: {report_rel}\nsummary: {summary}\nraised_at: {raised_at}\n");
     std::fs::write(&paths.sentinel, body)
         .with_context(|| format!("writing sentinel {}", paths.sentinel.display()))?;
     Ok(())
@@ -128,10 +127,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = paths(&cfg(), tmp.path(), "2026-06-17");
         write_report(&p, "# body").unwrap();
-        assert_eq!(
-            fs::read_to_string(&p.report).unwrap().trim_end(),
-            "# body"
-        );
+        assert_eq!(fs::read_to_string(&p.report).unwrap().trim_end(), "# body");
         // Report written, but baseline not advanced until the separate call.
         assert_eq!(read_last_ref(&p), None);
         advance_baseline(&p, "deadbeef").unwrap();
@@ -142,7 +138,14 @@ mod tests {
     fn sentinel_has_expected_fields() {
         let tmp = tempfile::tempdir().unwrap();
         let p = paths(&cfg(), tmp.path(), "2026-06-17");
-        write_sentinel(&p, "2026-06-17", "reports/spec-audit/2026-06-17.md", "fix X", "abc123").unwrap();
+        write_sentinel(
+            &p,
+            "2026-06-17",
+            "reports/spec-audit/2026-06-17.md",
+            "fix X",
+            "abc123",
+        )
+        .unwrap();
         let s = fs::read_to_string(&p.sentinel).unwrap();
         assert!(s.contains("date: 2026-06-17"));
         assert!(s.contains("report: reports/spec-audit/2026-06-17.md"));
@@ -155,7 +158,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = paths(&cfg(), tmp.path(), "2026-06-17");
         write_sentinel(&p, "2026-06-17", "r.md", "   ", "deadbeef").unwrap();
-        assert!(fs::read_to_string(&p.sentinel).unwrap().contains("(要約なし)"));
+        assert!(fs::read_to_string(&p.sentinel)
+            .unwrap()
+            .contains("(要約なし)"));
     }
 
     #[test]

@@ -57,7 +57,9 @@ impl Config {
 }
 
 pub fn disabled_env() -> bool {
-    std::env::var("TASKPROG_DISABLED").map(|v| v == "1" || v == "true").unwrap_or(false)
+    std::env::var("TASKPROG_DISABLED")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
 }
 
 pub fn init_config(target: &str) -> Result<()> {

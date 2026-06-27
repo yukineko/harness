@@ -160,7 +160,10 @@ fn is_url(tok: &str) -> bool {
 fn strip_token(tok: &str) -> &str {
     // Trim surrounding quotes/brackets but keep ':' so "path:line" survives.
     tok.trim_matches(|c: char| {
-        matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';')
+        matches!(
+            c,
+            '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';'
+        )
     })
     .trim_end_matches(['.', ',', ';'])
 }
@@ -378,7 +381,13 @@ fn check_distilled(input: &HookInput, cfg: &Config) -> Option<String> {
 /// Shared with `distill` so the async-distill marker keys on the same name.
 pub(crate) fn safe_session(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -432,7 +441,9 @@ fn check_reanchor(input: &HookInput, cfg: &Config) -> Option<String> {
     // floor), so it freezes below the floor and resumes after a /compact-driven
     // dip — re-fireable, never a one-way ratchet.
     let _ = std::fs::create_dir_all(&cfg.state_dir);
-    let anchor_file = cfg.state_dir.join(format!("{}.anchor", safe_session(&input.session_id)));
+    let anchor_file = cfg
+        .state_dir
+        .join(format!("{}.anchor", safe_session(&input.session_id)));
     let cooldown: u64 = std::fs::read_to_string(&anchor_file)
         .ok()
         .and_then(|s| s.trim().parse().ok())
@@ -445,7 +456,8 @@ fn check_reanchor(input: &HookInput, cfg: &Config) -> Option<String> {
     // Only re-surface what THIS session already committed to its own note; never
     // a sibling/fallback note (that's restore's job at SessionStart).
     let cwd = input.cwd_or_current();
-    let note = Store::new(cfg.store_dir.clone()).latest_note_for_session(&cwd, &input.session_id)?;
+    let note =
+        Store::new(cfg.store_dir.clone()).latest_note_for_session(&cwd, &input.session_id)?;
     let text = std::fs::read_to_string(&note).ok()?;
 
     let decisions = crate::hooks::restore::extract_section(&text, &["決定事項", "Decisions"])
@@ -461,7 +473,9 @@ fn check_reanchor(input: &HookInput, cfg: &Config) -> Option<String> {
     // Label the source note's freshness so the re-surfaced decisions can be
     // weighed against anything decided since (the note is a past snapshot).
     let mut out = match note_freshness(&note, &text) {
-        Some(ts) => format!("[ctxrot anchor] 直近の確定事項（{ts}時点の退避ノートより・末尾再浮上）:\n"),
+        Some(ts) => {
+            format!("[ctxrot anchor] 直近の確定事項（{ts}時点の退避ノートより・末尾再浮上）:\n")
+        }
         None => String::from("[ctxrot anchor] 直近の確定事項（再掲・末尾再浮上）:\n"),
     };
     if let Some(d) = &decisions {
@@ -549,7 +563,8 @@ mod tests {
         };
 
         // First crossing: advice mentions the preemptive note, and one is on disk.
-        let (band, out) = check_context_budget(&input, &cfg).expect("band advice on first crossing");
+        let (band, out) =
+            check_context_budget(&input, &cfg).expect("band advice on first crossing");
         assert_eq!(band, 3, "fixture usage ≈92% → danger band");
         assert!(
             out.contains("先行退避ノート"),
@@ -580,7 +595,8 @@ mod tests {
         decisions: &str,
         todos: &str,
     ) -> (Config, std::path::PathBuf, HookInput) {
-        let base = std::env::temp_dir().join(format!("ctxrot-anchor-{name}-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("ctxrot-anchor-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
@@ -594,8 +610,13 @@ mod tests {
             "---\ntype: ctxrot-rescue\ncreated: 2026-01-01T00:00:00+09:00\n---\n\n\
              ## 決定事項 / Decisions\n\n{decisions}\n\n## 残課題 / Open todos\n\n{todos}\n"
         );
-        let slug = format!("rescue-{}-20260101-000000", harness_core::store::session_tag(session));
-        harness_core::store::Store::new(cfg.store_dir.clone()).write_note(&cwd, &slug, &body).unwrap();
+        let slug = format!(
+            "rescue-{}-20260101-000000",
+            harness_core::store::session_tag(session)
+        );
+        harness_core::store::Store::new(cfg.store_dir.clone())
+            .write_note(&cwd, &slug, &body)
+            .unwrap();
         let input = HookInput {
             session_id: session.into(),
             // Fixture usage ≈ 92% → band 3 (≥ reanchor_min_band 2).
@@ -620,7 +641,9 @@ mod tests {
         assert!(check_reanchor(&input, &cfg).is_none());
         assert!(check_reanchor(&input, &cfg).is_none());
         assert!(check_reanchor(&input, &cfg).is_none());
-        assert!(check_reanchor(&input, &cfg).expect("re-fires after the cadence window").contains("[ctxrot anchor]"));
+        assert!(check_reanchor(&input, &cfg)
+            .expect("re-fires after the cadence window")
+            .contains("[ctxrot anchor]"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -649,7 +672,10 @@ mod tests {
         let note = base.join("note.md");
         std::fs::write(&note, "## 決定事項\n\n- A\n").unwrap();
         let ts = note_freshness(&note, "## 決定事項\n\n- A\n").expect("mtime available");
-        assert!(ts.starts_with("20"), "expected an ISO-ish local timestamp, got {ts}");
+        assert!(
+            ts.starts_with("20"),
+            "expected an ISO-ish local timestamp, got {ts}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -664,8 +690,7 @@ mod tests {
 
     #[test]
     fn reanchor_silent_without_own_note() {
-        let (mut cfg, base, mut input) =
-            reanchor_fixture("noown", "sess-has-note", "- A", "- B");
+        let (mut cfg, base, mut input) = reanchor_fixture("noown", "sess-has-note", "- A", "- B");
         // A different session id has no tagged note of its own → no anchor.
         input.session_id = "sess-other".into();
         cfg.reanchor_every_prompts = 3;
@@ -675,8 +700,7 @@ mod tests {
 
     #[test]
     fn reanchor_disabled_stays_silent() {
-        let (mut cfg, base, input) =
-            reanchor_fixture("off", "sess-off", "- A を採用", "- B");
+        let (mut cfg, base, input) = reanchor_fixture("off", "sess-off", "- A を採用", "- B");
         cfg.reanchor_enabled = false;
         assert!(check_reanchor(&input, &cfg).is_none());
         let _ = std::fs::remove_dir_all(&base);
@@ -704,8 +728,13 @@ mod tests {
         // first casualty. Each section is truncated to ANCHOR_SECTION_CAP_CHARS.
         let big = format!("- {}", "決定".repeat(400));
         let body = format!("## 決定事項 / Decisions\n\n{big}\n\n## 残課題 / Open todos\n\n{big}\n");
-        let slug = format!("rescue-{}-20260101-000000", harness_core::store::session_tag("sess-cap"));
-        harness_core::store::Store::new(cfg.store_dir.clone()).write_note(&cwd, &slug, &body).unwrap();
+        let slug = format!(
+            "rescue-{}-20260101-000000",
+            harness_core::store::session_tag("sess-cap")
+        );
+        harness_core::store::Store::new(cfg.store_dir.clone())
+            .write_note(&cwd, &slug, &body)
+            .unwrap();
         let input = HookInput {
             session_id: "sess-cap".into(),
             prompt: "このログを全文ください".into(), // heavy keyword → large-ref block
@@ -726,9 +755,15 @@ mod tests {
             out.chars().count()
         );
         // Supplemental anchor is dropped first…
-        assert!(!out.contains("[ctxrot anchor]"), "anchor should be dropped: {out}");
+        assert!(
+            !out.contains("[ctxrot anchor]"),
+            "anchor should be dropped: {out}"
+        );
         // …while both safety-critical blocks survive.
-        assert!(out.contains("大きい参照を検知"), "large-ref warning must survive");
+        assert!(
+            out.contains("大きい参照を検知"),
+            "large-ref warning must survive"
+        );
         assert!(out.contains("危険域"), "danger-band budget must survive");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -765,7 +800,10 @@ mod tests {
         };
 
         let out = run(&input, &cfg).expect("distill re-injection on first prompt");
-        assert!(out.contains("[ctxrot distill]"), "expected distill block: {out}");
+        assert!(
+            out.contains("[ctxrot distill]"),
+            "expected distill block: {out}"
+        );
         assert!(out.contains("serde を採用"));
         assert!(out.contains("tests を書く"));
 
@@ -781,9 +819,15 @@ mod tests {
         let (cfg, base, input) = cap_fixture("off", 0);
         let out = run(&input, &cfg).expect("guard injects at high band");
         assert!(out.contains("[ctxrot anchor]"), "no cap → anchor present");
-        assert!(out.contains("大きい参照を検知"), "no cap → large-ref present");
+        assert!(
+            out.contains("大きい参照を検知"),
+            "no cap → large-ref present"
+        );
         assert!(out.contains("危険域"), "no cap → budget present");
-        assert!(out.chars().count() > 1200, "uncapped output exceeds the default cap");
+        assert!(
+            out.chars().count() > 1200,
+            "uncapped output exceeds the default cap"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }
