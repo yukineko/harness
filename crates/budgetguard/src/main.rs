@@ -7,6 +7,7 @@
 mod config;
 mod gate;
 mod install;
+mod lock;
 mod state;
 
 use clap::{Parser, Subcommand};

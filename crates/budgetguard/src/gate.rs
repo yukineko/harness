@@ -34,10 +34,29 @@ pub fn evaluate(
     let agg = usage::aggregate(transcript_path)?;
     let session_usd = pricing::session_cost(agg.models.iter(), &cfg.price_overrides);
 
-    // Update the daily ledger with this session's latest cost.
-    let mut ledger = Ledger::load(&cfg.state_dir);
-    let day_usd = ledger.record(session_id, today, session_usd);
-    let _ = ledger.save(&cfg.state_dir);
+    // Update the daily ledger with this session's latest cost. Serialize the
+    // whole load → record → save against other concurrent sessions so a
+    // simultaneous Stop can't clobber our entry (lost update).
+    let _guard = crate::lock::LedgerLock::acquire(&cfg.state_dir);
+    let day_usd = match Ledger::load_checked(&cfg.state_dir) {
+        Ok(mut ledger) => {
+            let day_usd = ledger.record(session_id, today, session_usd);
+            let _ = ledger.save(&cfg.state_dir);
+            day_usd
+        }
+        Err(_corrupt) => {
+            // The on-disk ledger is unparseable. Do NOT overwrite it (that would
+            // erase the day's accumulated spend and fail the budget open). Leave
+            // the file untouched and fall back to this session's own cost as the
+            // day total — conservative: never under-reports below this session.
+            eprintln!(
+                "budgetguard: ledger.json is corrupt; preserving it and skipping \
+                 update (day total falls back to this session's cost)"
+            );
+            session_usd
+        }
+    };
+    drop(_guard);
 
     let verdict = verdict(cfg, session_usd, day_usd);
     Some(GateResult { session_usd, day_usd, verdict })
@@ -79,6 +98,56 @@ fn verdict(cfg: &Config, session_usd: f64, day_usd: f64) -> Verdict {
         Verdict::Allow
     } else {
         Verdict::Warn(format!("⚠ budgetguard:\n{}", warns.join("\n")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn cfg(sw: f64, sb: f64, dw: f64, db: f64) -> Config {
+        Config {
+            session_warn_usd: sw,
+            session_block_usd: sb,
+            daily_warn_usd: dw,
+            daily_block_usd: db,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn allow_below_all_thresholds() {
+        let c = cfg(1.0, 2.0, 5.0, 10.0);
+        assert!(matches!(verdict(&c, 0.5, 0.5), Verdict::Allow));
+    }
+
+    #[test]
+    fn warn_is_inclusive_at_threshold() {
+        let c = cfg(1.0, 2.0, 5.0, 10.0);
+        // session cost exactly at the warn threshold (>=) warns but doesn't block.
+        assert!(matches!(verdict(&c, 1.0, 1.0), Verdict::Warn(_)));
+    }
+
+    #[test]
+    fn block_is_inclusive_at_threshold_and_beats_warn() {
+        let c = cfg(1.0, 2.0, 5.0, 10.0);
+        // session cost exactly at the block threshold blocks (>=), not just warns.
+        assert!(matches!(verdict(&c, 2.0, 2.0), Verdict::Block(_)));
+    }
+
+    #[test]
+    fn daily_block_triggers_independently_of_session() {
+        let c = cfg(0.0, 0.0, 0.0, 10.0); // only a daily block configured
+        assert!(matches!(verdict(&c, 0.01, 10.0), Verdict::Block(_)));
+        assert!(matches!(verdict(&c, 0.01, 9.99), Verdict::Allow));
+    }
+
+    #[test]
+    fn zero_threshold_means_disabled() {
+        let c = cfg(0.0, 0.0, 0.0, 0.0);
+        // Even a large cost is allowed when every limit is 0 (disabled).
+        assert!(matches!(verdict(&c, 999.0, 999.0), Verdict::Allow));
     }
 }
 
