@@ -68,23 +68,20 @@ job is to author the Japanese prose sections based on THIS conversation.
 4. **Save** the note back to the same path.
 
 5. **Reconcile the cross-session backlog.** The per-session `## 残課題` is a
-   snapshot; the backlog is the durable, self-pruning list of what's still open
-   across sessions (one global note `<vault>/backlog.md`, surfaced at SessionStart).
-   Use the project name from the record note heading as `<P>`.
-   1. **See what's open:**
-      `${CLAUDE_PLUGIN_ROOT}/bin/session-insights backlog list --project <P> --json`
-   2. **Resolve what this session closed.** For each open item that is now done
-      (compare against what was actually accomplished this session), mark it:
-      `… backlog resolve --id <bk-id> [--id <bk-id> …]` (resolved items are
-      removed from the note entirely — exclusion is the point).
+   snapshot; the durable, cross-project queue is the **standalone `backlog`
+   crate** (`~/.backlog/tasks.toml`, surfaced at SessionStart by its own hook).
+   This is now the single canonical queue — session-insights no longer keeps an
+   independent backlog. Use the project name from the record note heading as `<P>`.
+   1. **See what's pending:** `backlog list --project <P> --status pending`
+   2. **Close what this session finished.** For each pending item that is now
+      done (compare against what was actually accomplished this session), mark it
+      by id: `backlog done <id>`.
    3. **Add genuinely-open follow-ups** from this session's `## 残課題`:
-      `… backlog add --project <P> --text "<one open item>"` (one call per item;
-      re-adding the same text is idempotent, so existing items won't duplicate).
-      Do NOT add items you just resolved, or transient notes — only durable
+      `backlog add --title "<one open item>" --project <P>` (one call per item).
+      Do NOT add items you just closed, or transient notes — only durable
       "still needs doing" work.
-   4. **Re-render the note:** `… backlog render` (prints the backlog note path).
-   Keep backlog item text short and action-oriented ("X が必要", "Y を直す") so the
-   SessionStart brief reads as a clear to-do list.
+   Keep backlog item titles short and action-oriented ("X が必要", "Y を直す") so the
+   SessionStart injection reads as a clear to-do list.
 
 ## Hard rules
 

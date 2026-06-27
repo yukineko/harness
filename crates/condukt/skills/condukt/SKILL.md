@@ -90,7 +90,7 @@ open run が 0 件かつ引数が「次は何をする」系のとき。**残タ
 
 ```bash
 # 1. バックログを確認
-BACKLOG=$(session-insights backlog list 2>/dev/null | grep "^\[open\]" | head -10 || true)
+BACKLOG=$(backlog list --status pending 2>/dev/null | head -10 || true)
 
 # 2. compass の gap を確認（charter があれば）
 COMPASS_GAP=$(compass gap 2>/dev/null | head -30 || true)
@@ -108,7 +108,7 @@ OPEN_HYPOS=$(hypothesis list --status open 2>/dev/null | head -10 || true)
 
 | 状態 | 対応 |
 |---|---|
-| バックログに open 項目あり | 最優先の 1 件を課題文として Phase 0.5 へ進む |
+| バックログに pending 項目あり | 最優先の 1 件を課題文として Phase 0.5 へ進む |
 | compass gap が明確な next_action を示す | それを課題文として Phase 0.5 へ進む |
 | どちらもなく直近コミットから自明な続きがある | それを課題文として Phase 0.5 へ進む |
 | 判断できない・選択肢が複数ある | `AskUserQuestion` でユーザーに候補を提示して選ばせる |
