@@ -7,7 +7,6 @@
 //! analogue of Devin's Session Insights. Recording only ever writes to its own
 //! state (and, opt-in, the vault); it never blocks a turn and always exits 0.
 
-mod backlog;
 mod config;
 mod install;
 mod metrics;
@@ -74,46 +73,6 @@ enum Command {
     Init,
     /// Show the resolved config.
     Status,
-    /// Cross-session backlog of open issues/TODOs (one global Obsidian note).
-    Backlog {
-        #[command(subcommand)]
-        action: BacklogAction,
-    },
-}
-
-#[derive(Subcommand)]
-enum BacklogAction {
-    /// List items (open only by default). `--json` for machine consumption.
-    List {
-        #[arg(long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-        /// Include resolved items too.
-        #[arg(long)]
-        all: bool,
-    },
-    /// Add (or reopen) an open item. Idempotent by project+text.
-    Add {
-        #[arg(long)]
-        project: Option<String>,
-        #[arg(long)]
-        text: String,
-        #[arg(long)]
-        session: Option<String>,
-    },
-    /// Mark one or more items resolved by id (repeat --id).
-    Resolve {
-        #[arg(long = "id")]
-        ids: Vec<String>,
-    },
-    /// (Re)generate the global backlog note from the store; print its path.
-    Render,
-    /// SessionStart: print a short summary of open items for the current project.
-    Brief {
-        #[arg(long)]
-        project: Option<String>,
-    },
 }
 
 fn main() {
@@ -128,84 +87,6 @@ fn main() {
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init => exit_on_err(init()),
         Command::Status => status(),
-        Command::Backlog { action } => backlog_cmd(action),
-    }
-}
-
-fn cwd_project() -> String {
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "project".to_string())
-}
-
-fn backlog_cmd(action: BacklogAction) {
-    let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let cfg = Config::load(&root);
-    match action {
-        BacklogAction::List { project, json, all } => {
-            let items = backlog::load(&cfg);
-            let proj = project.as_deref();
-            let selected: Vec<&backlog::Item> = items
-                .iter()
-                .filter(|i| all || i.is_open())
-                .filter(|i| proj.map(|p| i.project == p).unwrap_or(true))
-                .collect();
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&selected).unwrap_or_else(|_| "[]".to_string())
-                );
-            } else if selected.is_empty() {
-                println!("(no items)");
-            } else {
-                for it in selected {
-                    println!("[{}] {}  {}", it.status, it.id, it.text);
-                }
-            }
-        }
-        BacklogAction::Add { project, text, session } => {
-            let proj = project.unwrap_or_else(cwd_project);
-            let session = session
-                .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
-                .unwrap_or_default();
-            let mut items = backlog::load(&cfg);
-            let id = backlog::add(&mut items, &proj, &text, &session);
-            backlog::save(&cfg, &items);
-            println!("{id}");
-        }
-        BacklogAction::Resolve { ids } => {
-            let mut items = backlog::load(&cfg);
-            let n = backlog::resolve(&mut items, &ids);
-            backlog::save(&cfg, &items);
-            println!("resolved {n} item(s)");
-        }
-        BacklogAction::Render => {
-            let items = backlog::load(&cfg);
-            match backlog::render_note(&cfg, &items) {
-                Some(p) => println!("{}", p.display()),
-                None => eprintln!(
-                    "no backlog note written (Obsidian vault not found: {})",
-                    cfg.obsidian_vault.display()
-                ),
-            }
-        }
-        BacklogAction::Brief { project } => {
-            if Config::disabled_env() {
-                return;
-            }
-            let proj = project.unwrap_or_else(|| {
-                let raw = read_stdin();
-                HookInput::parse(&raw)
-                    .map(|h| h.project_name())
-                    .unwrap_or_else(cwd_project)
-            });
-            let items = backlog::load(&cfg);
-            let out = backlog::brief(&items, Some(&proj), 8);
-            if !out.is_empty() {
-                print!("{out}");
-            }
-        }
     }
 }
 
