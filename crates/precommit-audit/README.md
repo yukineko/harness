@@ -114,6 +114,35 @@ file is optional. Start from the documented template
 - Per file: put `audit-ignore-file: <reason>` in the first 20 lines.
 - One-shot bypass: create `<audit_dir>/.audit-skip` (consumed on read).
 
+## Relation to the other Stop gates (donegate / reviewgate / tdd)
+
+precommit-audit is **deliberately not** one of the JSON Stop-gates built on
+`harness_core::gate`. Those three (donegate, reviewgate, tdd) are *Claude-only*
+Stop hooks: they block by printing `{"decision":"block","reason":…}` and gate
+project-local config behind `harness_core::trust`.
+
+precommit-audit is a **dual-mode** hook and so keeps a different contract on
+purpose:
+
+- It runs both as a **git / pre-commit-framework hook on a human commit**
+  (`precommit` mode, exit **1** on failure per pre-commit convention) and as a
+  **Claude Code Stop hook** (`stop` mode, exit **2** to feed findings back), plus
+  a non-blocking **SessionEnd** pass (exit **0**). A git hook cannot speak
+  Claude's JSON `decision:block` protocol, so the **exit-code + block-marker**
+  contract is required, not an oversight. Its own `hookio` exists for the same
+  dual-mode reason.
+- It is therefore **excluded from the shared JSON-gate layer** — treat it as a
+  sibling, not a fourth member of the trio.
+
+**Trust caveat (known difference).** Unlike the trio, precommit-audit currently
+loads project `.precommit-audit.toml` without a `harness_core::trust` check. The
+blast radius is narrower than donegate's (config only *toggles* hard-coded
+built-in linters and adds **regex** rules — it can't name an arbitrary command),
+but `linters.node_projects` can resolve repo-local `eslint`/`tsc` binaries, so a
+cloned untrusted repo is the one execution vector. Adding a trust gate around
+project-config loading is tracked as a follow-up; until then, the usual "don't
+run linters on untrusted checkouts" hygiene applies.
+
 ## Why a port
 
 The original hook was PowerShell-only (Windows). This rewrite:
