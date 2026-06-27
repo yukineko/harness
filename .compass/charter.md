@@ -11,7 +11,7 @@
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
-計測ループの『判定』半分が欠落。route.rs:320 は measuring_stick を handoff に書くだけで、move 完了後にそれを読み戻して『前進・不変・後退』を判定し記録する経路が無い（route.rs:320-323 = written-only, never consumed）。最大差分: outcome を measured evidence 付きで記録し gap.rs がそれを次サイクルに surface する仕組みを新設する。
+計測ループの決定論コア達成: compass outcome が verdict(前進・不変・後退) を measured evidence 必須で記録し、gap.rs が last_outcome を surface（commit 4370feb, backlog 66d0968a done）。残り＝統合半分: flow/compass の sink が完了 move に対し compass outcome を自動呼び出しし、verdict を move の diff から LLM 判定する層（次スライス or 次 carve）。
 
 ## next_action
 
