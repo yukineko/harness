@@ -97,6 +97,9 @@ fn skeleton(ctx: &RecordCtx) -> String {
          ## 振り返り / 確立した方針\n\
          <!-- fill: 振り返り / 確立した方針 -->\n\
          \n\
+         ## 注意点 / 落とし穴\n\
+         <!-- fill: 注意点 / 落とし穴 -->\n\
+         \n\
          ## 数値サマリ\n\
          {NUM_START}\n\
          {numeric}\n\
@@ -109,6 +112,9 @@ fn skeleton(ctx: &RecordCtx) -> String {
          \n\
          ## 残課題\n\
          <!-- fill: 残課題 -->\n\
+         \n\
+         ## 要追跡 / あとで確認\n\
+         <!-- fill: 要追跡 / あとで確認 -->\n\
          \n\
          ## 関連\n\
          <!-- fill: 関連 -->\n",
@@ -255,14 +261,18 @@ mod tests {
             "## 完了サマリ",
             "## つまずき / 学び",
             "## 振り返り / 確立した方針",
+            "## 注意点 / 落とし穴",
             "## 数値サマリ",
             "## コスト",
             "## 残課題",
+            "## 要追跡 / あとで確認",
             "## 関連",
         ] {
             assert!(s.contains(h), "missing heading: {h}\n{s}");
         }
         assert!(s.contains("<!-- fill: 完了サマリ -->"));
+        assert!(s.contains("<!-- fill: 注意点 / 落とし穴 -->"));
+        assert!(s.contains("<!-- fill: 要追跡 / あとで確認 -->"));
         assert!(s.contains(COST_START) && s.contains(COST_END));
         assert!(s.contains(NUM_START) && s.contains(NUM_END));
         // numeric auto values

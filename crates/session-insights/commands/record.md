@@ -30,7 +30,9 @@ job is to author the Japanese prose sections based on THIS conversation.
    - `## 完了サマリ` — 2–4 行で、何を達成したか（変更したファイル/コミット/動いた機能）。
    - `## つまずき / 学び` — 詰まった点と、その解決から得た学び。
    - `## 振り返り / 確立した方針` — 今後に効く方針・判断基準（**省略しない**）。
+   - `## 注意点 / 落とし穴` — 触ると壊れる箇所・前提・ハマりどころなど、次に同じ領域を触る人が**事前に知っておくべき注意**（「方針」ではなく「気をつけろ」の粒度）。
    - `## 残課題` — 未完了・先送り・次にやること。
+   - `## 要追跡 / あとで確認` — 今は判断できず**後日見直すべき項目**（仮の選択・要観察の挙動・効果測定待ち・期限付きの再確認など）。可能なら確認の起点（条件/日付）も添える。
    - `## 関連` — 関連ノートへの `[[リンク]]`（あれば）。
    If a section genuinely has nothing, write a short honest line (e.g. `特になし`)
    rather than leaving the placeholder.
@@ -46,7 +48,8 @@ job is to author the Japanese prose sections based on THIS conversation.
      model: "sonnet",
      prompt: "Read this session transcript and return ONLY the per-section
               bullet points for a record note: 完了サマリ / つまずき・学び /
-              振り返り・確立した方針 / 残課題 / 関連. Do not implement anything.
+              振り返り・確立した方針 / 注意点・落とし穴 / 残課題 /
+              要追跡・あとで確認 / 関連. Do not implement anything.
               Transcript: <abs path to $CLAUDE_CODE_SESSION_ID.jsonl under
               ~/.claude/projects/<slug>/>"
    )
