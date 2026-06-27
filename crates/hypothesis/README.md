@@ -62,10 +62,10 @@ The binary is thin and deterministic:
 
 | Subcommand | Purpose |
 |---|---|
-| `hypothesis add <text> [--goal <keyword>]` | add a bet; prints the new id. `--goal` links it to a compass charter goal |
-| `hypothesis list [--status <s>]` | list bets, optionally filtered (`open` / `awaiting-measurement` / `validated` / `rejected`) |
+| `hypothesis add <text> [--goal <keyword>] [--success "<metric> >= <n>"] [--kill "<metric> <= <n>"]` | add a bet; prints the new id. `--goal` links it to a compass charter goal. `--success`/`--kill` pre-register a falsifiable bar *before* shipping (operators: `>= <= > < ==`) |
+| `hypothesis list [--status <s>]` | list bets, optionally filtered (`open` / `awaiting-measurement` / `validated` / `rejected`); pre-registered criteria are shown inline |
 | `hypothesis await-measurement <id> [--run <run>]` | mark a shipped-but-unmeasured bet (condukt calls this on merge) |
-| `hypothesis validate <id> --evidence <text>… [--run <run>]` | terminal: measured evidence supports the bet (evidence required) |
+| `hypothesis validate <id> --evidence <text>… [--measurement "<metric>=<value>"…] [--run <run>]` | terminal: measured evidence supports the bet (evidence required). If a `--success` criterion was pre-registered, a matching `--measurement` must clear it — otherwise validation is refused (no post-hoc goalpost-shifting) |
 | `hypothesis reject <id> [--reason <text>] [--run <run>]` | terminal: measured evidence refutes the bet |
 | `hypothesis install [--dry-run]` / `hypothesis uninstall` | add/remove the SessionStart hook in settings |
 | `hypothesis session-start` | SessionStart hook entry point (internal) |

@@ -8,8 +8,26 @@ mod hooks {
     pub mod session_start;
 }
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+
+use crate::hypothesis::Criterion;
+
+/// Parse a `--measurement "metric=value"` argument into `(metric, value)`.
+fn parse_measurement(s: &str) -> Result<(String, f64)> {
+    let (metric, value) = s
+        .split_once('=')
+        .with_context(|| format!("measurement must be \"<metric>=<value>\": {s:?}"))?;
+    let metric = metric.trim();
+    if metric.is_empty() {
+        anyhow::bail!("measurement is missing a metric name: {s:?}");
+    }
+    let value: f64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("measurement value is not a number: {s:?}"))?;
+    Ok((metric.to_string(), value))
+}
 
 #[derive(Parser)]
 #[command(name = "hypothesis", about = "PDO hypothesis lifecycle management")]
@@ -25,12 +43,22 @@ enum Command {
         text: String,
         #[arg(long)]
         goal: Option<String>,
+        /// Pre-registered success criterion, e.g. --success "activation >= 0.4"
+        #[arg(long)]
+        success: Option<String>,
+        /// Pre-registered kill criterion, e.g. --kill "activation <= 0.2"
+        #[arg(long)]
+        kill: Option<String>,
     },
     /// Mark a hypothesis as validated
     Validate {
         id: String,
         #[arg(long)]
         evidence: Vec<String>,
+        /// Measured metric value, e.g. --measurement "activation=0.45". Required
+        /// (and checked) when the hypothesis pre-registered a success criterion.
+        #[arg(long)]
+        measurement: Vec<String>,
         #[arg(long)]
         run: Option<String>,
     },
@@ -69,14 +97,20 @@ fn run() -> Result<()> {
     let cfg = config::Config::load()?;
 
     match cli.command {
-        Command::Add { text, goal } => {
+        Command::Add { text, goal, success, kill } => {
+            let success = success.as_deref().map(Criterion::parse).transpose()?;
+            let kill = kill.as_deref().map(Criterion::parse).transpose()?;
             let mut st = store::Store::load(&cfg)?;
-            let id = st.add(text, goal)?;
+            let id = st.add_with_criteria(text, goal, success, kill)?;
             println!("{id}");
         }
-        Command::Validate { id, evidence, run } => {
+        Command::Validate { id, evidence, measurement, run } => {
+            let measurements = measurement
+                .iter()
+                .map(|m| parse_measurement(m))
+                .collect::<Result<Vec<_>>>()?;
             let mut st = store::Store::load(&cfg)?;
-            st.validate(&id, evidence, run)?;
+            st.validate_with_measurements(&id, evidence, measurements, run)?;
         }
         Command::AwaitMeasurement { id, run } => {
             let mut st = store::Store::load(&cfg)?;
@@ -93,7 +127,20 @@ fn run() -> Result<()> {
                 let run_info = h.condukt_run.as_deref()
                     .map(|r| format!(" (run: {})", r))
                     .unwrap_or_default();
-                println!("[{}] {} — {}{}", h.status, h.id, h.text, run_info);
+                let crit_info = match (&h.success_criterion, &h.kill_criterion) {
+                    (None, None) => String::new(),
+                    (s, k) => {
+                        let mut parts = Vec::new();
+                        if let Some(s) = s {
+                            parts.push(format!("success: {s}"));
+                        }
+                        if let Some(k) = k {
+                            parts.push(format!("kill: {k}"));
+                        }
+                        format!(" [{}]", parts.join(", "))
+                    }
+                };
+                println!("[{}] {} — {}{}{}", h.status, h.id, h.text, crit_info, run_info);
             }
         }
         Command::Install { dry_run } => {

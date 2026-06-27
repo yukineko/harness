@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::hypothesis::{Hypothesis, Status};
+use crate::hypothesis::{Criterion, Hypothesis, Status};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -75,31 +75,124 @@ impl Store {
         Ok(())
     }
 
+    /// Convenience wrapper for [`Store::add_with_criteria`] without criteria.
+    /// Used by tests and kept as a stable, ergonomic entry point.
+    #[allow(dead_code)]
     pub fn add(&mut self, text: String, goal: Option<String>) -> Result<String> {
-        let h = Hypothesis::new(text, goal);
+        self.add_with_criteria(text, goal, None, None)
+    }
+
+    /// Add a hypothesis with optional pre-registered success/kill criteria.
+    ///
+    /// Fixing the bar at `add` time (before the experiment ships) is what makes
+    /// the hypothesis falsifiable: `validate` later checks a measurement against
+    /// these criteria instead of accepting any after-the-fact evidence.
+    pub fn add_with_criteria(
+        &mut self,
+        text: String,
+        goal: Option<String>,
+        success: Option<Criterion>,
+        kill: Option<Criterion>,
+    ) -> Result<String> {
+        let mut h = Hypothesis::new(text, goal);
+        h.success_criterion = success;
+        h.kill_criterion = kill;
         let id = h.id.clone();
         self.hypotheses.push(h);
         self.save()?;
         Ok(id)
     }
 
+    /// Convenience wrapper for [`Store::validate_with_measurements`] with no
+    /// measurements. Used by tests and the no-criteria validation path.
+    #[allow(dead_code)]
     pub fn validate(&mut self, id: &str, evidence: Vec<String>, run_id: Option<String>) -> Result<()> {
-        // A hypothesis is "validated" by measured learning, not by code shipping.
-        // Require at least one non-empty piece of evidence so a build alone can't
-        // flip the status.
-        if evidence.iter().all(|e| e.trim().is_empty()) {
+        self.validate_with_measurements(id, evidence, vec![], run_id)
+    }
+
+    /// Validate a hypothesis, checking any pre-registered success criterion
+    /// against the supplied `measurements` (`(metric, value)` pairs).
+    ///
+    /// Gates, in order:
+    /// 1. **Measured-evidence gate** (build != validation): refuse if neither
+    ///    evidence nor a measurement was supplied.
+    /// 2. **Pre-registered success gate** (anti goalpost-shift): if a success
+    ///    criterion was registered at `add` time, a measurement for that metric
+    ///    must be supplied *and* clear the registered bar. If the measurement
+    ///    instead hits the kill criterion, the error points at `reject`.
+    pub fn validate_with_measurements(
+        &mut self,
+        id: &str,
+        evidence: Vec<String>,
+        measurements: Vec<(String, f64)>,
+        run_id: Option<String>,
+    ) -> Result<()> {
+        // (1) A hypothesis is "validated" by measured learning, not by code
+        // shipping. A measurement counts as evidence; require at least one of
+        // the two so a build alone can't flip the status.
+        if evidence.iter().all(|e| e.trim().is_empty()) && measurements.is_empty() {
             anyhow::bail!(
                 "validate requires measured evidence: pass --evidence \"<observed outcome>\" \
-                 (shipping code is not validation)"
+                 or --measurement \"<metric>=<value>\" (shipping code is not validation)"
             );
         }
-        let h = self
+
+        let idx = self
             .hypotheses
-            .iter_mut()
-            .find(|h| h.id == id)
+            .iter()
+            .position(|h| h.id == id)
             .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+
+        // (2) Pre-registered success gate. Clone the criteria so the immutable
+        // checks don't conflict with the mutable update below.
+        let success = self.hypotheses[idx].success_criterion.clone();
+        let kill = self.hypotheses[idx].kill_criterion.clone();
+        if let Some(crit) = &success {
+            let measured = measurements
+                .iter()
+                .find(|(m, _)| m == &crit.metric)
+                .map(|(_, v)| *v);
+            match measured {
+                None => anyhow::bail!(
+                    "hypothesis {id} has a pre-registered success criterion ({crit}); \
+                     pass the measured value with --measurement \"{}=<value>\" so validation \
+                     checks the registered bar (no post-hoc goalpost-shifting)",
+                    crit.metric
+                ),
+                Some(v) if !crit.satisfied_by(v) => {
+                    let hint = match &kill {
+                        Some(k) if k.metric == crit.metric && k.satisfied_by(v) => format!(
+                            " — it hits the kill criterion ({k}); reject it with \
+                             `hypothesis reject {id} --reason \"...\"`"
+                        ),
+                        _ => format!(
+                            " — record it with `hypothesis reject {id} --reason \"...\"` \
+                             if the bet is disproven"
+                        ),
+                    };
+                    anyhow::bail!(
+                        "measured {}={} does not clear the pre-registered success criterion \
+                         ({crit}); this is not a validation{hint}",
+                        crit.metric,
+                        v
+                    );
+                }
+                Some(_) => {} // measurement clears the registered bar → proceed
+            }
+        }
+
+        let measured_evidence: Vec<String> = measurements
+            .iter()
+            .map(|(m, v)| match &success {
+                Some(c) if &c.metric == m => format!("{m}={v} (success criterion {c} met)"),
+                _ => format!("{m}={v}"),
+            })
+            .collect();
+
+        let h = &mut self.hypotheses[idx];
         h.status = Status::Validated;
         h.evidence.extend(evidence.into_iter().filter(|e| !e.trim().is_empty()));
+        h.evidence.extend(measured_evidence);
         h.condukt_run = run_id;
         h.updated_at = now_iso();
         self.save()
@@ -361,6 +454,125 @@ mod tests {
 
         // None returns everything
         assert_eq!(st.list(None).len(), 3);
+    }
+
+    #[test]
+    fn test_criteria_persist() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st
+            .add_with_criteria(
+                "faster onboarding lifts activation".to_string(),
+                None,
+                Some(Criterion::parse("activation >= 0.4").unwrap()),
+                Some(Criterion::parse("activation <= 0.2").unwrap()),
+            )
+            .unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = st2.list(None).into_iter().find(|h| h.id == id).unwrap();
+        assert_eq!(
+            h.success_criterion.as_ref().map(|c| c.to_string()),
+            Some("activation >= 0.4".to_string())
+        );
+        assert_eq!(
+            h.kill_criterion.as_ref().map(|c| c.to_string()),
+            Some("activation <= 0.2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_requires_measurement_when_criterion_registered() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st
+            .add_with_criteria(
+                "bet".to_string(),
+                None,
+                Some(Criterion::parse("activation >= 0.4").unwrap()),
+                None,
+            )
+            .unwrap();
+
+        // Evidence alone can't validate a hypothesis that pre-registered a bar —
+        // a measurement of the registered metric is required.
+        let err = st
+            .validate(&id, vec!["looks good".to_string()], None)
+            .unwrap_err();
+        assert!(err.to_string().contains("pre-registered success criterion"));
+        assert!(st.list(None)[0].status.is_open());
+    }
+
+    #[test]
+    fn test_validate_passes_when_measurement_clears_bar() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st
+            .add_with_criteria(
+                "bet".to_string(),
+                None,
+                Some(Criterion::parse("activation >= 0.4").unwrap()),
+                None,
+            )
+            .unwrap();
+
+        st.validate_with_measurements(&id, vec![], vec![("activation".to_string(), 0.45)], None)
+            .unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert!(h.status.is_validated());
+        // The measured value is persisted as evidence.
+        assert!(h.evidence.iter().any(|e| e.contains("activation=0.45")));
+    }
+
+    #[test]
+    fn test_validate_refused_when_measurement_misses_bar() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st
+            .add_with_criteria(
+                "bet".to_string(),
+                None,
+                Some(Criterion::parse("activation >= 0.4").unwrap()),
+                Some(Criterion::parse("activation <= 0.2").unwrap()),
+            )
+            .unwrap();
+
+        // Misses success bar but not the kill bar → refused, hints at reject.
+        let err = st
+            .validate_with_measurements(&id, vec![], vec![("activation".to_string(), 0.3)], None)
+            .unwrap_err();
+        assert!(err.to_string().contains("does not clear the pre-registered success criterion"));
+        assert!(st.list(None)[0].status.is_open());
+
+        // Hits the kill bar → refused, error points specifically at the kill criterion.
+        let err2 = st
+            .validate_with_measurements(&id, vec![], vec![("activation".to_string(), 0.1)], None)
+            .unwrap_err();
+        assert!(err2.to_string().contains("kill criterion"));
+        assert!(st.list(None)[0].status.is_open());
+    }
+
+    #[test]
+    fn test_validate_without_criterion_unchanged() {
+        // Hypotheses with no registered criterion keep the old behavior:
+        // non-empty evidence is enough.
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("plain bet".to_string(), None).unwrap();
+        st.validate(&id, vec!["measured outcome".to_string()], None).unwrap();
+        assert!(st.list(None)[0].status.is_validated());
     }
 
     #[test]

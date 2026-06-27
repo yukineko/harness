@@ -1,3 +1,4 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -98,6 +99,102 @@ impl fmt::Display for Status {
     }
 }
 
+/// A comparison operator for a pre-registered [`Criterion`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Comparator {
+    /// `>=`
+    Ge,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `<`
+    Lt,
+    /// `==`
+    Eq,
+}
+
+impl Comparator {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Comparator::Ge => ">=",
+            Comparator::Le => "<=",
+            Comparator::Gt => ">",
+            Comparator::Lt => "<",
+            Comparator::Eq => "==",
+        }
+    }
+
+    fn satisfied(&self, measured: f64, threshold: f64) -> bool {
+        match self {
+            Comparator::Ge => measured >= threshold,
+            Comparator::Le => measured <= threshold,
+            Comparator::Gt => measured > threshold,
+            Comparator::Lt => measured < threshold,
+            Comparator::Eq => (measured - threshold).abs() < f64::EPSILON,
+        }
+    }
+}
+
+/// A pre-registered, falsifiable bar on a named metric, fixed at `add` time.
+///
+/// Recording the threshold *before* the experiment ships is what stops post-hoc
+/// goalpost-shifting: `validate` checks a measurement against this registered
+/// bar instead of accepting any non-empty evidence after the fact.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Criterion {
+    pub metric: String,
+    pub comparator: Comparator,
+    pub threshold: f64,
+}
+
+impl Criterion {
+    /// Parse a criterion string like `"conversion >= 0.12"`.
+    ///
+    /// The operator may be one of `>=`, `<=`, `>`, `<`, `==` and may be
+    /// surrounded by spaces. The metric is everything before the operator; the
+    /// threshold is a number after it.
+    pub fn parse(s: &str) -> Result<Self> {
+        // Two-char operators first so the `>` inside `>=` isn't matched early.
+        for (op, cmp) in [
+            (">=", Comparator::Ge),
+            ("<=", Comparator::Le),
+            ("==", Comparator::Eq),
+            (">", Comparator::Gt),
+            ("<", Comparator::Lt),
+        ] {
+            if let Some(idx) = s.find(op) {
+                let metric = s[..idx].trim();
+                let value = s[idx + op.len()..].trim();
+                if metric.is_empty() {
+                    anyhow::bail!("criterion is missing a metric name: {s:?}");
+                }
+                let threshold: f64 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("criterion threshold is not a number: {value:?} (in {s:?})")
+                })?;
+                return Ok(Criterion {
+                    metric: metric.to_string(),
+                    comparator: cmp,
+                    threshold,
+                });
+            }
+        }
+        anyhow::bail!("criterion must contain a comparator (>=, <=, >, <, ==): {s:?}")
+    }
+
+    /// Does `measured` clear this criterion?
+    pub fn satisfied_by(&self, measured: f64) -> bool {
+        self.comparator.satisfied(measured, self.threshold)
+    }
+}
+
+impl fmt::Display for Criterion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.metric, self.comparator.as_str(), self.threshold)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hypothesis {
     pub id: String,
@@ -109,6 +206,12 @@ pub struct Hypothesis {
     pub linked_goal: Option<String>,
     #[serde(default)]
     pub condukt_run: Option<String>,
+    /// Pre-registered success bar: validation must clear this measured value.
+    #[serde(default)]
+    pub success_criterion: Option<Criterion>,
+    /// Pre-registered kill bar: hitting it means the bet is disproven (reject).
+    #[serde(default)]
+    pub kill_criterion: Option<Criterion>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -125,6 +228,8 @@ impl Hypothesis {
             evidence: vec![],
             linked_goal,
             condukt_run: None,
+            success_criterion: None,
+            kill_criterion: None,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -236,5 +341,73 @@ mod tests {
         assert_eq!(s, r#""awaiting_measurement""#);
         let s2: Status = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(s2, Status::AwaitingMeasurement);
+    }
+
+    #[test]
+    fn criterion_parse_all_operators() {
+        let cases = [
+            ("conversion >= 0.12", Comparator::Ge, "conversion", 0.12),
+            ("bounce <= 0.3", Comparator::Le, "bounce", 0.3),
+            ("signups > 100", Comparator::Gt, "signups", 100.0),
+            ("latency_ms < 250", Comparator::Lt, "latency_ms", 250.0),
+            ("exact == 1", Comparator::Eq, "exact", 1.0),
+        ];
+        for (s, cmp, metric, threshold) in cases {
+            let c = Criterion::parse(s).unwrap_or_else(|e| panic!("parse {s:?}: {e}"));
+            assert_eq!(c.comparator, cmp, "operator for {s:?}");
+            assert_eq!(c.metric, metric, "metric for {s:?}");
+            assert_eq!(c.threshold, threshold, "threshold for {s:?}");
+        }
+    }
+
+    #[test]
+    fn criterion_parse_tight_and_loose_spacing() {
+        let tight = Criterion::parse("conversion>=0.12").unwrap();
+        let loose = Criterion::parse("  conversion  >=  0.12 ").unwrap();
+        assert_eq!(tight, loose);
+        assert_eq!(tight.metric, "conversion");
+    }
+
+    #[test]
+    fn criterion_parse_rejects_garbage() {
+        assert!(Criterion::parse("no operator here").is_err());
+        assert!(Criterion::parse(">= 5").is_err()); // missing metric
+        assert!(Criterion::parse("metric >= notanumber").is_err());
+    }
+
+    #[test]
+    fn criterion_satisfied_by() {
+        let ge = Criterion::parse("m >= 10").unwrap();
+        assert!(ge.satisfied_by(10.0));
+        assert!(ge.satisfied_by(11.0));
+        assert!(!ge.satisfied_by(9.99));
+
+        let le = Criterion::parse("m <= 0.05").unwrap();
+        assert!(le.satisfied_by(0.05));
+        assert!(le.satisfied_by(0.0));
+        assert!(!le.satisfied_by(0.06));
+    }
+
+    #[test]
+    fn criterion_display_roundtrips_via_parse() {
+        let c = Criterion::parse("conversion >= 0.12").unwrap();
+        let shown = c.to_string();
+        assert_eq!(shown, "conversion >= 0.12");
+        assert_eq!(Criterion::parse(&shown).unwrap(), c);
+    }
+
+    #[test]
+    fn hypothesis_deserialize_legacy_without_criteria() {
+        // Records written before success/kill criteria existed must still load.
+        let json = r#"{
+            "id": "abcd1234",
+            "text": "legacy hypothesis",
+            "status": "open",
+            "created_at": "2026-06-26T13:00:00Z",
+            "updated_at": "2026-06-26T13:00:00Z"
+        }"#;
+        let h: Hypothesis = serde_json::from_str(json).expect("deserialize legacy");
+        assert!(h.success_criterion.is_none());
+        assert!(h.kill_criterion.is_none());
     }
 }
