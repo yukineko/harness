@@ -114,7 +114,7 @@ fn write_file(file: &TrustFile) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let body = toml::to_string(file)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, body)?;
     std::fs::rename(&tmp, &path)?;

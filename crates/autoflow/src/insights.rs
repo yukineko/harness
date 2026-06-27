@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 
 use harness_core::config::home;
 use serde::Deserialize;
@@ -12,7 +11,7 @@ pub struct SessionMetrics {
 }
 
 pub fn load_metrics(session_id: &str) -> SessionMetrics {
-    let path = PathBuf::from(home())
+    let path = home()
         .join(".session-insights")
         .join("state")
         .join(format!("{session_id}.json"));

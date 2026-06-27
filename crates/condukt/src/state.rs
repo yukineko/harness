@@ -301,9 +301,7 @@ pub fn reconcile_run(
                 task_id: t.id.clone(),
                 old_status: t.status,
                 new_status: t.status,
-                reason: format!(
-                    "cleared stale worktree reference (path no longer on disk)"
-                ),
+                reason: "cleared stale worktree reference (path no longer on disk)".to_string(),
             });
             t.worktree = None;
         }
@@ -497,13 +495,12 @@ pub fn count_test_failures(output: &str, exit_ok: bool) -> usize {
         if l.contains("failed") && l.contains("passed") {
             let words: Vec<&str> = l.split_whitespace().collect();
             for (i, w) in words.iter().enumerate() {
-                if *w == "failed," || *w == "failed" {
-                    if i > 0 {
+                if (*w == "failed," || *w == "failed")
+                    && i > 0 {
                         if let Ok(n) = words[i - 1].parse::<usize>() {
                             return n;
                         }
                     }
-                }
             }
         }
     }

@@ -139,8 +139,8 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
                     }
                 }
             }
-            Some(".ts") | Some(".tsx") | Some(".js") | Some(".jsx") => {
-                if cfg.eslint {
+            Some(".ts") | Some(".tsx") | Some(".js") | Some(".jsx")
+                if cfg.eslint => {
                     if let Some(root) = eslint_root(ctx, file) {
                         let bin = node_bin(&ctx.root.join(&root), "eslint");
                         if bin.exists() {
@@ -156,7 +156,6 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
                         }
                     }
                 }
-            }
             _ => {}
         }
     }

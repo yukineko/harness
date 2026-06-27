@@ -362,14 +362,14 @@ fn finish(
             "# {} 仕様↔実装 整合監査 {}\n\n## スコープ\n- baseline: {}\n- canon commit (HEAD): {}\n- in-scope 領域: なし / 不変条件: なし / 決定ログ: なし\n\n## findings\n監査対象なし。\n",
             l.cfg.project.name, l.date, scope.baseline, head
         );
-        report::write_report(&paths, &body)?;
-        if report::sentinel_pending(&paths) {
+        report::write_report(paths, &body)?;
+        if report::sentinel_pending(paths) {
             println!(
                 "specguard: 監査対象なし。ただし未処理 sentinel ({}) があるため baseline を据え置く (`specguard ack` で解除)",
                 paths.sentinel.display()
             );
         } else {
-            report::advance_baseline(&paths, &head)?;
+            report::advance_baseline(paths, &head)?;
             println!("specguard: 監査対象なし (report: {})", paths.report.display());
         }
         return Ok(EXIT_OK);
@@ -404,7 +404,7 @@ fn finish(
         .map(|(l, _)| l.as_str())
         .collect();
     if !missing.is_empty() {
-        let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
+        let merged = merge_report(&l.cfg, scope, &l.date, &head, &parsed);
         if let Some(dir) = paths.report.parent() {
             std::fs::create_dir_all(dir).ok();
         }
@@ -423,13 +423,13 @@ fn finish(
     // rules (V2). A pure transform over the parsed shards so the merge/sentinel
     // logic below is unchanged. See DESIGN-VERIFY.md.
     let parsed = if l.cfg.verify.enabled || l.cfg.verify.completeness {
-        verify::apply(&l.cfg, &l.repo_root, &scope, &shards, &l.date, parsed)
+        verify::apply(&l.cfg, &l.repo_root, scope, shards, &l.date, parsed)
     } else {
         parsed
     };
 
-    let merged = merge_report(&l.cfg, &scope, &l.date, &head, &parsed);
-    report::write_report(&paths, &merged)?;
+    let merged = merge_report(&l.cfg, scope, &l.date, &head, &parsed);
+    report::write_report(paths, &merged)?;
 
     let report_rel = format!("{}/{}.md", l.cfg.output.report_dir, l.date);
     let needs_user = parsed.iter().any(|(_, p)| p.needs_user);
@@ -438,13 +438,13 @@ fn finish(
         // the unfixed drift in the next run's diff so it is re-detected; a human
         // releases it with `specguard ack` once handled.
         let summary = merge_summary(&parsed);
-        report::write_sentinel(&paths, &l.date, &report_rel, &summary, &head)?;
+        report::write_sentinel(paths, &l.date, &report_rel, &summary, &head)?;
         println!(
             "specguard: 修正候補あり -> {} (report: {}); baseline は据え置き (ack するまで再検出)",
             paths.sentinel.display(),
             paths.report.display()
         );
-    } else if report::sentinel_pending(&paths) {
+    } else if report::sentinel_pending(paths) {
         // Clean this run, but a prior run's sentinel is still unhandled: keep the
         // baseline put so its drift stays in scope. Leave the sentinel untouched.
         println!(
@@ -453,7 +453,7 @@ fn finish(
         );
     } else {
         // Fully clean: advance the baseline.
-        report::advance_baseline(&paths, &head)?;
+        report::advance_baseline(paths, &head)?;
         println!("specguard: 修正候補なし (report: {})", paths.report.display());
     }
     Ok(EXIT_OK)

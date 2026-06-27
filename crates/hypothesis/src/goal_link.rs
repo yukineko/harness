@@ -59,8 +59,8 @@ fn parse_charter(content: &str) -> (String, Vec<String>) {
                 }
             }
             Section::Dod => {
-                if trimmed.starts_with("- ") {
-                    dod_lines.push(trimmed[2..].trim().to_string());
+                if let Some(stripped) = trimmed.strip_prefix("- ") {
+                    dod_lines.push(stripped.trim().to_string());
                 }
             }
             Section::None => {}

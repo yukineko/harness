@@ -49,7 +49,7 @@ impl Config {
 
     pub fn resolve_progress_path(&self, cwd: &str) -> PathBuf {
         if let Some(p) = &self.progress_file {
-            harness_core::config::expand_tilde(p).into()
+            harness_core::config::expand_tilde(p)
         } else {
             PathBuf::from(cwd).join(".claude").join("progress.md")
         }

@@ -101,6 +101,35 @@ fn verdict(cfg: &Config, session_usd: f64, day_usd: f64) -> Verdict {
     }
 }
 
+/// Emit the Stop hook output and exit.
+pub fn emit_and_exit(result: Option<GateResult>) -> ! {
+    match result {
+        None => {
+            // Data error or no transcript yet — allow silently.
+            std::process::exit(0);
+        }
+        Some(r) => {
+            // Running totals to stderr (operator-visible log; never touches the
+            // stdout JSON the hook protocol parses).
+            eprintln!(
+                "budgetguard: session ${:.4} / day ${:.4}",
+                r.session_usd, r.day_usd
+            );
+            match r.verdict {
+                Verdict::Allow => std::process::exit(0),
+                Verdict::Warn(msg) => {
+                    println!("{}", json!({ "additionalContext": msg }));
+                    std::process::exit(0);
+                }
+                Verdict::Block(reason) => {
+                    println!("{}", json!({ "decision": "block", "reason": reason }));
+                    std::process::exit(0);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,34 +177,5 @@ mod tests {
         let c = cfg(0.0, 0.0, 0.0, 0.0);
         // Even a large cost is allowed when every limit is 0 (disabled).
         assert!(matches!(verdict(&c, 999.0, 999.0), Verdict::Allow));
-    }
-}
-
-/// Emit the Stop hook output and exit.
-pub fn emit_and_exit(result: Option<GateResult>) -> ! {
-    match result {
-        None => {
-            // Data error or no transcript yet — allow silently.
-            std::process::exit(0);
-        }
-        Some(r) => {
-            // Running totals to stderr (operator-visible log; never touches the
-            // stdout JSON the hook protocol parses).
-            eprintln!(
-                "budgetguard: session ${:.4} / day ${:.4}",
-                r.session_usd, r.day_usd
-            );
-            match r.verdict {
-                Verdict::Allow => std::process::exit(0),
-                Verdict::Warn(msg) => {
-                    println!("{}", json!({ "additionalContext": msg }));
-                    std::process::exit(0);
-                }
-                Verdict::Block(reason) => {
-                    println!("{}", json!({ "decision": "block", "reason": reason }));
-                    std::process::exit(0);
-                }
-            }
-        }
     }
 }

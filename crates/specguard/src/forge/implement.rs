@@ -110,9 +110,7 @@ pub fn run_task(
     let result = ImplResult {
         spec_id: spec_id.to_string(),
         req_id: req_id.to_string(),
-        status: if !parsed.found {
-            "no-marker".to_string()
-        } else if parsed.status.is_empty() {
+        status: if !parsed.found || parsed.status.is_empty() {
             "no-marker".to_string()
         } else {
             parsed.status

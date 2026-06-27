@@ -71,7 +71,7 @@ pub fn run(input: &HookInput) -> Option<String> {
         let cycle_instruction = cycle_tag_instruction(task.cycle_tag(), &task.id, &task.title);
         out.push_str(&format!("cycle: {}\n", cycle_instruction));
 
-        out.push_str("\n");
+        out.push('\n');
     }
 
     out.push_str("---\n\nTo mark a task done: `backlog done {id}`\nTo mark failed: `backlog fail {id} [--reason \"...\"]`\n");

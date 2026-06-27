@@ -234,7 +234,7 @@ mod tests {
         let id = add(&mut v, "harness", "ship feature", "s1");
         add(&mut v, "harness", "write docs", "s1");
         assert_eq!(open_items(&v, None).len(), 2);
-        let n = resolve(&mut v, &[id.clone()]);
+        let n = resolve(&mut v, std::slice::from_ref(&id));
         assert_eq!(n, 1);
         let open = open_items(&v, None);
         assert_eq!(open.len(), 1);
@@ -242,7 +242,7 @@ mod tests {
         // Store keeps the resolved item for history.
         assert_eq!(v.len(), 2);
         // Resolving an already-done id is a no-op.
-        assert_eq!(resolve(&mut v, &[id.clone()]), 0);
+        assert_eq!(resolve(&mut v, std::slice::from_ref(&id)), 0);
         // The rendered note must not mention the resolved item.
         let body = render_body(&v, "2026-06-25");
         assert!(body.contains("write docs"));
@@ -254,7 +254,7 @@ mod tests {
     fn readd_resolved_text_reopens() {
         let mut v = Vec::new();
         let id = add(&mut v, "harness", "flaky test", "s1");
-        resolve(&mut v, &[id.clone()]);
+        resolve(&mut v, std::slice::from_ref(&id));
         assert_eq!(open_items(&v, None).len(), 0);
         let id2 = add(&mut v, "harness", "flaky test", "s2");
         assert_eq!(id, id2);

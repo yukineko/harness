@@ -767,7 +767,7 @@ fn cmd_merge(l: &Loaded, id: &str, req_filter: Option<&str>) -> Result<u8> {
         .items
         .iter()
         .filter(|item| item.is_done())
-        .filter(|item| req_filter.map_or(true, |f| item.req_id == f))
+        .filter(|item| req_filter.is_none_or(|f| item.req_id == f))
         .collect();
 
     if items_to_merge.is_empty() {

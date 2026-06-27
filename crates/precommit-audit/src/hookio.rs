@@ -77,6 +77,9 @@ pub fn clear_block_marker(root: &Path, audit_dir: &str) {
 }
 
 /// Append a JSONL entry to `<audit_dir>/audit-log.jsonl`. Best effort.
+// The fields are an audit record's columns; bundling them into a struct would
+// just move the same arity to the call site.
+#[allow(clippy::too_many_arguments)]
 pub fn write_audit_log(
     root: &Path,
     audit_dir: &str,

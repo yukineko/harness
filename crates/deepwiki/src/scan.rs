@@ -212,7 +212,7 @@ pub fn render_markdown(map: &RepoMap) -> String {
 
     s.push_str("## languages\n");
     let mut langs: Vec<(&String, &LangStat)> = map.languages.iter().collect();
-    langs.sort_by(|a, b| b.1.lines.cmp(&a.1.lines));
+    langs.sort_by_key(|b| std::cmp::Reverse(b.1.lines));
     for (lang, st) in langs {
         s.push_str(&format!("- {lang}: {} files, {} lines\n", st.files, st.lines));
     }

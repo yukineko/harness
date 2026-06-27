@@ -497,7 +497,7 @@ fn collect_rs_files_inner(dir: &std::path::Path, out: &mut Vec<std::path::PathBu
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod testaudit {
+mod tests {
     use super::*;
 
     // ------------------------------------------------------------------

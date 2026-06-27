@@ -192,19 +192,13 @@ impl Default for HardcodedSecret {
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[derive(Default)]
 pub struct SwallowedError {
     /// Extra regexes (matched against the raw `+`-prefixed added line) that
     /// count as a swallowed error / fall-through, on top of the built-ins.
     pub extra_patterns: Vec<String>,
 }
 
-impl Default for SwallowedError {
-    fn default() -> Self {
-        SwallowedError {
-            extra_patterns: Vec::new(),
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -230,18 +224,12 @@ impl Default for DuplicateFunction {
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[derive(Default)]
 pub struct LocalCapture {
     /// Reason link surfaced in the message (project doc reference).
     pub doc_ref: String,
 }
 
-impl Default for LocalCapture {
-    fn default() -> Self {
-        LocalCapture {
-            doc_ref: String::new(),
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]

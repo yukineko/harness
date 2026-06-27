@@ -195,7 +195,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("no tasks");
             } else {
                 let now = now_unix();
-                println!("{:<10} {:<10} {:<10} {}", "ID", "PRIORITY", "STATUS", "TITLE");
+                println!("{:<10} {:<10} {:<10} TITLE", "ID", "PRIORITY", "STATUS");
                 for t in &tasks {
                     let priority_str = match t.priority() {
                         0 => "p0",
@@ -346,7 +346,7 @@ fn format_unix_datetime(secs: u64) -> String {
     let jd = days + 2440588; // Julian Day Number for 1970-01-01
     let l = jd + 68569;
     let n = 4 * l / 146097;
-    let l = l - (146097 * n + 3) / 4;
+    let l = l - (146097 * n).div_ceil(4);
     let i = 4000 * (l + 1) / 1461001;
     let l = l - 1461 * i / 4 + 31;
     let j = 80 * l / 2447;

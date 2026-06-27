@@ -537,17 +537,13 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             }
             let total_runs = all.len();
             let complete = all.iter().filter(|s| s.is_complete).count();
-            let rate = if total_runs > 0 {
-                complete * 100 / total_runs
-            } else {
-                0
-            };
+            let rate = (complete * 100).checked_div(total_runs).unwrap_or(0);
             eprintln!(
                 "condukt stats: {complete}/{total_runs} complete ({rate}%)\n"
             );
             // Header
-            println!("{:<32}  {:>6}  {:>6}  {}",
-                "run_id", "done", "total", "goal");
+            println!("{:<32}  {:>6}  {:>6}  goal",
+                "run_id", "done", "total");
             println!("{}", "-".repeat(72));
             for s in &all {
                 let marker = if s.is_complete { "✓" } else { " " };
@@ -566,7 +562,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             }
             println!("\ntask status distribution (all runs):");
             let mut pairs: Vec<_> = totals.into_iter().collect();
-            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            pairs.sort_by_key(|b| std::cmp::Reverse(b.1));
             for (k, v) in pairs {
                 println!("  {k}: {v}");
             }

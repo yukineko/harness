@@ -223,8 +223,7 @@ fn project_matches(task_project: &str, filter: &str) -> bool {
     }
     // filter が末尾スラッシュなしの repo_root の場合を考慮
     // task_project が filter + "/" で始まればマッチ
-    if task_project.starts_with(filter) {
-        let rest = &task_project[filter.len()..];
+    if let Some(rest) = task_project.strip_prefix(filter) {
         return rest.starts_with('/');
     }
     false
