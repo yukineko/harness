@@ -16,6 +16,7 @@ mod backlog;
 mod config;
 mod condukt;
 mod insights;
+mod lock;
 mod state;
 
 use clap::{Parser, Subcommand};
@@ -63,6 +64,13 @@ fn stop_command() -> ! {
 
         let cfg = Config::load();
         if !cfg.enabled || Config::disabled_env() {
+            return;
+        }
+
+        // Stand down while another live session holds the backlog lock: a /flow
+        // or /backlog driver is already running condukt against this queue, and
+        // autoflow's auto-loop would double-drive it.
+        if lock::backlog_driver_active() {
             return;
         }
 
