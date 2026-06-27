@@ -2,7 +2,7 @@
 name: flow
 description: 課題の供給（compass の次の一手 / backlog のキュー）から解決手段の実行（condukt、fugu-router がモデル選択）までを1本のループで貫く統合 driver。source→executor を束ねる「フレームワーク層」。SessionStart で開いている仕事があれば自動で提案され（承認後に起動）、手動でも `/flow` で起動できる。判定（どの source を引くか・止め時）は LLM、状態維持・ロック・モデル選択は既存バイナリ（compass/backlog/condukt/fugu-router）が担う。
 argument-hint: "[任意: 直接の課題文。省略時は compass→backlog から自動でピック]"
-allowed-tools: Task, AskUserQuestion, Bash(backlog:*), Bash(compass:*), Bash(condukt:*), Bash(fugu-router:*), Bash(git:*), Read
+allowed-tools: Task, AskUserQuestion, Bash(backlog:*), Bash(compass:*), Bash(condukt:*), Bash(fugu-router:*), Bash(hypothesis:*), Bash(git:*), Read
 ---
 
 # /flow — 統合 source→executor driver
@@ -11,10 +11,15 @@ allowed-tools: Task, AskUserQuestion, Bash(backlog:*), Bash(compass:*), Bash(con
 
 ```
 SOURCE（課題の供給）              EXECUTOR（解決手段の実行）
-  compass  … 次の右サイズの一手   ─┐
-  backlog  … 確定済みキュー        ├─▶  condukt（fugu-router がモデル選択）─▶ verify
-  prompt   … ユーザー直の課題文   ─┘
+  compass    … 次の右サイズの一手   ─┐
+  backlog    … 確定済みキュー        ├─▶  condukt（fugu-router がモデル選択）─▶ verify
+  hypothesis … 計測待ちの PDO 仮説   │
+  prompt     … ユーザー直の課題文   ─┘
 ```
+
+> `hypothesis` は PDO discovery の出力（検証したい仮説）を実行へ繋ぐ source。
+> open な仮説を「その仮説を検証する実験」として condukt に流し、完了後は出荷ではなく
+> **計測した証拠を添えて** validate/reject する（出荷だけでは validate しない＝build ≠ validate）。
 
 **役割分担（外さない）**: ループ制御（どの source を引くか・実行・検証・止め時の判定）は **この skill（LLM）**。
 状態維持・ロック・size routing・モデル選択は **既存バイナリ**（`compass` / `backlog` / `condukt` / `fugu-router`）。
@@ -75,12 +80,18 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
 #### 3-1. 次のタスクを優先度順にピック
 
 1. **compass の主筋**（Step 1 の `to_condukt`）が未消化なら → それを最優先で選ぶ。
-2. なければ **backlog**:
+2. なければ **backlog**（確定キュー）:
    ```bash
    backlog next [--project <path>]
    ```
-   結果が空（0件）かつ compass 主筋も無し → **ループを抜けて Step 4 へ**。
-3. ピックしたタスクのタイトル＋ notes（仕様・制約・参照ファイル）を**課題文**に組み立てる。
+3. backlog も空なら **hypothesis**（discovery: 計測待ちの open 仮説）:
+   ```bash
+   hypothesis list --status open    # 空なら次へ
+   ```
+   open な仮説があれば、その**仮説を検証する実験**を課題文にする（仮説 ID を控える）。
+   `hypothesis` バイナリが無い / 0 件なら skip。
+4. compass 主筋・backlog・hypothesis のいずれも空 → **ループを抜けて Step 4 へ**。
+5. ピックしたタスクのタイトル＋ notes（仕様・制約・参照ファイル）を**課題文**に組み立てる。
 
 #### 3-2. condukt で実行（fugu-router がモデル選択）
 
@@ -100,6 +111,9 @@ condukt の完了ゲートを通ったら結果を source に書き戻す:
 - **成功**:
   - backlog 由来 → `backlog done <id>`
   - compass 由来 → compass の一手を完了として記録し、次サイクルの gap を取り直す（`compass gap`）。
+  - hypothesis 由来 → **出荷しただけでは validate しない**。実験で観測した成果を添えて
+    `hypothesis validate <id> --evidence "<観測した成果>"`（反証なら `reject <id> --reason "..."`）。
+    計測結果が未取得なら仮説は open のまま残し、計測を残課題として報告する（build ≠ validate）。
   - fugu-router 併用時 → 検証結果（どのモデルが通ったか・コスト）を `record` で書き戻して方策を更新。
 - **失敗**（blocked / needs-serial 等）:
   - backlog 由来 → `backlog fail <id> --reason "<概要>"`、スキップして次へ。
