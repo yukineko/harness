@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 pub use harness_core::config::expand_tilde;
+use harness_core::trust;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -60,6 +61,20 @@ struct FileConfig {
 /// The `~/.tdd` base directory. Thin wrapper over the shared primitive.
 pub fn base_dir() -> PathBuf {
     harness_core::config::base_dir("tdd")
+}
+
+/// Emit a one-time, best-effort notice that an untrusted project `tdd.toml` was
+/// ignored. Printed at most once per process so a hook that loads the config
+/// repeatedly doesn't spam stderr.
+fn warn_untrusted(path: &Path) {
+    use std::sync::Once;
+    static WARNED: Once = Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "tdd: {} is not trusted; ignoring it. Run 'tdd trust' to enable.",
+            path.display()
+        );
+    });
 }
 
 fn default_impl_globs() -> Vec<String> {
@@ -130,17 +145,24 @@ impl Config {
         base_dir().join("config.toml")
     }
 
-    /// Load config for a project root. A project `tdd.toml` wins outright;
-    /// otherwise the home config; otherwise built-in defaults. Any parse error
-    /// silently falls back (the gate must never crash a turn).
+    /// Load config for a project root. A project `tdd.toml` wins outright — but
+    /// only once the project root is **trusted** (`harness_core::trust`), because
+    /// its `test_cmd` is later executed verbatim by `tdd red`/`tdd green` and a
+    /// malicious repo could otherwise smuggle in an arbitrary command. An
+    /// untrusted project `tdd.toml` is ignored (with a one-time notice) and we
+    /// fall back to the trusted home config, otherwise built-in defaults. Any
+    /// parse error silently falls back (the gate must never crash a turn).
     pub fn load(root: &Path) -> Self {
         let mut cfg = Config::default();
 
         let chosen = {
             let p = Config::project_path(root);
-            if p.exists() {
+            if p.exists() && trust::is_trusted(root) {
                 Some(p)
             } else {
+                if p.exists() {
+                    warn_untrusted(&p);
+                }
                 let h = Config::home_path();
                 if h.exists() {
                     Some(h)
@@ -217,5 +239,75 @@ impl Config {
         std::env::var("TDD_DISABLE")
             .map(|v| !v.is_empty() && v != "0")
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("tdd-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    // Mutates the process-global HOME and HARNESS_TRUST_ALL env, so the whole
+    // trust matrix is exercised in a SINGLE #[test] to keep it serialized.
+    #[test]
+    fn project_test_cmd_is_gated_behind_workspace_trust() {
+        let home = unique_dir("trust-home");
+        let proj = unique_dir("trust-proj");
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        // A malicious project-local config that would run an attacker command.
+        std::fs::write(Config::project_path(&proj), "test_cmd = \"pwned\"\n").unwrap();
+
+        // Untrusted + no home config → project is ignored, built-in default used.
+        assert_eq!(
+            Config::load(&proj).test_cmd,
+            "cargo test",
+            "untrusted project tdd.toml must NOT be honored; fall back to default"
+        );
+
+        // With a (trusted) home config present, an untrusted project still falls
+        // back to HOME rather than the project file.
+        let home_cfg = Config::home_path();
+        std::fs::create_dir_all(home_cfg.parent().unwrap()).unwrap();
+        std::fs::write(&home_cfg, "test_cmd = \"home-cmd\"\n").unwrap();
+        assert_eq!(
+            Config::load(&proj).test_cmd,
+            "home-cmd",
+            "untrusted project must fall back to the trusted home config"
+        );
+
+        // HARNESS_TRUST_ALL=1 trusts everything → project file honored.
+        std::env::set_var("HARNESS_TRUST_ALL", "1");
+        assert_eq!(
+            Config::load(&proj).test_cmd,
+            "pwned",
+            "HARNESS_TRUST_ALL must let the project test_cmd through"
+        );
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        // Back to default-deny, then explicit trust via the shared trust list.
+        assert_eq!(Config::load(&proj).test_cmd, "home-cmd");
+        trust::add(&proj).unwrap();
+        assert_eq!(
+            Config::load(&proj).test_cmd,
+            "pwned",
+            "an explicitly trusted project must honor its own test_cmd"
+        );
+
+        // cleanup (best-effort)
+        let _ = trust::remove(&proj);
+        std::env::remove_var("HOME");
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&proj);
     }
 }
