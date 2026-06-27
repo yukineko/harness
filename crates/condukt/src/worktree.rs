@@ -36,9 +36,62 @@ fn branch_checked_out(repo: &Path, branch: &str) -> Result<bool> {
     Ok(listing.lines().any(|l| l.trim() == needle))
 }
 
+/// Validate a `topic` — a single path component appended to `worktree_base`.
+/// Rejects anything that could traverse out of the base or be parsed by git as
+/// an option: empty, a leading `-`/`.`, embedded `..`, or any char outside
+/// `[A-Za-z0-9._-]` (notably path separators). `topic`/`branch` are derived from
+/// LLM-authored task names, so they are untrusted input.
+fn validate_topic(topic: &str) -> Result<()> {
+    if topic.is_empty() {
+        bail!("worktree topic must not be empty");
+    }
+    if topic.starts_with('-') || topic.starts_with('.') {
+        bail!("worktree topic {topic:?} must not start with '-' or '.'");
+    }
+    if topic.contains("..") {
+        bail!("worktree topic {topic:?} must not contain '..'");
+    }
+    if !topic
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        bail!("worktree topic {topic:?} may only contain [A-Za-z0-9._-] (no path separators)");
+    }
+    Ok(())
+}
+
+/// Validate a `branch` name. Allows `/` (git refs like `condukt/t2`) but rejects
+/// a leading `-` (git option injection), a leading/trailing `/`, `..`/`//`, and
+/// any char outside `[A-Za-z0-9._/-]`.
+fn validate_branch(branch: &str) -> Result<()> {
+    if branch.is_empty() {
+        bail!("branch must not be empty");
+    }
+    if branch.starts_with('-') || branch.starts_with('/') {
+        bail!("branch {branch:?} must not start with '-' or '/'");
+    }
+    if branch.ends_with('/') {
+        bail!("branch {branch:?} must not end with '/'");
+    }
+    if branch.contains("..") || branch.contains("//") {
+        bail!("branch {branch:?} must not contain '..' or '//'");
+    }
+    if !branch
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+    {
+        bail!("branch {branch:?} may only contain [A-Za-z0-9._/-]");
+    }
+    Ok(())
+}
+
 /// Create a worktree at `<worktree_base>/<topic>` on a new `branch`.
-/// Enforces: path is outside the repo, and the branch isn't already checked out.
+/// Enforces: topic/branch are sanitized, path is outside the repo, and the
+/// branch isn't already checked out.
 pub fn create(repo: &Path, worktree_base: &Path, topic: &str, branch: &str) -> Result<PathBuf> {
+    validate_topic(topic)?;
+    validate_branch(branch)?;
+
     let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
     let path = worktree_base.join(topic);
 
@@ -59,7 +112,9 @@ pub fn create(repo: &Path, worktree_base: &Path, topic: &str, branch: &str) -> R
         std::fs::create_dir_all(parent).ok();
     }
     let path_str = path.to_string_lossy().to_string();
-    git(repo, &["worktree", "add", &path_str, "-b", branch])?;
+    // `--` ends option parsing so a path/branch can never be read as a flag
+    // (defense in depth on top of validate_topic/validate_branch above).
+    git(repo, &["worktree", "add", "-b", branch, "--", &path_str])?;
     Ok(path)
 }
 
@@ -356,6 +411,51 @@ mod tests {
         fs::write(&readme, "initial").unwrap();
         git(dir, &["add", "README.md"]).unwrap();
         git(dir, &["commit", "-m", "initial"]).unwrap();
+    }
+
+    #[test]
+    fn validate_topic_accepts_safe_and_rejects_dangerous() {
+        // Safe single-component topics.
+        assert!(validate_topic("t2").is_ok());
+        assert!(validate_topic("fix-bug_3.1").is_ok());
+        // Dangerous: traversal, separators, option injection, empty, dotfiles.
+        assert!(validate_topic("").is_err());
+        assert!(validate_topic("..").is_err());
+        assert!(validate_topic("../evil").is_err());
+        assert!(validate_topic("a/b").is_err(), "path separator must be rejected");
+        assert!(validate_topic("-rf").is_err(), "leading '-' must be rejected");
+        assert!(validate_topic(".hidden").is_err());
+        assert!(validate_topic("a b").is_err(), "spaces must be rejected");
+        assert!(validate_topic("a;rm -rf").is_err());
+    }
+
+    #[test]
+    fn validate_branch_allows_slashes_but_blocks_injection() {
+        // Real branch names used by condukt.
+        assert!(validate_branch("condukt/t2").is_ok());
+        assert!(validate_branch("feature/x.y_z-1").is_ok());
+        // Dangerous forms.
+        assert!(validate_branch("").is_err());
+        assert!(validate_branch("-b").is_err(), "leading '-' must be rejected");
+        assert!(validate_branch("/abs").is_err());
+        assert!(validate_branch("trailing/").is_err());
+        assert!(validate_branch("a..b").is_err());
+        assert!(validate_branch("a//b").is_err());
+        assert!(validate_branch("a b").is_err());
+    }
+
+    /// create() rejects an unsafe topic before invoking git.
+    #[test]
+    fn create_rejects_traversal_topic() {
+        let tmp = std::env::temp_dir().join(format!("condukt-wt-{}", std::process::id()));
+        let _ = fs::create_dir_all(&tmp);
+        let repo = tmp.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        let base = tmp.join("wt");
+        let err = create(&repo, &base, "../escape", "condukt/x").unwrap_err();
+        assert!(err.to_string().contains("topic"));
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     /// remove() returns Ok(None) when the branch was merged and deletes cleanly.
