@@ -183,7 +183,7 @@ fn session_cmd() {
         println!("\nagents (main vs sub-agent)");
         let costs = rec.agent_costs(&cfg.pricing);
         let mut agents: Vec<_> = rec.agents.iter().collect();
-        agents.sort_by(|a, b| b.1.turns.cmp(&a.1.turns));
+        agents.sort_by_key(|b| std::cmp::Reverse(b.1.turns));
         for (name, a) in agents {
             println!(
                 "  {:<12} {:>9}  {:>8}  {} turns",
