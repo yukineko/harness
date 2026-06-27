@@ -100,14 +100,12 @@ impl Config {
 
     pub fn load(root: &Path) -> Self {
         let mut cfg = Config::default();
-        let chosen = {
-            let p = Config::project_path(root);
-            if p.exists() {
-                Some(p)
-            } else {
-                let h = Config::home_path();
-                h.exists().then_some(h)
-            }
+        let project = Config::project_path(root);
+        let (chosen, from_project) = if project.exists() {
+            (Some(project.clone()), true)
+        } else {
+            let h = Config::home_path();
+            (h.exists().then_some(h), false)
         };
         if let Some(path) = chosen {
             if let Ok(text) = std::fs::read_to_string(&path) {
@@ -143,6 +141,19 @@ impl Config {
                 }
             }
         }
+        // Workspace-trust gate: the escape-hatch `command` is run via `sh -c`, so
+        // a project-local `beacon.toml` shipped by an untrusted repository must not
+        // be allowed to execute it. Drop the project-sourced command unless the
+        // project root has been explicitly trusted (or HARNESS_TRUST_ALL is set).
+        // Built-in channels (desktop/slack/webhook) and the home/default config
+        // are unaffected — only the project-derived command is gated.
+        if from_project && cfg.command.is_some() && !harness_core::trust::is_trusted(root) {
+            eprintln!(
+                "beacon: {} is not trusted; ignoring its command. Run 'beacon trust' to enable.",
+                project.display()
+            );
+            cfg.command = None;
+        }
         // Environment overrides for secrets win over the file.
         if let Some(v) = env_non_empty("BEACON_SLACK_WEBHOOK") {
             cfg.slack_webhook = Some(v);
@@ -167,5 +178,80 @@ impl Config {
             || self.slack_webhook.is_some()
             || self.webhook.is_some()
             || self.command.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Tests below mutate process-wide env (HOME / HARNESS_TRUST_ALL), so they must
+    // not run concurrently — serialize them through a single test with a guard.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn write(path: &Path, body: &str) {
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn project_command_is_gated_behind_workspace_trust() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Isolate the home dir so the shared trust list and home config can't leak
+        // in from the real environment.
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_trust_all = std::env::var_os("HARNESS_TRUST_ALL");
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        // A project dir shipping a beacon.toml with an escape-hatch command.
+        let project = tempfile::tempdir().unwrap();
+        write(
+            &Config::project_path(project.path()),
+            "command = \"echo pwned\"\ndesktop = true\n",
+        );
+
+        // 1) Untrusted project: the command must be dropped, but other project
+        //    settings (here `desktop`) still apply.
+        let cfg = Config::load(project.path());
+        assert_eq!(cfg.command, None, "untrusted project command must be dropped");
+        assert!(cfg.desktop, "non-command project settings still apply");
+
+        // 2) HARNESS_TRUST_ALL trusts every project → command is honored.
+        std::env::set_var("HARNESS_TRUST_ALL", "1");
+        let cfg = Config::load(project.path());
+        assert_eq!(cfg.command.as_deref(), Some("echo pwned"));
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        // 3) Explicitly trusting the project root also honors the command.
+        harness_core::trust::add(project.path()).unwrap();
+        let cfg = Config::load(project.path());
+        assert_eq!(cfg.command.as_deref(), Some("echo pwned"));
+        harness_core::trust::remove(project.path()).unwrap();
+
+        // 4) A home-level command needs no trust (home config is trusted).
+        let no_project = tempfile::tempdir().unwrap();
+        write(&Config::home_path(), "command = \"echo home\"\n");
+        let cfg = Config::load(no_project.path());
+        assert_eq!(
+            cfg.command.as_deref(),
+            Some("echo home"),
+            "home-sourced command is honored without trust"
+        );
+
+        // restore env
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_trust_all {
+            Some(v) => std::env::set_var("HARNESS_TRUST_ALL", v),
+            None => std::env::remove_var("HARNESS_TRUST_ALL"),
+        }
     }
 }
