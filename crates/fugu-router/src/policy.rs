@@ -56,16 +56,31 @@ const TRIVIAL_KW: &[&str] = &[
 ];
 
 /// Cold-start model guess from task text + file count (mirrors the interpreter's
-/// own rule: design→opus, trivial→haiku, else sonnet).
+/// own rule: design→opus, trivial→cheap, else sonnet).
+///
+/// Order matters: triviality is judged **before** the raw `file_count > 5`
+/// rule. Otherwise a many-file mechanical chore (a repo-wide `rename`, a
+/// formatting sweep) would short-circuit to opus on volume alone — the cold
+/// start over-charges exactly the cheap work, before any history exists to
+/// correct it. Design/high-stakes keywords still win outright.
 pub fn prior_model(title: &str, file_count: usize) -> &'static str {
     let t = title.to_lowercase();
-    if DESIGN_KW.iter().any(|k| t.contains(k)) || file_count > 5 {
-        "opus"
-    } else if TRIVIAL_KW.iter().any(|k| t.contains(k)) {
-        "haiku"
-    } else {
-        "sonnet"
+
+    // Design / high-stakes work warrants the strong tier even at one file.
+    if DESIGN_KW.iter().any(|k| t.contains(k)) {
+        return "opus";
     }
+    // A mechanical chore stays cheap across many files — the *kind* of work is
+    // trivial, so volume alone shouldn't force opus. A large sweep still gets
+    // sonnet (more surface = more chance of a slip); a small one gets haiku.
+    if TRIVIAL_KW.iter().any(|k| t.contains(k)) {
+        return if file_count > 5 { "sonnet" } else { "haiku" };
+    }
+    // Non-trivial, non-design: a wide blast radius is itself a complexity signal.
+    if file_count > 5 {
+        return "opus";
+    }
+    "sonnet"
 }
 
 /// Independent verifier: generally a not-cheaper, different model so it doesn't
@@ -323,6 +338,25 @@ mod tests {
 
         let d2 = decide("rename a variable", &[], "parallel", &[], 0.7, 2);
         assert_eq!(d2.worker_model, "haiku");
+    }
+
+    #[test]
+    fn multi_file_trivial_drops_below_opus() {
+        // A many-file mechanical chore must NOT be billed at opus on volume
+        // alone (the bug): a wide trivial sweep gets sonnet, a small one haiku.
+        assert_eq!(prior_model("rename a symbol across the repo", 20), "sonnet");
+        assert_eq!(prior_model("reformat the whole tree", 30), "sonnet");
+        assert_eq!(prior_model("fix a typo", 1), "haiku");
+    }
+
+    #[test]
+    fn multi_file_design_and_nontrivial_stay_opus() {
+        // Design keywords win outright, even across many files…
+        assert_eq!(prior_model("refactor the auth module", 20), "opus");
+        // …and a wide non-trivial, non-design change keeps its volume signal.
+        assert_eq!(prior_model("implement the new endpoints", 8), "opus");
+        // An ordinary small change is still sonnet.
+        assert_eq!(prior_model("add a field to the response", 1), "sonnet");
     }
 
     #[test]
