@@ -11,7 +11,7 @@ discovery(hypothesis) → flow → condukt → measure → learn のループを
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
-DoD1(flow source)・DoD3(experiment class core) 着地。DoD2 は証拠ゲート着地済み・残りは計測の write-back。残る最大差分は DoD2 の計測ループ閉じ: (a) AwaitingMeasurement status を merge 時にセット（12c7726f, m, enum+CLI verb+condukt 呼び出し）, (b) 完了した一手の成果を measuring_stick に対して判定・記録（66d0968a, l, 設計重め）。次の右サイズ主筋は (a)＝より具体的。experiment の findings/worktree-discard(2b18a458) は後続。
+PDO-loop charter DoD 達成: DoD1(hypothesis=flow source)・DoD2(awaiting-measurement on merge + 証拠必須 validate/reject)・DoD3 core(experiment class が merge 経路から除外)・DoD4(cargo test --workspace 664 pass)。ループは閉じた: discovery(hypothesis)→flow→condukt→merge→awaiting-measurement→(計測)→validate/reject。残りは強化のみ: 66d0968a(成果を measuring_stick で判定・記録, l)・2b18a458(experiment findings/discard, p2)・p2 architecture(OST/input metrics/dual-track/scoring/cadence)。次サイクルは PR マージ後に /compass で次ゴール定義 or 強化項目を継続。
 
 ## next_action
 
