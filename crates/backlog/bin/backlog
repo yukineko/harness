@@ -1,0 +1,26 @@
+#!/bin/sh
+# backlog plugin launcher — selects the per-platform binary bundled in this dir.
+#
+# The /backlog and /flow skills call `backlog <sub>` (lock/next/done/fail/list);
+# this dispatcher execs the matching `backlog-<os>-<arch>` build. If no build
+# exists for the host platform, it exits 0 silently so a hook NEVER breaks the
+# user's turn.
+root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+case "$(uname -s)" in
+  Linux)  os=linux ;;
+  Darwin) os=darwin ;;
+  *)      os="$(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64)   arch=x86_64 ;;
+  arm64|aarch64)  arch=arm64 ;;
+  *)              arch="$(uname -m)" ;;
+esac
+
+binary="$root/backlog-$os-$arch"
+if [ ! -x "$binary" ]; then
+  echo "backlog: no bundled binary for $os-$arch ($binary). Build it with scripts/build-plugin-bin.sh on that platform." >&2
+  exit 0
+fi
+exec "$binary" "$@"
