@@ -86,9 +86,7 @@ fn webhook(url: &str, note: &Note) -> bool {
 
 fn run_command(cmd: &str, note: &Note) -> bool {
     run_quiet(
-        Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
+        harness_core::shell::command(cmd)
             .env("BEACON_EVENT", note.event)
             .env("BEACON_PROJECT", &note.project)
             .env("BEACON_TITLE", &note.title)

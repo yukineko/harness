@@ -288,9 +288,7 @@ fn classify(out: &str) -> ReviewerResult {
 fn build_command(cmdline: &str) -> Command {
     let needs_shell = cmdline.contains(|c| "|&;<>(){}$`\\\"'*?".contains(c));
     if needs_shell {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(cmdline);
-        c
+        harness_core::shell::command(cmdline)
     } else {
         let mut parts = cmdline.split_whitespace();
         let prog = parts.next().unwrap_or("claude");

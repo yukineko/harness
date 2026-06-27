@@ -82,9 +82,7 @@ pub fn spawn_detached(input: &HookInput, cfg: &Config) {
         shq(&input.transcript_path),
         shq(&cwd.to_string_lossy()),
     );
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg(&line)
+    let _ = harness_core::shell::command(&line)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -198,9 +196,7 @@ fn run_model(cmdline: &str, prompt: &str, timeout_secs: u64) -> Option<String> {
 fn build_command(cmdline: &str) -> Command {
     let cmdline = cmdline.trim();
     if cmdline.contains(['|', '&', ';', '>', '<', '$', '`', '(', ')']) {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(cmdline);
-        return c;
+        return harness_core::shell::command(cmdline);
     }
     let mut parts = cmdline.split_whitespace();
     let prog = parts.next().unwrap_or("claude");

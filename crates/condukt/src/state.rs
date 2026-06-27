@@ -413,9 +413,7 @@ pub fn run_tests(cfg: &Config, cwd: &Path, _rs: &RunState) -> Result<()> {
         bail!("empty test command");
     }
     eprintln!("condukt: running tests in {}: {cmd_str}", root.display());
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd_str)
+    let status = harness_core::shell::command(&cmd_str)
         .current_dir(&root)
         .status()
         .with_context(|| format!("failed to run '{cmd_str}'"))?;
@@ -455,9 +453,7 @@ pub struct CycleResult {
 
 /// Run a single shell command, capturing combined output. Returns (exit_ok, output).
 fn run_command_capture(cmd_str: &str, cwd: &Path) -> (bool, String) {
-    let result = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd_str)
+    let result = harness_core::shell::command(cmd_str)
         .current_dir(cwd)
         .output();
     match result {

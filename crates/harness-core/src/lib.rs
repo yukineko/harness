@@ -18,6 +18,7 @@ pub mod interrogate;
 pub mod metrics;
 pub mod pricing;
 pub mod projkey;
+pub mod shell;
 pub mod store;
 pub mod transcript;
 pub mod trust;
