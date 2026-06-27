@@ -171,8 +171,12 @@ DEEPWIKI_PAGES=$(ls .deepwiki/*.md 2>/dev/null | tr '\n' ' ' || true)
 # interpreter への指示: 課題に関連するページがあれば Read して設計背景を把握すること。
 ```
 
-`Task` で `condukt-interpreter` 相当 (subagent_type を持たない環境では `Explore` を model:opus で)
-を起動し、課題を **Decomposition JSON** にさせる。スキーマは `agents/condukt-interpreter.md` 準拠:
+`Task` で `condukt-interpreter` 相当を起動し、課題を **Decomposition JSON** にさせる。
+**モデル選択 (コスト最適化)**: 既定は **sonnet**（分割・構造化は sonnet で正確性を保てる）。
+課題が **曖昧 / 新規アーキテクチャ / 高不確実性**（仕様が割れる・open_questions が出そう・
+依存解析が非自明）のときだけ **opus に昇格**する。`subagent_type` を持たない環境では `Explore` を
+既定 `model:sonnet`（上記昇格条件のときのみ `model:opus`）で起動する。スキーマは
+`agents/condukt-interpreter.md` 準拠:
 ```json
 { "goal": "...", "linked_hypotheses": ["hid1", "hid2"], "tasks": [
   { "id": "t1", "title": "...", "touched_files": ["path/or/glob", ...],
