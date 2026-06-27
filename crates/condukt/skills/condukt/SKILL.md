@@ -393,17 +393,21 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 ### Phase 8 — クローズ
 `commit`/`push` はユーザー指示時のみ。GATED タスク (deploy 等) はユーザー承認を得てから別途実行。
 
-**仮説の自動クローズ (soft 依存)**: gate PASS 後、Phase 1 で interpreter が記録した `linked_hypotheses` を自動 validate する:
+**仮説の計測リマインド (soft 依存)**: gate PASS は「実装が done_criteria を満たした (= 出荷した)」ことしか意味しない。
+PDO では出荷は検証 (validated learning) ではないので、**コードがマージされただけで仮説を validate しない**。
+gate PASS 後は、Phase 1 で interpreter が記録した `linked_hypotheses` に「計測待ち」をリマインドするに留める:
 ```bash
 if command -v hypothesis >/dev/null 2>&1; then
   LINKED=$(jq -r '.linked_hypotheses // [] | .[]' <json.routed> 2>/dev/null || true)
   for HID in $LINKED; do
-    hypothesis validate "$HID" --run "$RID" 2>/dev/null \
-      && echo "仮説 $HID を validate (condukt_run: $RID)" || true
+    echo "仮説 $HID は計測待ち (condukt_run: $RID)。観測した成果を添えて手動で:"
+    echo "  hypothesis validate $HID --run $RID --evidence \"<観測した成果>\""
+    echo "  もしくは hypothesis reject $HID --run $RID --reason \"<反証した内容>\""
   done
 fi
 ```
-`linked_hypotheses` が空または `hypothesis`/`jq` が無ければスキップ。棄却したい場合は手動で `hypothesis reject <id> --run $RID` を実行する。
+`linked_hypotheses` が空または `hypothesis`/`jq` が無ければスキップ。
+`hypothesis validate`/`reject` は計測した証拠 (`--evidence`/`--reason`) を必須とするため、証拠なしでは status を変えられない。
 
 **spec-drift チェック (soft 依存)**: gate PASS 後、変更が正典仕様と乖離していないかを specguard で監査する。
 `specguard` バイナリが PATH 上にあり、かつ CWD に `specguard.toml` が存在する場合のみ実行する。
