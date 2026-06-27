@@ -98,6 +98,18 @@ compass route --file /tmp/compass-decomp.json
 - **`edge` = `GoalTooBig`** → Step 4 に戻り、ゴールを**より小さく彫り直す**（多くは validate 系の最小スライス）。
 - **`edge` = `OnlyNoise`** → north_star 自体を問い直す（方向が尽きた合図、Step 3 へ）。
 
+### Step 8 — outcome（計測ループを閉じる）
+`to_condukt` の一手が**完了したら**、その成果を measuring_stick で判定して記録する。これをやらないと
+charter に書いた measuring_stick は handoff に印字されるだけで**読み戻されず**、次の gap が「計測された進捗」を
+反映できない（build しただけで validate していない状態）。
+```bash
+compass outcome --verdict <forward|unchanged|backward> --evidence "<観測した成果>"
+```
+- verdict は move の diff・テスト結果・gap への接近度から**あなた(LLM)が判定**する（前進 / 不変 / 後退）。
+- `--evidence` は計測値必須（証拠なしは失敗＝ build ≠ validate）。記録は `.compass/outcomes.json` に蓄積され、
+  次回 `compass gap` の `last_outcome` として再浮上する。
+- `/flow` 経由で回している場合は sink（Step 3-3）が自動でこれを呼ぶので、手動の Step 8 は不要。
+
 ## 焦点保護（最重要 / B案）
 condukt は並列実行できるが、**compass は「今コミットする一手」を1つに絞る＝糸を増やさない**。
 右サイズが複数あっても、gap の主筋に最も効く1件（＋密結合な最小集合）だけを渡し、残りは保留へ流す。
