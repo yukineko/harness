@@ -1,0 +1,242 @@
+//! The canonical per-session record, shared across the harness plugins.
+//!
+//! Each Claude Code session is one JSON file under
+//! `<state_dir>/sessions/<session_id>.json`, rewritten on every Stop with the
+//! cumulative totals for the whole session so far. `gauge` owns the write path
+//! (its Stop hook re-reads the full transcript and upserts the record); other
+//! plugins can *read* the same record via [`load_one`] / [`load_all`] instead
+//! of re-parsing the transcript themselves — this is the single source of truth
+//! that keeps cost/turn/tool numbers from drifting between plugins.
+//!
+//! `SessionRecord` lived in the `gauge` binary crate originally; it moved here
+//! so passive consumers (session-insights, harness-status) can share the exact
+//! type and the one construction path ([`SessionRecord::from_aggregate`]).
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::usage::{Aggregate, ModelUsage};
+
+/// Token counts for one model within a session. Alias kept for call sites that
+/// referred to it as `Usage`; the type itself is [`crate::usage::ModelUsage`].
+pub type Usage = ModelUsage;
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub session_id: String,
+    pub project: String,
+    pub cwd: String,
+    #[serde(default)]
+    pub models: BTreeMap<String, Usage>,
+    #[serde(default)]
+    pub turns: u64,
+    #[serde(default)]
+    pub tools: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub first_ts: Option<String>,
+    #[serde(default)]
+    pub last_ts: Option<String>,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+impl SessionRecord {
+    /// Build a record from a transcript [`Aggregate`] — the single construction
+    /// path every writer uses, so the persisted shape can't diverge per plugin.
+    /// `track_tools = false` drops the per-tool counts (some configs opt out).
+    pub fn from_aggregate(
+        session_id: impl Into<String>,
+        project: impl Into<String>,
+        cwd: impl Into<String>,
+        agg: Aggregate,
+        track_tools: bool,
+        updated_at: impl Into<String>,
+    ) -> Self {
+        SessionRecord {
+            session_id: session_id.into(),
+            project: project.into(),
+            cwd: cwd.into(),
+            models: agg.models,
+            turns: agg.turns,
+            tools: if track_tools { agg.tools } else { BTreeMap::new() },
+            first_ts: agg.first_ts,
+            last_ts: agg.last_ts,
+            updated_at: updated_at.into(),
+        }
+    }
+
+    /// Total tokens across all models.
+    pub fn total_tokens(&self) -> u64 {
+        self.models.values().map(|u| u.total_tokens()).sum()
+    }
+
+    /// The day (YYYY-MM-DD) this session last ran, from `last_ts`.
+    pub fn day(&self) -> Option<String> {
+        self.last_ts
+            .as_ref()
+            .and_then(|t| t.get(0..10).map(|s| s.to_string()))
+    }
+}
+
+/// gauge's default store directory (`~/.gauge/store`). Consumers that want to
+/// read the canon use this to locate it without depending on the gauge crate.
+/// If a user overrides gauge's `state_dir` in its config, the canon won't be
+/// found here and the consumer should fall back to a fresh transcript parse.
+pub fn default_state_dir() -> PathBuf {
+    crate::config::base_dir("gauge").join("store")
+}
+
+pub fn sessions_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("sessions")
+}
+
+/// Keep only filesystem-safe characters so a hostile/empty session id can't
+/// escape the store directory.
+pub fn safe_id(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if cleaned.is_empty() {
+        "unknown".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Write (overwrite) the record for its session. Fail-soft: any IO error is
+/// swallowed so the hook never disturbs the turn.
+pub fn upsert(state_dir: &Path, rec: &SessionRecord) {
+    let dir = sessions_dir(state_dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("{}.json", safe_id(&rec.session_id)));
+    if let Ok(text) = serde_json::to_string_pretty(rec) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// Load a single session's record by id, if present and parseable.
+pub fn load_one(state_dir: &Path, session_id: &str) -> Option<SessionRecord> {
+    let path = sessions_dir(state_dir).join(format!("{}.json", safe_id(session_id)));
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Load every session record in the store (skipping anything unparseable).
+pub fn load_all(state_dir: &Path) -> Vec<SessionRecord> {
+    let dir = sessions_dir(state_dir);
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(rec) = serde_json::from_str::<SessionRecord>(&text) {
+                out.push(rec);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn safe_id_strips_separators() {
+        assert_eq!(safe_id("../../etc/passwd"), "etcpasswd");
+        assert_eq!(safe_id("abc-123_DEF"), "abc-123_DEF");
+        assert_eq!(safe_id(""), "unknown");
+    }
+
+    #[test]
+    fn usage_totals() {
+        let u = Usage {
+            input: 10,
+            output: 20,
+            cache_write_5m: 1,
+            cache_write_1h: 2,
+            cache_read: 3,
+        };
+        assert_eq!(u.total_tokens(), 36);
+    }
+
+    fn sample_aggregate() -> Aggregate {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "claude-x".to_string(),
+            Usage { input: 5, output: 7, cache_write_5m: 0, cache_write_1h: 0, cache_read: 1 },
+        );
+        let mut tools = BTreeMap::new();
+        tools.insert("Bash".to_string(), 3);
+        Aggregate {
+            models,
+            turns: 4,
+            tools,
+            first_ts: Some("2026-06-27T01:00:00Z".to_string()),
+            last_ts: Some("2026-06-27T02:00:00Z".to_string()),
+        }
+    }
+
+    #[test]
+    fn from_aggregate_tracks_tools_when_enabled() {
+        let rec = SessionRecord::from_aggregate(
+            "sid", "proj", "/cwd", sample_aggregate(), true, "2026-06-27T02:00:01Z",
+        );
+        assert_eq!(rec.session_id, "sid");
+        assert_eq!(rec.turns, 4);
+        assert_eq!(rec.tools.get("Bash"), Some(&3));
+        assert_eq!(rec.total_tokens(), 13);
+        assert_eq!(rec.day(), Some("2026-06-27".to_string()));
+    }
+
+    #[test]
+    fn from_aggregate_drops_tools_when_disabled() {
+        let rec = SessionRecord::from_aggregate(
+            "sid", "proj", "/cwd", sample_aggregate(), false, "ts",
+        );
+        assert!(rec.tools.is_empty());
+        assert_eq!(rec.turns, 4); // turns/models still kept
+    }
+
+    #[test]
+    fn upsert_then_load_one_roundtrips() {
+        let dir = TempDir::new().unwrap();
+        let rec = SessionRecord::from_aggregate(
+            "sess-1", "proj", "/cwd", sample_aggregate(), true, "ts",
+        );
+        upsert(dir.path(), &rec);
+
+        let loaded = load_one(dir.path(), "sess-1").expect("record present");
+        assert_eq!(loaded.session_id, "sess-1");
+        assert_eq!(loaded.total_tokens(), 13);
+        assert_eq!(loaded.tools.get("Bash"), Some(&3));
+
+        // Missing id → None, not an error.
+        assert!(load_one(dir.path(), "nope").is_none());
+    }
+
+    #[test]
+    fn load_one_matches_load_all() {
+        let dir = TempDir::new().unwrap();
+        let rec = SessionRecord::from_aggregate(
+            "sess-2", "proj", "/cwd", sample_aggregate(), true, "ts",
+        );
+        upsert(dir.path(), &rec);
+        let all = load_all(dir.path());
+        let one = load_one(dir.path(), "sess-2").unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].session_id, one.session_id);
+        assert_eq!(all[0].total_tokens(), one.total_tokens());
+    }
+}

@@ -11,11 +11,13 @@
 //! `## 数値サマリ` blocks (delimited by stable HTML-comment markers) and leave
 //! every prose section untouched.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use harness_core::pricing::{self, PriceOverride};
+use harness_core::session;
 use harness_core::transcript;
-use harness_core::usage;
+use harness_core::usage::{self, ModelUsage};
 
 use crate::config::Config;
 use crate::metrics::{short, Session};
@@ -50,25 +52,41 @@ fn numeric_body(ctx: &RecordCtx) -> String {
     )
 }
 
+/// Resolve this session's per-model token usage. Prefer gauge's persisted
+/// canonical [`SessionRecord`] (no transcript re-parse — this is what removes
+/// session-insights from the "triple parse"); fall back to a fresh aggregate
+/// when the canon isn't available (gauge not installed/disabled, or a custom
+/// state_dir). session-insights is a passive recorder, so a record that lags by
+/// at most the current turn is acceptable here.
+fn session_models(ctx: &RecordCtx) -> Option<BTreeMap<String, ModelUsage>> {
+    let rec = session::load_one(&session::default_state_dir(), ctx.session_id);
+    if let Some(rec) = rec {
+        if !rec.models.is_empty() {
+            return Some(rec.models);
+        }
+    }
+    usage::aggregate(ctx.transcript_path).map(|agg| agg.models)
+}
+
 /// Build the auto `## コスト` block body (between markers, exclusive).
 fn cost_body(ctx: &RecordCtx) -> String {
-    let Some(agg) = usage::aggregate(ctx.transcript_path) else {
+    let Some(models) = session_models(ctx) else {
         return "- (コストデータなし)".to_string();
     };
-    let total_usd = pricing::session_cost(agg.models.iter(), ctx.overrides);
+    let total_usd = pricing::session_cost(models.iter(), ctx.overrides);
     let mut input = 0u64;
     let mut output = 0u64;
     let mut cache_write = 0u64;
     let mut cache_read = 0u64;
     let mut total_tokens = 0u64;
-    for u in agg.models.values() {
+    for u in models.values() {
         input += u.input;
         output += u.output;
         cache_write += u.cache_write_5m + u.cache_write_1h;
         cache_read += u.cache_read;
         total_tokens += u.total_tokens();
     }
-    let models: Vec<String> = agg.models.keys().cloned().collect();
+    let models: Vec<String> = models.keys().cloned().collect();
     let models_line = if models.is_empty() {
         "(none)".to_string()
     } else {

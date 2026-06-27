@@ -110,21 +110,14 @@ fn record_hook() {
         return;
     };
 
-    let rec = SessionRecord {
-        session_id: input.session_id.clone(),
-        project: input.project_name(),
-        cwd: root.to_string_lossy().to_string(),
-        models: agg.models,
-        turns: agg.turns,
-        tools: if cfg.track_tools {
-            agg.tools
-        } else {
-            Default::default()
-        },
-        first_ts: agg.first_ts,
-        last_ts: agg.last_ts,
-        updated_at: chrono::Local::now().to_rfc3339(),
-    };
+    let rec = SessionRecord::from_aggregate(
+        input.session_id.clone(),
+        input.project_name(),
+        root.to_string_lossy().to_string(),
+        agg,
+        cfg.track_tools,
+        chrono::Local::now().to_rfc3339(),
+    );
     store::upsert(&cfg.state_dir, &rec);
 }
 
