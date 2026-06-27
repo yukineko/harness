@@ -20,15 +20,17 @@ pub struct RunCfg {
     pub bin_dir: Option<PathBuf>,
 }
 
-/// Result of one case: the failures list is empty iff the case passed.
+/// Result of one case. A `skipped` outcome (a draft awaiting its assertion) is
+/// neither passed nor failed; otherwise the failures list is empty iff passed.
 pub struct Outcome {
     pub label: String,
     pub failures: Vec<String>,
+    pub skipped: bool,
 }
 
 impl Outcome {
     pub fn passed(&self) -> bool {
-        self.failures.is_empty()
+        !self.skipped && self.failures.is_empty()
     }
 }
 
@@ -43,6 +45,14 @@ struct Subject {
 /// cmd) are themselves recorded as failures so a broken case fails loudly rather
 /// than silently passing.
 pub fn run_case(case: &Case, cfg: &RunCfg) -> Outcome {
+    if case.draft {
+        // Draft: no runnable assertion yet → skip (not pass, not fail).
+        return Outcome {
+            label: case.label(),
+            failures: Vec::new(),
+            skipped: true,
+        };
+    }
     let mut failures = Vec::new();
     match acquire(case, cfg) {
         Ok(subject) => {
@@ -54,6 +64,7 @@ pub fn run_case(case: &Case, cfg: &RunCfg) -> Outcome {
     Outcome {
         label: case.label(),
         failures,
+        skipped: false,
     }
 }
 
@@ -153,14 +164,13 @@ pub fn check_assert(a: &Assert, subject: &str, failures: &mut Vec<String>) {
     }
 }
 
-/// Discover `*.jsonl` golden files under `dir` (sorted) and parse them. Returns
-/// `(path, cases)` pairs so reports can attribute a case to its file.
+/// Discover `*.jsonl` golden files under `dir` (recursively, sorted) and parse
+/// them. Recursion means a curated subdir like `evals/curated/` is picked up
+/// with no config change. Returns `(path, cases)` pairs so reports can attribute
+/// a case to its file.
 pub fn discover(dir: &Path) -> Result<Vec<(PathBuf, Vec<Case>)>> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .with_context(|| format!("reading eval dir {}", dir.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-        .collect();
+    let mut files = Vec::new();
+    collect_jsonl(dir, &mut files)?;
     files.sort();
     let mut out = Vec::new();
     for f in files {
@@ -170,6 +180,21 @@ pub fn discover(dir: &Path) -> Result<Vec<(PathBuf, Vec<Case>)>> {
         out.push((f, cases));
     }
     Ok(out)
+}
+
+/// Recursively gather `*.jsonl` paths under `dir` into `files`.
+fn collect_jsonl(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let entries =
+        std::fs::read_dir(dir).with_context(|| format!("reading eval dir {}", dir.display()))?;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl(&path, files)?;
+        } else if path.extension().is_some_and(|x| x == "jsonl") {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// Orchestrate a run/list. Returns the process exit code:
@@ -223,7 +248,11 @@ pub fn execute(
         }
     }
 
-    let failed = outcomes.iter().filter(|o| !o.passed()).count();
+    // A skipped draft is neither a pass nor a failure; only real failures gate.
+    let failed = outcomes
+        .iter()
+        .filter(|o| !o.passed() && !o.skipped)
+        .count();
     if json_out {
         report_json(&outcomes, failed);
     } else {
@@ -238,7 +267,9 @@ pub fn execute(
 
 fn report_human(outcomes: &[Outcome], failed: usize) {
     for o in outcomes {
-        if o.passed() {
+        if o.skipped {
+            println!("  skip {} (draft — assertion pending)", o.label);
+        } else if o.passed() {
             println!("  ok   {}", o.label);
         } else {
             println!("  FAIL {}", o.label);
@@ -248,23 +279,23 @@ fn report_human(outcomes: &[Outcome], failed: usize) {
         }
     }
     let total = outcomes.len();
-    println!(
-        "\nevalkit: {}/{} passed, {} failed",
-        total - failed,
-        total,
-        failed
-    );
+    let skipped = outcomes.iter().filter(|o| o.skipped).count();
+    let passed = total - failed - skipped;
+    println!("\nevalkit: {passed}/{total} passed, {failed} failed, {skipped} draft(s) skipped");
 }
 
 fn report_json(outcomes: &[Outcome], failed: usize) {
     let cases: Vec<_> = outcomes
         .iter()
-        .map(|o| json!({"case": o.label, "pass": o.passed(), "failures": o.failures}))
+        .map(|o| {
+            json!({"case": o.label, "pass": o.passed(), "skipped": o.skipped, "failures": o.failures})
+        })
         .collect();
     let total = outcomes.len();
+    let skipped = outcomes.iter().filter(|o| o.skipped).count();
     println!(
         "{}",
-        json!({"total": total, "passed": total - failed, "failed": failed, "cases": cases})
+        json!({"total": total, "passed": total - failed - skipped, "failed": failed, "skipped": skipped, "cases": cases})
     );
 }
 
@@ -357,5 +388,43 @@ mod tests {
             &mut f,
         );
         assert_eq!(f.len(), 1);
+    }
+
+    #[test]
+    fn draft_case_is_skipped_not_failed() {
+        let cfg = RunCfg {
+            root: PathBuf::from("."),
+            bin_dir: None,
+        };
+        let case = Case {
+            id: "d".into(),
+            describe: "promote refresh-token flow".into(),
+            file: None,
+            cmd: None,
+            stdin: None,
+            assert: Assert::default(),
+            draft: true,
+        };
+        let o = run_case(&case, &cfg);
+        assert!(o.skipped);
+        assert!(!o.passed());
+        assert!(o.failures.is_empty());
+    }
+
+    #[test]
+    fn discover_recurses_into_subdirs() {
+        let dir = std::env::temp_dir().join(format!("evalkit-disc-{}", std::process::id()));
+        let sub = dir.join("curated");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            dir.join("a.jsonl"),
+            "{\"id\":\"a\",\"file\":\"x\",\"assert\":{}}\n",
+        )
+        .unwrap();
+        std::fs::write(sub.join("b.jsonl"), "{\"id\":\"b\",\"draft\":true}\n").unwrap();
+        let found = discover(&dir).unwrap();
+        let total: usize = found.iter().map(|(_, c)| c.len()).sum();
+        assert_eq!(total, 2, "should find both top-level and curated/ cases");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -319,6 +319,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "curate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "harness-core",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "daily"
 version = "0.1.0"
 dependencies = [

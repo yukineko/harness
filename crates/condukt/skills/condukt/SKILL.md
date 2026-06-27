@@ -379,6 +379,18 @@ fugu-router record --title "<task.title>" --files "<task.touched_files をカン
 `--done-criteria` を渡すと、verified タスクの手順が `~/.fugu-router/playbooks.jsonl` に蓄積され
 次回 Phase 1 の playbook 検索に現れる (Devin Playbooks 相当)。failed の場合は無視される。
 
+**golden 化の提案 (soft 依存・任意)**: verified タスクの `done_criteria` が**機械的** (`cargo test`・
+backtick で囲んだコマンド等) なら、その run を回帰 golden に固定できる。`curate` バイナリが
+PATH 上にあれば、ユーザーに次を**提案**する (自動実行はしない＝HOTL):
+```bash
+if command -v curate >/dev/null 2>&1; then
+  echo "この verified run を eval golden 化するには: curate promote \"<task.title>\" --dataset <name>"
+fi
+```
+`curate promote` は playbook を `evals/curated/<name>.jsonl` の evalkit golden に昇格させ
+(機械的なら実行可能ケース、それ以外は draft)、以後 `eval.yml` が回帰として検査する
+(fugu record → curate → evalkit のループを閉じる)。
+
 ### Phase 7 — 完了ゲート + 統合
 ```
 condukt state gate --run $RID      # exit 0 まで完了宣言しない

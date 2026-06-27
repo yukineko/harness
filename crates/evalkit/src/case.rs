@@ -31,6 +31,12 @@ pub struct Case {
     pub stdin: Option<String>,
     #[serde(default)]
     pub assert: Assert,
+    /// A promotion draft awaiting a human-authored assertion (emitted by
+    /// `curate` when it can't auto-derive one). Draft cases are *skipped* at run
+    /// time — never passed, never failed — so an unfilled golden can sit in the
+    /// repo without breaking the gate, yet stays visible as pending work.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 /// Assertions over a subject's text. All are optional; an empty `Assert`
@@ -83,10 +89,15 @@ pub fn parse_jsonl(text: &str, source: &str) -> Result<Vec<Case>> {
     Ok(cases)
 }
 
-/// A case must name exactly one subject and a non-empty id.
+/// A case must name exactly one subject and a non-empty id. Draft cases are
+/// exempt from the subject requirement — they carry no runnable assertion yet
+/// and are skipped at run time.
 fn validate(c: &Case) -> Result<()> {
     if c.id.trim().is_empty() {
         bail!("case `id` must not be empty");
+    }
+    if c.draft {
+        return Ok(());
     }
     match (c.file.is_some(), c.cmd.is_some()) {
         (true, true) => bail!("case '{}' has both `file` and `cmd` (pick one)", c.id),
@@ -146,5 +157,15 @@ mod tests {
         let cases = parse_jsonl(doc, "t.jsonl").unwrap();
         assert!(cases[0].assert.contains.is_empty());
         assert!(cases[0].assert.exit.is_none());
+    }
+
+    #[test]
+    fn draft_case_is_exempt_from_subject_requirement() {
+        // A draft has no file/cmd yet — must still parse (it is skipped at run).
+        let doc = r#"{"id":"d","describe":"promote refresh-token flow","draft":true}"#;
+        let cases = parse_jsonl(doc, "t.jsonl").unwrap();
+        assert_eq!(cases.len(), 1);
+        assert!(cases[0].draft);
+        assert!(cases[0].file.is_none() && cases[0].cmd.is_none());
     }
 }

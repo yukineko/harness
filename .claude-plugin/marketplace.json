@@ -181,6 +181,31 @@
       }
     },
     {
+      "name": "curate",
+      "description": "Promote fugu-router playbooks into versioned golden eval datasets for evalkit: turn the append-only routing log into a curated, deduplicated holdout set. Mechanical acceptance criteria (`cargo test`, a backticked command) become runnable golden cases; the rest become drafts for a human to fill. The supply side of the offline eval loop. Subscription-native (one bundled Rust binary, no API key).",
+      "version": "0.1.0",
+      "category": "quality",
+      "keywords": [
+        "eval",
+        "golden",
+        "dataset",
+        "curation",
+        "llmops",
+        "rust"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/yukineko/harness/tree/main/crates/curate",
+      "author": {
+        "name": "yukineko"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/yukineko/harness.git",
+        "path": "crates/curate",
+        "ref": "main"
+      }
+    },
+    {
       "name": "deepwiki",
       "description": "Repository architecture wiki for Claude Code: a /deepwiki command that maps the repo with a bundled Rust scanner, has a subagent write & refresh hierarchical wiki pages (.deepwiki/*.md) with source links, and tracks freshness against git. Inspired by Devin Wiki. Subscription-native (binary + subagent + command, no API key).",
       "version": "0.1.0",

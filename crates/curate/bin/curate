@@ -1,0 +1,25 @@
+#!/bin/sh
+# curate plugin launcher — selects the per-platform binary bundled in this dir.
+#
+# curate is a manual curation tool (a human promotes; condukt only *suggests*
+# running it). A missing binary should fail loud, not silently no-op, so it
+# exits 1 (like evalkit; contrast the soft-dep observability/hook plugins).
+root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+case "$(uname -s)" in
+  Linux)  os=linux ;;
+  Darwin) os=darwin ;;
+  *)      os="$(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64)   arch=x86_64 ;;
+  arm64|aarch64)  arch=arm64 ;;
+  *)              arch="$(uname -m)" ;;
+esac
+
+binary="$root/curate-$os-$arch"
+if [ ! -x "$binary" ]; then
+  echo "curate: no bundled binary for $os-$arch ($binary)." >&2
+  exit 1
+fi
+exec "$binary" "$@"
