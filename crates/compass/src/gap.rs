@@ -17,6 +17,7 @@ use harness_core::interrogate::{Authority, Bundle};
 use serde::Serialize;
 
 use crate::charter::Charter;
+use crate::outcome::Outcome;
 
 /// The deterministic inputs to the (skill-side) gap derivation. Serialized to
 /// JSON and printed so the skill can read and reason over it.
@@ -31,6 +32,11 @@ pub struct GapInputs {
     pub progress_excerpt: Option<String>,
     /// What the next move is measured by (charter `measuring_stick`).
     pub measuring_stick: String,
+    /// The most recently recorded outcome (verdict + evidence + the gap it
+    /// judged), or `None` if no move has been judged yet. Closes the measurement
+    /// loop: the skill sees how the last move actually moved the needle. Set by
+    /// `gap_command`; `assemble_gap_inputs` leaves it `None`.
+    pub last_outcome: Option<Outcome>,
 }
 
 /// Deterministically assemble the gap inputs from the charter (the stated goal)
@@ -67,6 +73,9 @@ pub fn assemble_gap_inputs(charter: &Charter, bundle: &Bundle) -> GapInputs {
         recent_activity,
         progress_excerpt,
         measuring_stick: charter.measuring_stick.clone(),
+        // The caller (`gap_command`) fills this from the outcomes store; the
+        // pure assembly has no repo root to read it from.
+        last_outcome: None,
     }
 }
 
@@ -128,6 +137,47 @@ mod tests {
         assert!(inputs.recent_activity.is_empty());
         assert!(inputs.progress_excerpt.is_none());
         assert!(inputs.dod.is_empty());
+    }
+
+    #[test]
+    fn last_outcome_is_null_when_none_recorded() {
+        let charter = Charter::default();
+        let bundle = Bundle { fragments: vec![] };
+        let inputs = assemble_gap_inputs(&charter, &bundle);
+        assert!(inputs.last_outcome.is_none());
+
+        let json = serde_json::to_value(&inputs).expect("serialize");
+        assert!(json["last_outcome"].is_null());
+    }
+
+    #[test]
+    fn last_outcome_surfaces_latest_recorded() {
+        use crate::outcome::{self, Verdict};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let charter = Charter {
+            north_star: "ship the loop".to_string(),
+            current_gap: "moves are unjudged".to_string(),
+            ..Charter::default()
+        };
+
+        // record one outcome, then mirror what `gap_command` does.
+        outcome::record(root, &charter, Verdict::Forward, vec!["p95 fell 20%".to_string()])
+            .expect("record");
+
+        let mut inputs = assemble_gap_inputs(&charter, &Bundle { fragments: vec![] });
+        inputs.last_outcome = outcome::latest(root).expect("latest");
+
+        let last = inputs.last_outcome.as_ref().expect("some outcome");
+        assert_eq!(last.verdict, Verdict::Forward);
+        assert_eq!(last.evidence, vec!["p95 fell 20%".to_string()]);
+        assert_eq!(last.current_gap, "moves are unjudged");
+
+        let json = serde_json::to_value(&inputs).expect("serialize");
+        assert_eq!(json["last_outcome"]["verdict"], "forward");
+        assert_eq!(json["last_outcome"]["evidence"][0], "p95 fell 20%");
+        assert_eq!(json["last_outcome"]["current_gap"], "moves are unjudged");
     }
 
     #[test]

@@ -9,3 +9,4 @@ Cargo.lock.bak
 # ephemeral session/tool state
 .claude/progress.md
 .compass/carve-state.json
+.compass/outcomes.json
