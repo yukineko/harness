@@ -55,24 +55,41 @@ fn pid_alive(pid: u32) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    struct TmpHome(std::path::PathBuf);
+    // Both tests mutate the process-global HOME env var; cargo runs tests in a
+    // binary concurrently, so serialize the HOME-mutating ones behind a mutex
+    // (recovering from poison if one panics) to avoid a flaky cross-test race.
+    fn home_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    // `_guard` is held only for its RAII Drop (releases the HOME mutex at the
+    // end of the test); it is never read, hence the underscore.
+    struct TmpHome {
+        path: std::path::PathBuf,
+        _guard: MutexGuard<'static, ()>,
+    }
     impl TmpHome {
         fn new() -> Self {
+            let guard = home_guard();
             static N: AtomicU32 = AtomicU32::new(0);
             let n = N.fetch_add(1, Ordering::Relaxed);
             let p = std::env::temp_dir().join(format!("autoflow-lock-{}-{n}", std::process::id()));
             std::fs::create_dir_all(p.join(".backlog")).unwrap();
             std::env::set_var("HOME", &p);
-            TmpHome(p)
+            TmpHome { path: p, _guard: guard }
         }
         fn lock_path(&self) -> std::path::PathBuf {
-            self.0.join(".backlog").join("run.lock")
+            self.path.join(".backlog").join("run.lock")
         }
     }
     impl Drop for TmpHome {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 
