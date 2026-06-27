@@ -68,6 +68,38 @@ fn run(dir: &Path) -> (i32, String) {
     )
 }
 
+/// Run the binary in `dir` with mode `stop` and a Claude Code hook payload on
+/// stdin carrying `hook_event_name`. Returns (exit_code, stderr). Used to assert
+/// the SessionEnd contract: a blocking finding must NOT surface a non-zero exit
+/// (SessionEnd can't block; a non-zero exit there is reported as a failed hook).
+fn run_stop_event(dir: &Path, event: &str) -> (i32, String) {
+    use std::io::Write;
+    let bin = env!("CARGO_BIN_EXE_precommit-audit");
+    let mut child = Command::new(bin)
+        .arg("--mode")
+        .arg("stop")
+        .arg("--root")
+        .arg(dir)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("binary spawns");
+    let payload = format!("{{\"hook_event_name\":\"{event}\"}}");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("binary runs");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
 /// Config that turns off external linters so tests stay hermetic & fast.
 const NO_LINTERS: &str = "[checks]\nlinters = false\n";
 
@@ -86,6 +118,31 @@ fn source_without_test_blocks() {
     write(&dir, "app.py", "def add(a, b):\n    return a + b\n");
     let (code, err) = run(&dir);
     assert_eq!(code, 1, "source without test must block");
+    assert!(err.contains("TEST MISSING"), "stderr: {err}");
+}
+
+#[test]
+fn session_end_blocking_finding_is_advisory_not_a_failed_hook() {
+    // The hook now runs on SessionEnd, which cannot block. A blocking finding
+    // must therefore exit 0 (advisory) — a non-zero exit would be reported by
+    // Claude Code as a failed hook. The finding is still surfaced on stderr.
+    let dir = init_repo();
+    write(&dir, ".precommit-audit.toml", NO_LINTERS);
+    write(&dir, "app.py", "def add(a, b):\n    return a + b\n");
+    let (code, err) = run_stop_event(&dir, "SessionEnd");
+    assert_eq!(code, 0, "SessionEnd must never surface a blocking exit; stderr: {err}");
+    assert!(err.contains("advisory"), "advisory wording expected; stderr: {err}");
+    assert!(err.contains("TEST MISSING"), "finding still reported; stderr: {err}");
+}
+
+#[test]
+fn stop_event_blocking_finding_still_blocks() {
+    // The Stop hook contract is unchanged: a blocking finding exits 2 to block.
+    let dir = init_repo();
+    write(&dir, ".precommit-audit.toml", NO_LINTERS);
+    write(&dir, "app.py", "def add(a, b):\n    return a + b\n");
+    let (code, err) = run_stop_event(&dir, "Stop");
+    assert_eq!(code, 2, "Stop must still block with exit 2; stderr: {err}");
     assert!(err.contains("TEST MISSING"), "stderr: {err}");
 }
 

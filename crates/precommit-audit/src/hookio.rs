@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 /// Parsed subset of the Claude Code Stop-hook stdin payload.
 pub struct HookInput {
     pub stop_hook_active: bool,
+    /// `hook_event_name` from the payload (e.g. "Stop", "SessionEnd"). Empty
+    /// when absent (e.g. a plain pre-commit-framework invocation with no JSON).
+    pub event: String,
 }
 
 /// Read and parse stdin JSON. Returns a default (non-recursive) input when
@@ -17,6 +20,7 @@ pub fn read_stdin() -> HookInput {
     if raw.trim().is_empty() {
         return HookInput {
             stop_hook_active: false,
+            event: String::new(),
         };
     }
     match serde_json::from_str::<serde_json::Value>(&raw) {
@@ -25,9 +29,15 @@ pub fn read_stdin() -> HookInput {
                 .get("stop_hook_active")
                 .and_then(|b| b.as_bool())
                 .unwrap_or(false),
+            event: v
+                .get("hook_event_name")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
         },
         Err(_) => HookInput {
             stop_hook_active: false,
+            event: String::new(),
         },
     }
 }

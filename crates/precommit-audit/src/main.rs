@@ -101,7 +101,19 @@ fn main() {
 
     let root = resolve_root(args.root);
     let mode = resolve_mode(args.mode);
-    let fail_exit = if mode == "precommit" { 1 } else { 2 };
+    // Exit code that signals "blocking issues found". On the Stop hook, 2 blocks
+    // the stop; on a git pre-commit invocation, 1 aborts the commit. But under
+    // SessionEnd (where this hook now runs as a side effect) a non-zero exit
+    // CANNOT block — Claude Code reports it as a *failed hook*. So when invoked
+    // from SessionEnd we still run the audit (markers + log are useful), but
+    // never surface a blocking exit code.
+    let fail_exit = if hook.event == "SessionEnd" {
+        0
+    } else if mode == "precommit" {
+        1
+    } else {
+        2
+    };
 
     let config_path = args
         .config
@@ -212,7 +224,10 @@ fn emit_and_exit(
         .map(|i| i.message.clone())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let header = if mode == "precommit" {
+    let header = if fail_exit == 0 {
+        // SessionEnd: advisory only — a non-zero exit can't block here.
+        "=== pre-commit audit found blocking issues (advisory; session ended) ==="
+    } else if mode == "precommit" {
         "=== pre-commit audit BLOCKED the git commit ==="
     } else {
         "=== pre-commit audit BLOCKED the auto-commit ==="
