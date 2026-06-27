@@ -12,6 +12,7 @@
 
 pub mod config;
 pub mod daily;
+pub mod gate;
 pub mod hook;
 pub mod install;
 pub mod interrogate;
