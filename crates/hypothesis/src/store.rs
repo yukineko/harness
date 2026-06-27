@@ -105,6 +105,22 @@ impl Store {
         self.save()
     }
 
+    /// Move a hypothesis into the `awaiting-measurement` state: a linked
+    /// deliverable has shipped but no measurement has been taken yet. This is
+    /// deliberately distinct from validation (build != validation) — a human
+    /// still has to run validate/reject with evidence after measuring.
+    pub fn mark_awaiting_measurement(&mut self, id: &str, run_id: Option<String>) -> Result<()> {
+        let h = self
+            .hypotheses
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+        h.status = Status::AwaitingMeasurement;
+        h.condukt_run = run_id;
+        h.updated_at = now_iso();
+        self.save()
+    }
+
     pub fn reject(&mut self, id: &str, reason: Option<String>, run_id: Option<String>) -> Result<()> {
         // Rejection is also a measured learning decision; require a reason.
         let reason = match reason {
@@ -206,6 +222,42 @@ mod tests {
         let h = &st2.list(None)[0];
         assert!(h.status.is_rejected());
         assert!(h.evidence.contains(&"not supported by data".to_string()));
+    }
+
+    #[test]
+    fn test_mark_awaiting_measurement_persists() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("shipped but not measured".to_string(), None).unwrap();
+        st.mark_awaiting_measurement(&id, Some("run-await1".to_string()))
+            .unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert!(h.status.is_awaiting_measurement());
+        assert_eq!(h.condukt_run, Some("run-await1".to_string()));
+    }
+
+    #[test]
+    fn test_awaiting_measurement_can_still_validate() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("measure after ship".to_string(), None).unwrap();
+        st.mark_awaiting_measurement(&id, Some("run-1".to_string())).unwrap();
+        assert!(st.list(None)[0].status.is_awaiting_measurement());
+
+        // A human measures and validates with evidence → validated.
+        st.validate(&id, vec!["conversion rose 12%".to_string()], Some("run-1".to_string()))
+            .unwrap();
+
+        let st2 = Store::load(&cfg).unwrap();
+        let h = &st2.list(None)[0];
+        assert!(h.status.is_validated());
+        assert!(h.evidence.contains(&"conversion rose 12%".to_string()));
     }
 
     #[test]

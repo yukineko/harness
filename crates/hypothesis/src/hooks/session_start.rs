@@ -26,7 +26,10 @@ pub(crate) fn run_with(cfg: &Config, repo_root: &Path) -> Option<String> {
     let all = store.all();
 
     let open: Vec<_> = all.iter().filter(|h| h.status.is_open()).collect();
-    if open.is_empty() {
+    // Awaiting-measurement hypotheses have shipped but still need a human to
+    // measure and run validate/reject — surface them so they don't get lost.
+    let awaiting: Vec<_> = all.iter().filter(|h| h.status.is_awaiting_measurement()).collect();
+    if open.is_empty() && awaiting.is_empty() {
         return None;
     }
 
@@ -41,6 +44,13 @@ pub(crate) fn run_with(cfg: &Config, repo_root: &Path) -> Option<String> {
             ""
         };
         out.push_str(&format!("- **[{}]**{} {}\n", h.id, link_marker, h.text));
+        if let Some(goal) = &h.linked_goal {
+            out.push_str(&format!("  linked_goal: {}\n", goal));
+        }
+    }
+
+    for h in &awaiting {
+        out.push_str(&format!("- **[{}]** [awaiting-measurement] {}\n", h.id, h.text));
         if let Some(goal) = &h.linked_goal {
             out.push_str(&format!("  linked_goal: {}\n", goal));
         }
@@ -112,6 +122,20 @@ mod tests {
         let out = run_with(&cfg, dir.path()).expect("should produce output");
         assert!(out.contains("users want faster onboarding"));
         assert!(out.contains("## Hypothesis"));
+    }
+
+    #[test]
+    fn session_hook_awaiting_measurement_hypothesis_appears() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+
+        let mut st = Store::load(&cfg).unwrap();
+        let id = st.add("shipped, needs measuring".to_string(), None).unwrap();
+        st.mark_awaiting_measurement(&id, Some("run-1".to_string())).unwrap();
+
+        let out = run_with(&cfg, dir.path()).expect("should produce output");
+        assert!(out.contains("shipped, needs measuring"));
+        assert!(out.contains("[awaiting-measurement]"));
     }
 
     #[test]

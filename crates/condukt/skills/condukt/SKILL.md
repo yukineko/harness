@@ -395,18 +395,23 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
 
 **仮説の計測リマインド (soft 依存)**: gate PASS は「実装が done_criteria を満たした (= 出荷した)」ことしか意味しない。
 PDO では出荷は検証 (validated learning) ではないので、**コードがマージされただけで仮説を validate しない**。
-gate PASS 後は、Phase 1 で interpreter が記録した `linked_hypotheses` に「計測待ち」をリマインドするに留める:
+gate PASS 後は、Phase 1 で interpreter が記録した `linked_hypotheses` を **明示的に `awaiting-measurement` (計測待ち)** に遷移させる。
+これは `open` (未着手) でも `validated`/`rejected` (計測済み) でもない「出荷済み・未計測」状態で、計測待ちが可視化される。
+そのうえで、計測後に人間が `validate`/`reject` を実行するようリマインドする:
 ```bash
 if command -v hypothesis >/dev/null 2>&1; then
   LINKED=$(jq -r '.linked_hypotheses // [] | .[]' <json.routed> 2>/dev/null || true)
   for HID in $LINKED; do
-    echo "仮説 $HID は計測待ち (condukt_run: $RID)。観測した成果を添えて手動で:"
+    # 出荷したので awaiting-measurement に遷移 (build != validation)
+    hypothesis await-measurement "$HID" --run "$RID" 2>/dev/null || true
+    echo "仮説 $HID は計測待ち (awaiting-measurement, condukt_run: $RID)。観測した成果を添えて手動で:"
     echo "  hypothesis validate $HID --run $RID --evidence \"<観測した成果>\""
     echo "  もしくは hypothesis reject $HID --run $RID --reason \"<反証した内容>\""
   done
 fi
 ```
 `linked_hypotheses` が空または `hypothesis`/`jq` が無ければスキップ。
+`await-measurement` は状態を「出荷済み・未計測」に進めるだけで検証ではない。
 `hypothesis validate`/`reject` は計測した証拠 (`--evidence`/`--reason`) を必須とするため、証拠なしでは status を変えられない。
 
 **spec-drift チェック (soft 依存)**: gate PASS 後、変更が正典仕様と乖離していないかを specguard で監査する。
