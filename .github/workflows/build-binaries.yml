@@ -37,8 +37,9 @@ env:
   # from each Cargo.toml, so run-book → package runbook is handled).
   PLUGINS: >-
     autoflow backlog beacon budgetguard compass condukt ctxrot daily deepwiki
-    difflog donegate flow fugu-router gauge harness-status hypothesis playbook
-    precommit-audit reviewgate run-book session-insights stuckguard taskprog tdd
+    difflog donegate evalkit flow fugu-router gauge harness-status hypothesis
+    playbook precommit-audit reviewgate run-book session-insights stuckguard
+    taskprog tdd
 
 jobs:
   smoke:

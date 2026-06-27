@@ -254,6 +254,31 @@
       }
     },
     {
+      "name": "evalkit",
+      "description": "Offline golden-regression eval harness for Claude Code plugins: read golden *.jsonl cases (file-content or CLI-output assertions) and exit non-zero when a prompt edit or CLI contract regresses. The offline sibling of condukt's online verifier — runnable as a CI gate with no API key. Subscription-native (one bundled Rust binary).",
+      "version": "0.1.0",
+      "category": "quality",
+      "keywords": [
+        "eval",
+        "regression",
+        "golden",
+        "ci",
+        "llmops",
+        "rust"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/yukineko/harness/tree/main/crates/evalkit",
+      "author": {
+        "name": "yukineko"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/yukineko/harness.git",
+        "path": "crates/evalkit",
+        "ref": "main"
+      }
+    },
+    {
       "name": "flow",
       "description": "Unified source→executor driver for Claude Code: a /flow skill that binds the task SOURCES (compass next-move + backlog queue) to the EXECUTOR (condukt, model-routed by fugu-router) in one HOTL loop — gate on compass freshness, pick the highest-priority task, hand it to condukt, verify, mark done, repeat. A SessionStart hook proposes /flow every session when open work exists (propose-then-confirm). Subscription-native (skill + hook + bundled Rust binary, no API key).",
       "version": "0.1.2",

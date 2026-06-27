@@ -1,0 +1,6 @@
+// Golden invariants for CLI output contracts. `cmd` cases run the program and
+// assert over its stdout + exit code. Run with `--bin-dir target/release` so
+// freshly-built binaries are found without installing them. This file also
+// exercises evalkit's own cmd path end-to-end (self-test).
+{"id":"evalkit-version-contract","describe":"evalkit --version prints a semver and exits 0","cmd":["evalkit","--version"],"assert":{"exit":0,"regex":["evalkit \\d+\\.\\d+\\.\\d+"]}}
+{"id":"evalkit-list-is-clean","describe":"evalkit run --help advertises the run subcommand","cmd":["evalkit","run","--help"],"assert":{"exit":0,"contains":["--bin-dir","--json","golden"]}}

@@ -1,0 +1,67 @@
+//! evalkit — offline golden-regression eval harness for Claude Code plugins.
+//!
+//! `evalkit run` discovers `evals/*.jsonl` golden cases and asserts over each
+//! subject — a `file`'s contents (catch a SKILL.md/prompt edit that drops an
+//! invariant) or a `cmd`'s stdout+exit (catch a CLI contract regression). It is
+//! the *offline* sibling of condukt's online Phase-6 verifier: deterministic,
+//! API-key-free, and meant to run as a CI gate and a `/flow` pre-release check.
+//!
+//! Exit codes: `0` all passed, `1` a real regression, `2` harness error (no
+//! cases / unreadable eval files) — so CI distinguishes a regression from a
+//! misconfigured path.
+//!
+//! This is a plain CLI, not a lifecycle hook, so it does not wrap work in
+//! `run_hook`: a gate that swallowed its own failures and exited 0 would be
+//! worse than useless.
+
+mod case;
+mod run;
+
+use std::path::PathBuf;
+use std::process::exit;
+
+use clap::{Args, Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(
+    name = "evalkit",
+    version,
+    about = "Offline golden-regression eval harness (prompt + CLI-contract invariants)."
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Run golden cases; exit 1 if any assertion fails, 2 on harness error.
+    Run(RunArgs),
+    /// List discovered cases without running them.
+    List(RunArgs),
+}
+
+#[derive(Args)]
+struct RunArgs {
+    /// Directory holding `*.jsonl` golden case files (relative to --root).
+    #[arg(long, default_value = "evals")]
+    dir: PathBuf,
+    /// Prepend this dir to PATH when running `cmd` cases (e.g. target/release).
+    #[arg(long)]
+    bin_dir: Option<PathBuf>,
+    /// Project root that `file` paths and the `--dir` resolve against (default: CWD).
+    #[arg(long)]
+    root: Option<PathBuf>,
+    /// Emit a machine-readable JSON summary instead of the human report.
+    #[arg(long)]
+    json: bool,
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let code = match cli.command {
+        Command::Run(a) => run::execute(a.dir, a.bin_dir, a.root, a.json, false),
+        Command::List(a) => run::execute(a.dir, a.bin_dir, a.root, a.json, true),
+    };
+    exit(code);
+}

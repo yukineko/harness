@@ -420,6 +420,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "evalkit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "harness-core",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
