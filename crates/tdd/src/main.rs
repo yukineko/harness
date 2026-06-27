@@ -78,6 +78,9 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Trust this project so its `tdd.toml` `test_cmd` is honored (it is executed
+    /// verbatim by `tdd red`/`tdd green`; untrusted by default).
+    Trust,
     /// Show the resolved config + what the gate would do for the cwd.
     Status,
 }
@@ -98,6 +101,7 @@ fn main() {
         Command::Init { force } => exit_on_err(init(force)),
         Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
+        Command::Trust => exit_on_err(trust_project()),
         Command::Status => status(),
     }
 }
@@ -269,6 +273,21 @@ fn status() {
     println!();
     let verdict = gate::evaluate(&cfg, &root);
     println!("{}", gate::human_report(&verdict, &cfg));
+}
+
+/// `tdd trust`: add the current project root to the shared workspace-trust list
+/// so its `tdd.toml` `test_cmd` is honored by `tdd red`/`tdd green`.
+fn trust_project() -> anyhow::Result<()> {
+    let root = std::env::current_dir()?;
+    let key = harness_core::trust::add(&root)?;
+    println!("✓ trusted {}", key.display());
+    let p = Config::project_path(&root);
+    if p.exists() {
+        println!("tdd will now honor test_cmd from {}", p.display());
+    } else {
+        println!("(no {} yet — create one with `tdd init`)", p.display());
+    }
+    Ok(())
 }
 
 fn init(force: bool) -> anyhow::Result<()> {
