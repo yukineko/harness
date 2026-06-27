@@ -1,6 +1,6 @@
 {
   "hooks": {
-    "SessionEnd": [
+    "Stop": [
       {
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/precommit-audit --mode stop", "timeout": 30 }

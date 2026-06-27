@@ -34,7 +34,7 @@
     },
     {
       "name": "budgetguard",
-      "description": "Real-time cost budget reporter for Claude Code: on SessionEnd, read the session transcript, compute USD cost, and report when session or daily limits are exceeded. Subscription-native (one hook + bundled Rust binary, no API key).",
+      "description": "Real-time cost budget gate for Claude Code: on Stop, read the session transcript, compute USD cost, and block the turn when session or daily limits are exceeded — feeding the overage back so the agent winds down gracefully. Subscription-native (one Stop hook + bundled Rust binary, no API key).",
       "author": {
         "name": "yukineko"
       },
@@ -112,7 +112,7 @@
     },
     {
       "name": "donegate",
-      "description": "Completion-verification reporter for Claude Code: on SessionEnd, run your acceptance commands as subprocesses and surface any failing required checks as an advisory at session end. Subscription-native (one hook + bundled Rust binary, no API key).",
+      "description": "Completion-verification gate for Claude Code: on Stop, run your acceptance commands as subprocesses and block the stop until every required check is green, feeding failures back for an auto-fix loop. Subscription-native (one hook + bundled Rust binary, no API key).",
       "author": {
         "name": "yukineko"
       },
@@ -190,7 +190,7 @@
     },
     {
       "name": "precommit-audit",
-      "description": "Config-driven static audit for Claude Code: a SessionEnd hook that runs generic checks plus your project rules (from a TOML file) over the pending diff — shelling out to git and optional linters — and surfaces findings as advisory at session end (also usable as a blocking git pre-commit hook). Subscription-native (one hook + bundled Rust binary, no API key).",
+      "description": "Config-driven pre-commit static audit for Claude Code: a Stop hook that runs generic checks plus your project rules (from a TOML file) over the pending diff — shelling out to git and optional linters — and blocks the stop, feeding findings back to the agent until they're clean. Subscription-native (one hook + bundled Rust binary, no API key).",
       "author": {
         "name": "yukineko"
       },
@@ -203,7 +203,7 @@
     },
     {
       "name": "reviewgate",
-      "description": "Code-review reporter for Claude Code: on SessionEnd, review the diff and surface findings — in inject mode it emits a review rubric, in subprocess mode it runs an independent reviewer — as an advisory at session end. Subscription-native, bundled Rust binary.",
+      "description": "Code-review gate for Claude Code: on Stop, review the diff before the agent can declare done. In inject mode it blocks the stop and injects a review rubric so the running agent self-reviews (no API key); in subprocess mode it runs an independent reviewer and surfaces only its findings. Subscription-native, bundled Rust binary.",
       "author": {
         "name": "yukineko"
       },
@@ -281,7 +281,7 @@
     },
     {
       "name": "tdd",
-      "description": "Test-first reporter for Claude Code: a SessionEnd hook that flags when implementation code landed without an accompanying test, plus a /tdd skill and red/green/verify subcommands that make test-first (RED before GREEN) a verifiable artifact. Subscription-native (one hook + skill + bundled Rust binary, no API key).",
+      "description": "Test-first gate for Claude Code: a Stop hook that blocks the turn when implementation code lands without an accompanying test, plus a /tdd skill and red/green/verify subcommands that make test-first (RED before GREEN) a verifiable artifact. Subscription-native (one hook + skill + bundled Rust binary, no API key).",
       "author": {
         "name": "yukineko"
       },
