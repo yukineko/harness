@@ -11,7 +11,7 @@
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
-計測ループの決定論コア達成: compass outcome が verdict(前進・不変・後退) を measured evidence 必須で記録し、gap.rs が last_outcome を surface（commit 4370feb, backlog 66d0968a done）。残り＝統合半分: flow/compass の sink が完了 move に対し compass outcome を自動呼び出しし、verdict を move の diff から LLM 判定する層（次スライス or 次 carve）。
+計測ループは end-to-end で閉じた: compass outcome（決定論コア, 4370feb）＋ flow/compass sink の自動 outcome 記録（統合, SKILL.md）。完了 move は人手なしで measuring_stick 判定され、last_outcome が次 gap に反映される。charter DoD 全充足＋north_star 意図達成。残りは別 north_star: p2 discovery アーキテクチャ群（OST/input-metrics/dual-track/scoring/cadence）と独立 health 群（fmt/CHANGELOG/dependabot 等）。次は PR マージ後に /compass で次ゴール定義。
 
 ## next_action
 
