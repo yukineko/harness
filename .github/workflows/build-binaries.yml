@@ -38,8 +38,8 @@ env:
   PLUGINS: >-
     autoflow backlog beacon budgetguard compass condukt ctxrot curate daily
     deepwiki difflog donegate evalkit flow fugu-router gauge harness-status
-    hypothesis playbook precommit-audit reviewgate run-book session-insights
-    stuckguard taskprog tdd tracekit
+    hypothesis playbook precommit-audit reviewgate run-book schemaguard
+    session-insights stuckguard taskprog tdd tracekit
 
 jobs:
   smoke:

@@ -191,6 +191,22 @@ DEEPWIKI_PAGES=$(ls .deepwiki/*.md 2>/dev/null | tr '\n' ' ' || true)
 Decomposition JSON を一時ファイルに書き:
 ```
 condukt validate --file <json>        # 不正なら理由を提示しユーザーに差し戻し
+```
+
+**schema 事前検証 (soft 依存・任意)**: `schemaguard` バイナリが PATH 上にあれば、`condukt validate` の
+前段で interpreter 出力を宣言 schema にかけ、構造化エラーで**1 回だけ** interpreter に再生成させる
+(Guardrails 相当の re-ask)。silent drop を防ぎ reject 件数を可観測化する:
+```bash
+if command -v schemaguard >/dev/null 2>&1; then
+  if ! schemaguard check --schema decomposition --file <json> >/dev/null; then
+    # 構造化 errors を interpreter に添えて 1 回だけ再生成させ、再度 check。
+    # なお不正なら停止しユーザーへ差し戻す（盲目実行しない）。
+    :
+  fi
+fi
+```
+
+```
 
 # (任意) fugu-router があれば、学習済み方策で各タスクの suggested_model を上書きする。
 # 無ければ interpreter の suggested_model のまま続行 (soft 依存・壊さない)。
