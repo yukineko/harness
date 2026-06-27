@@ -44,6 +44,28 @@ pub fn tokens_short(n: u64) -> String {
     }
 }
 
+/// Cache hit rate: cached input tokens read ÷ total input tokens (fresh +
+/// cached). Returns 0.0 when there is no input at all, so a fresh/empty
+/// session reads as 0% rather than dividing by zero.
+pub fn cache_hit_rate(u: &Usage) -> f64 {
+    let denom = u.input + u.cache_read;
+    if denom == 0 {
+        0.0
+    } else {
+        u.cache_read as f64 / denom as f64
+    }
+}
+
+/// Total cache *write* tokens (both 5m and 1h TTL buckets).
+pub fn cache_write(u: &Usage) -> u64 {
+    u.cache_write_5m + u.cache_write_1h
+}
+
+/// Format a 0.0–1.0 fraction as a whole-percent string like `73%`.
+pub fn pct(f: f64) -> String {
+    format!("{:.0}%", f * 100.0)
+}
+
 fn record_cost(rec: &SessionRecord, overrides: &[PriceOverride]) -> f64 {
     rec.models
         .iter()
@@ -139,12 +161,14 @@ pub fn render(records: &[SessionRecord], overrides: &[PriceOverride]) -> String 
     models.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
     for (name, (cost, u)) in models.iter() {
         out.push_str(&format!(
-            "  {:<24} {:>9}  in {} / out {} / cache {}\n",
+            "  {:<24} {:>9}  in {} / out {} / cache r {} w {} ({} hit)\n",
             truncate(name, 24),
             money(*cost),
             tokens_short(u.input),
             tokens_short(u.output),
-            tokens_short(u.cache_write_5m + u.cache_write_1h + u.cache_read),
+            tokens_short(u.cache_read),
+            tokens_short(cache_write(u)),
+            pct(cache_hit_rate(u)),
         ));
     }
 
@@ -210,6 +234,24 @@ mod tests {
     #[test]
     fn empty_report() {
         assert!(render(&[], &[]).contains("no sessions"));
+    }
+
+    #[test]
+    fn cache_hit_rate_guards_zero_and_splits_read_write() {
+        // No input at all → 0% rather than a divide-by-zero NaN.
+        assert_eq!(cache_hit_rate(&Usage::default()), 0.0);
+
+        // 750 cached read out of 1000 total input → 75% hit.
+        let u = Usage {
+            input: 250,
+            cache_read: 750,
+            cache_write_5m: 100,
+            cache_write_1h: 40,
+            ..Default::default()
+        };
+        assert_eq!(cache_hit_rate(&u), 0.75);
+        assert_eq!(pct(cache_hit_rate(&u)), "75%");
+        assert_eq!(cache_write(&u), 140);
     }
 
     #[test]

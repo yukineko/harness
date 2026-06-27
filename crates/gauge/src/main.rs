@@ -165,12 +165,14 @@ fn session_cmd() {
     println!("\nmodels");
     for (m, u) in &rec.models {
         println!(
-            "  {:<24} {:>9}  in {} / out {} / cache {}",
+            "  {:<24} {:>9}  in {} / out {} / cache r {} w {} ({} hit)",
             m,
             report::money(pricing::cost(m, u, &cfg.pricing)),
             report::tokens_short(u.input),
             report::tokens_short(u.output),
-            report::tokens_short(u.cache_write_5m + u.cache_write_1h + u.cache_read),
+            report::tokens_short(u.cache_read),
+            report::tokens_short(report::cache_write(u)),
+            report::pct(report::cache_hit_rate(u)),
         );
     }
 
