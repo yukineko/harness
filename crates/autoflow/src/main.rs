@@ -5,7 +5,9 @@
 //!   record_requested | continuing → [condukt pending?]
 //!     yes → block: /condukt (condukt tasks) → continuing
 //!     no  → [backlog open?]
-//!       yes → block: /condukt <next item> → continuing
+//!       yes → [compass charter fresh?]   (soft dep; absent ⇒ treated as fresh)
+//!             fresh → block: /backlog <next item> → continuing
+//!             stale → block: nudge /compass → done (stand down, don't drive)
 //!       no  → done (allow)
 //!   done → allow
 //!
@@ -13,6 +15,7 @@
 //!   condukt_prompts ≥ 5  → block: ask user each time
 
 mod backlog;
+mod compass;
 mod condukt;
 mod config;
 mod insights;
@@ -125,6 +128,26 @@ fn stop_command() -> ! {
                         s.phase = Phase::Done;
                         state::save(&cfg.state_dir, &session_id, &s);
                     } else {
+                        // About to auto-drive the backlog queue. Honor flow's
+                        // invariant — never blind-drive a stale charter. Consult
+                        // compass; if it reports the charter isn't sharp, nudge
+                        // toward /compass and STAND DOWN instead of driving.
+                        // compass is a soft dep: absent / unparseable => proceed
+                        // as before (a repo that doesn't use compass is unaffected).
+                        if let Some(v) = compass::charter_freshness(&cwd) {
+                            if !v.fresh {
+                                s.phase = Phase::Done;
+                                state::save(&cfg.state_dir, &session_id, &s);
+                                let why = v
+                                    .reason
+                                    .unwrap_or_else(|| "charter が鮮明ではありません".to_string());
+                                block(&format!(
+                                    "compass: {why}\n\n自動でバックログを流す前に /compass で再オリエンテーションしてください（鮮明化後に /flow か /backlog を再開）。"
+                                ));
+                                return;
+                            }
+                        }
+
                         s.backlog_prompts += 1;
                         // If we've hit the limit, give up — the skill or command likely failed.
                         if s.backlog_prompts > cfg.max_backlog_prompts {

@@ -45,7 +45,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// SessionStart hook (§14): deterministic C1/C2 freshness nudge.
-    Nudge,
+    Nudge(NudgeArgs),
     /// Stop hook (§14): write the next physical step into the charter.
     Breadcrumb,
     /// Carve floor (§11): print the deterministic C1/C2 open questions as JSON.
@@ -67,6 +67,16 @@ enum Command {
     /// (§7). Requires measured evidence (build is not validation). Surfaced as
     /// `last_outcome` in `compass gap`.
     Outcome(OutcomeArgs),
+}
+
+#[derive(Args)]
+struct NudgeArgs {
+    /// Emit the freshness verdict as machine-readable JSON
+    /// (`{"fresh": bool, "reason": string|null}`) instead of the human nudge
+    /// line. Lets a downstream driver (e.g. autoflow) gate auto-driving on the
+    /// same deterministic C1/C2 floor. Always exits 0.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -116,7 +126,7 @@ struct OutcomeArgs {
 fn main() {
     let cli = Cli::parse();
     let r = match cli.command {
-        Command::Nudge => nudge_command(),
+        Command::Nudge(args) => nudge_command(args),
         Command::Breadcrumb => breadcrumb_command(),
         Command::Evaluate => evaluate_command(),
         Command::Apply(args) => apply_command(args),
@@ -136,42 +146,95 @@ fn project_root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf())
 }
 
-/// SessionStart hook (§14): the deterministic C1/C2 freshness nudge.
+/// The composed C1/C2 freshness verdict for the current project's charter.
 ///
-/// Thin path: run the deterministic floor only (NO LLM, no C3–C5) and print a
-/// one-line nudge to stdout if the charter is absent/blurry (C1) or drift-
-/// suspect (C2). Non-blocking by contract: this always exits 0, even on error,
-/// so a re-grounding hook never breaks a session start.
-fn nudge_command() -> Result<()> {
-    let root = project_root();
-    let cfg = Config::load(&root);
-    let path = Charter::project_path(&root);
+/// `fresh` is the single bit a downstream driver needs ("is the charter sharp
+/// enough to auto-act on?"); `reason` is the human-readable nudge text, present
+/// iff `!fresh`. The C1 existence/blurry checks and the C2 deterministic floor
+/// all fold into this one verdict so the human `nudge` and the `--json` machine
+/// gate share exactly one source of truth.
+struct NudgeVerdict {
+    fresh: bool,
+    reason: Option<String>,
+}
+
+impl NudgeVerdict {
+    fn fresh() -> Self {
+        NudgeVerdict {
+            fresh: true,
+            reason: None,
+        }
+    }
+    fn stale(reason: impl Into<String>) -> Self {
+        NudgeVerdict {
+            fresh: false,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+/// Compose the C1 (existence/blurry) + C2 (deterministic freshness floor)
+/// verdict for the charter under `root`. A parse failure is treated as `fresh`
+/// (tolerant by contract: compass must never wedge a session start or a
+/// downstream driver because the charter momentarily failed to parse).
+fn nudge_verdict(root: &Path) -> NudgeVerdict {
+    let cfg = Config::load(root);
+    let path = Charter::project_path(root);
 
     // C1 existence (deterministic): absent file => loudest nudge.
     if !path.exists() {
-        println!("compass: no .compass/charter.md yet — run `/compass` to carve a north star.");
-        return Ok(());
+        return NudgeVerdict::stale(
+            "no .compass/charter.md yet — run `/compass` to carve a north star.",
+        );
     }
 
-    // Parse is tolerant; a failure shouldn't break session start.
-    let charter = match Charter::load(&path) {
-        Ok(c) => c,
-        Err(_) => return Ok(()),
+    // Parse is tolerant; a failure shouldn't break session start / wedge a driver.
+    let Ok(charter) = Charter::load(&path) else {
+        return NudgeVerdict::fresh();
     };
 
+    verdict_for_charter(root, &path, &charter, &cfg)
+}
+
+/// The C1-blurry + C2-stale checks for an already-loaded charter (kept pure so
+/// it is unit-testable with a constructed [`Charter`], like `freshness`).
+fn verdict_for_charter(root: &Path, path: &Path, charter: &Charter, cfg: &Config) -> NudgeVerdict {
     // C1: blurry charter (empty north_star / DoD).
     if charter.north_star.trim().is_empty() || charter.definition_of_done.is_empty() {
-        println!("compass: charter is blurry (north_star/DoD incomplete) — run `/compass`.");
-        return Ok(());
+        return NudgeVerdict::stale(
+            "charter is blurry (north_star/DoD incomplete) — run `/compass`.",
+        );
     }
 
     // C2: deterministic freshness floor.
-    let fresh = freshness::check(&root, &path, &charter, &cfg);
+    let fresh = freshness::check(root, path, charter, cfg);
     if fresh.stale {
-        println!(
-            "compass: charter may be stale ({}) — run `/compass` to re-ground.",
+        return NudgeVerdict::stale(format!(
+            "charter may be stale ({}) — run `/compass` to re-ground.",
             fresh.reasons.join("; ")
+        ));
+    }
+
+    NudgeVerdict::fresh()
+}
+
+/// SessionStart hook (§14): the deterministic C1/C2 freshness nudge.
+///
+/// Thin path: run the deterministic floor only (NO LLM, no C3–C5). By default
+/// print a one-line nudge to stdout iff the charter is absent/blurry (C1) or
+/// drift-suspect (C2). With `--json`, emit the structured verdict instead so a
+/// downstream driver can gate on the same floor. Non-blocking by contract: this
+/// always exits 0, even on error, so a re-grounding hook never breaks a session
+/// start.
+fn nudge_command(args: NudgeArgs) -> Result<()> {
+    let verdict = nudge_verdict(&project_root());
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({ "fresh": verdict.fresh, "reason": verdict.reason })
         );
+    } else if let Some(reason) = verdict.reason {
+        println!("compass: {reason}");
     }
     Ok(())
 }
@@ -486,4 +549,56 @@ fn route_command(args: RouteArgs) -> Result<()> {
         route::condukt_handoff(&routing.to_condukt, &charter, &dec.goal)
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod nudge_tests {
+    use super::*;
+
+    #[test]
+    fn absent_charter_is_not_fresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let v = nudge_verdict(dir.path());
+        assert!(!v.fresh, "no charter file => not fresh");
+        assert!(
+            v.reason.as_deref().unwrap_or("").contains("no .compass"),
+            "reason should point at the missing charter, got {:?}",
+            v.reason
+        );
+    }
+
+    #[test]
+    fn blurry_charter_is_not_fresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let charter = Charter {
+            north_star: "x".to_string(),
+            definition_of_done: vec![], // empty DoD => blurry
+            ..Charter::default()
+        };
+        let path = Charter::project_path(dir.path());
+        let v = verdict_for_charter(dir.path(), &path, &charter, &Config::default());
+        assert!(!v.fresh, "empty DoD => blurry => not fresh");
+        assert!(v.reason.as_deref().unwrap_or("").contains("blurry"));
+    }
+
+    #[test]
+    fn complete_unstale_charter_is_fresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Non-git tempdir, just-created: commit-divergence/elapsed-days produce
+        // no signal; a DoD with no path tokens and an empty next_action keep the
+        // C2 floor silent — so the verdict is fresh.
+        let charter = Charter {
+            north_star: "ship the measurement loop".to_string(),
+            definition_of_done: vec!["users can close the loop".to_string()],
+            ..Charter::default()
+        };
+        let path = Charter::project_path(dir.path());
+        let v = verdict_for_charter(dir.path(), &path, &charter, &Config::default());
+        assert!(
+            v.fresh,
+            "complete, non-stale charter => fresh (reason {:?})",
+            v.reason
+        );
+        assert!(v.reason.is_none());
+    }
 }
