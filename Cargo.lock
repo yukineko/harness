@@ -1086,7 +1086,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
- "wait-timeout",
 ]
 
 [[package]]

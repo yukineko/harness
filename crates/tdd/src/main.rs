@@ -115,9 +115,19 @@ fn exit_on_err(r: anyhow::Result<()>) {
 
 /// The Stop hook. Always exits 0 toward Claude (the `decision` field, not the
 /// exit code, blocks a stop). Returns exit 1 only in manual CLI mode.
+///
+/// The never-break-a-turn panic guard lives in `harness_core::gate::run`: a
+/// panic in `gate_run` is swallowed (exit 0) in hook mode and surfaced (exit 1)
+/// in manual CLI mode. Real `process::exit` calls inside `gate_run` terminate
+/// directly, so only genuine panics ever reach the guard.
 fn gate_command() -> ! {
     let raw = read_stdin();
     let hook = HookInput::parse(&raw);
+    let interactive = hook.is_none();
+    harness_core::gate::run::run_guarded("tdd", interactive, move || gate_run(hook))
+}
+
+fn gate_run(hook: Option<HookInput>) -> ! {
     let interactive = hook.is_none();
     let input = hook.unwrap_or_default();
     let root = input.cwd_or_current();
@@ -139,7 +149,7 @@ fn gate_command() -> ! {
 
     let session = input.session_key();
 
-    if let Some(reason) = consume_skip(&root) {
+    if let Some(reason) = harness_core::gate::run::consume_skip(&root, ".tdd-skip") {
         state::reset(&cfg.state_dir, &session);
         log_event(&cfg, &session, "skip", 0);
         eprintln!("tdd: .tdd-skip consumed — allowing stop ({reason})");
@@ -213,21 +223,6 @@ fn verify_command(task: &str) -> ! {
          `tdd green --task {task}`."
     );
     std::process::exit(1);
-}
-
-/// `.tdd-skip` in the project root: consumed once, returns its reason.
-fn consume_skip(root: &Path) -> Option<String> {
-    let p = root.join(".tdd-skip");
-    if !p.exists() {
-        return None;
-    }
-    let reason = std::fs::read_to_string(&p)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "(no reason given)".to_string());
-    let _ = std::fs::remove_file(&p);
-    Some(reason)
 }
 
 fn log_event(cfg: &Config, session: &str, verdict: &str, attempt: u32) {
