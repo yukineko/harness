@@ -177,17 +177,31 @@ impl Config {
         base_dir().join("config.toml")
     }
 
-    /// Load config for a project root. A project `reviewgate.toml` wins outright;
-    /// otherwise the home config; otherwise built-in defaults. Any parse error
-    /// silently falls back (the gate must never crash a turn).
+    /// Load config for a project root. A project `reviewgate.toml` wins outright —
+    /// but only once the project root is **trusted** (`harness_core::trust`), since
+    /// its `reviewer_cmd` is later run as a subprocess from the Stop hook and an
+    /// untrusted, repo-shipped value would be arbitrary code execution. When the
+    /// project file exists but the root is not trusted we ignore it and fall back
+    /// to the (trusted) home config, then built-in defaults. The home config and
+    /// defaults need no trust. Any parse error silently falls back (the gate must
+    /// never crash a turn).
     pub fn load(root: &Path) -> Self {
         let mut cfg = Config::default();
 
         let chosen = {
             let p = Config::project_path(root);
-            if p.exists() {
+            if p.exists() && harness_core::trust::is_trusted(root) {
                 Some(p)
             } else {
+                if p.exists() {
+                    // Project file present but untrusted: ignore it (best effort
+                    // one-line notice) and fall back to home / defaults.
+                    eprintln!(
+                        "reviewgate: {} is not trusted; ignoring it. \
+                         Run 'reviewgate trust' to enable.",
+                        p.display()
+                    );
+                }
                 let h = Config::home_path();
                 if h.exists() {
                     Some(h)
@@ -263,5 +277,103 @@ impl Config {
         std::env::var("REVIEWGATE_DISABLE")
             .map(|v| !v.is_empty() && v != "0")
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+
+    /// A throwaway directory under the system temp dir, removed on drop. We avoid
+    /// pulling in `tempfile` to keep the change confined to src/.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let n = SEQ.fetch_add(1, Ordering::SeqCst);
+            let p = std::env::temp_dir().join(format!(
+                "reviewgate-test-{}-{}-{}",
+                std::process::id(),
+                tag,
+                n
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const PROJECT_TOML: &str = "mode = \"subprocess\"\nreviewer_cmd = \"pwned\"\n";
+
+    /// All of these mutate the process-global HOME / HARNESS_TRUST_ALL env, so they
+    /// must not run concurrently. A single #[test] drives the whole sequence.
+    #[test]
+    fn project_reviewer_cmd_is_gated_behind_trust() {
+        let home = TmpDir::new("home");
+        let proj = TmpDir::new("proj");
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        let root = proj.path();
+        std::fs::write(Config::project_path(root), PROJECT_TOML).unwrap();
+
+        // 1) Untrusted project: project reviewer_cmd is NOT honored; falls back to
+        //    the built-in default (no home config exists yet).
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.reviewer_cmd, "claude -p",
+            "untrusted project reviewer_cmd must fall back to default"
+        );
+
+        // 2) Untrusted project with a home config: falls back to the home config,
+        //    not the project file.
+        std::fs::create_dir_all(base_dir()).unwrap();
+        std::fs::write(
+            Config::home_path(),
+            "mode = \"subprocess\"\nreviewer_cmd = \"home-reviewer\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.reviewer_cmd, "home-reviewer",
+            "untrusted project must fall back to the home config"
+        );
+
+        // 3) Trust the project: now the project reviewer_cmd wins.
+        harness_core::trust::add(root).unwrap();
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.reviewer_cmd, "pwned",
+            "trusted project reviewer_cmd must be honored"
+        );
+
+        // 4) Removing trust reverts to the home fallback.
+        harness_core::trust::remove(root).unwrap();
+        let cfg = Config::load(root);
+        assert_eq!(cfg.reviewer_cmd, "home-reviewer");
+
+        // 5) HARNESS_TRUST_ALL overrides the list: project reviewer_cmd honored.
+        std::env::set_var("HARNESS_TRUST_ALL", "1");
+        let cfg = Config::load(root);
+        assert_eq!(
+            cfg.reviewer_cmd, "pwned",
+            "HARNESS_TRUST_ALL must honor the project reviewer_cmd"
+        );
+        std::env::remove_var("HARNESS_TRUST_ALL");
+
+        // 6) Default path (no project file, no home config) needs no trust.
+        let proj2 = TmpDir::new("proj2");
+        std::fs::remove_file(Config::home_path()).unwrap();
+        let cfg = Config::load(proj2.path());
+        assert_eq!(cfg.reviewer_cmd, "claude -p");
     }
 }

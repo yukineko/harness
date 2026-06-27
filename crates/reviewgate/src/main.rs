@@ -62,6 +62,9 @@ enum Command {
     },
     /// Show the resolved config + what would be reviewed for the cwd.
     Status,
+    /// Trust the current project so its ./reviewgate.toml (incl. reviewer_cmd) is
+    /// honored. Until trusted, a repo-shipped reviewgate.toml is ignored.
+    Trust,
 }
 
 fn main() {
@@ -72,7 +75,17 @@ fn main() {
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init { force } => exit_on_err(init(force)),
         Command::Status => status(),
+        Command::Trust => exit_on_err(trust()),
     }
+}
+
+/// Trust the current project root so its `./reviewgate.toml` is honored.
+fn trust() -> anyhow::Result<()> {
+    let root = std::env::current_dir()?;
+    let key = harness_core::trust::add(&root)?;
+    println!("trusted {}", key.display());
+    println!("reviewgate will now honor {}.", Config::project_path(&key).display());
+    Ok(())
 }
 
 fn exit_on_err(r: anyhow::Result<()>) {
