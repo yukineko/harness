@@ -317,6 +317,9 @@ pub fn condukt_handoff(chosen: &[Task], charter: &Charter, dec_goal: &str) -> St
     out.push_str("## 文脈\n");
     out.push_str(&format!("- north_star: {}\n", charter.north_star.trim()));
     out.push_str(&format!("- current_gap: {}\n", charter.current_gap.trim()));
+    // measuring_stick is written into the handoff here AND is now read back by
+    // the `compass outcome` path (§7): once the move completes, its judged
+    // outcome is recorded against this same stick and surfaced in `compass gap`.
     out.push_str(&format!(
         "- measuring_stick: {}\n",
         charter.measuring_stick.trim()

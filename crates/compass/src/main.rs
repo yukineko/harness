@@ -14,6 +14,7 @@ mod freshness;
 mod gap;
 mod gates;
 mod gather;
+mod outcome;
 mod route;
 
 use std::io::Read as _;
@@ -62,6 +63,10 @@ enum Command {
     /// Show the parsed charter (+ resolved config), or (--write JSON) persist a
     /// skill-composed charter.
     Charter(CharterArgs),
+    /// Record a completed move's judged outcome vs the charter `measuring_stick`
+    /// (§7). Requires measured evidence (build is not validation). Surfaced as
+    /// `last_outcome` in `compass gap`.
+    Outcome(OutcomeArgs),
 }
 
 #[derive(Args)]
@@ -96,6 +101,18 @@ struct RouteArgs {
     file: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct OutcomeArgs {
+    /// The judged outcome vs the charter `measuring_stick`:
+    /// `forward` (前進) / `unchanged` (不変) / `backward` (後退).
+    #[arg(long, value_enum)]
+    verdict: outcome::Verdict,
+    /// Measured evidence for the verdict. Repeatable; REQUIRED to be non-empty
+    /// after trimming (build is not validation).
+    #[arg(long, value_name = "STRING")]
+    evidence: Vec<String>,
+}
+
 fn main() {
     let cli = Cli::parse();
     let r = match cli.command {
@@ -107,6 +124,7 @@ fn main() {
         Command::Gap(args) => gap_command(args),
         Command::Route(args) => route_command(args),
         Command::Charter(args) => charter_command(args),
+        Command::Outcome(args) => outcome_command(args),
     };
     if let Err(e) = r {
         eprintln!("compass: {e}");
@@ -401,8 +419,30 @@ fn gap_command(args: GapArgs) -> Result<()> {
     // Default path: print the assembled inputs as JSON for the skill to read.
     let cfg = Config::load(&root);
     let bundle = gather::gather(&root, &charter, &cfg)?;
-    let inputs = gap::assemble_gap_inputs(&charter, &bundle);
+    let mut inputs = gap::assemble_gap_inputs(&charter, &bundle);
+    // Close the measurement loop: surface the latest judged outcome (§7).
+    inputs.last_outcome = outcome::latest(&root)?;
     println!("{}", serde_json::to_string_pretty(&inputs)?);
+    Ok(())
+}
+
+/// outcome (§7): record a completed move's judged outcome against the charter
+/// `measuring_stick`, requiring measured evidence, and append it to the
+/// `.compass/outcomes.json` store. The latest record is surfaced by `gap`
+/// (`last_outcome`). No LLM — the verdict/evidence are the human's judgment.
+fn outcome_command(args: OutcomeArgs) -> Result<()> {
+    let root = project_root();
+    let path = Charter::project_path(&root);
+    let charter = Charter::load(&path)
+        .with_context(|| "loading .compass/charter.md (run `/compass` to carve one)")?;
+
+    let recorded = outcome::record(&root, &charter, args.verdict, args.evidence)?;
+    println!(
+        "compass: recorded outcome #{} ({:?}) vs measuring_stick — {}",
+        recorded.seq,
+        recorded.verdict,
+        outcome::store_path(&root).display()
+    );
     Ok(())
 }
 
