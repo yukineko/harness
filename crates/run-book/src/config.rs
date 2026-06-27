@@ -72,48 +72,39 @@ impl Config {
 
     pub fn load(root: &Path) -> Self {
         let mut cfg = Config::default();
-        let chosen = {
-            let p = Config::project_path(root);
-            if p.exists() {
-                Some(p)
-            } else {
-                let h = Config::home_path();
-                h.exists().then_some(h)
+        // 3-layer resolution (project file → global file → defaults) lives in
+        // harness_core; this crate only owns how its own fields merge on top.
+        let fc = harness_core::inject::load_layered::<FileConfig>(
+            &Config::project_path(root),
+            &Config::home_path(),
+        );
+        if let Some(v) = fc.enabled {
+            cfg.enabled = v;
+        }
+        if let Some(v) = fc.project_dir {
+            cfg.project_dir = v;
+        }
+        if let Some(v) = fc.global_dir {
+            cfg.global_dir = expand_tilde(&v);
+        }
+        if let Some(v) = fc.include_global {
+            cfg.include_global = v;
+        }
+        if let Some(v) = fc.prefix {
+            if let Some(c) = v.chars().next() {
+                cfg.prefix = c;
             }
-        };
-        if let Some(path) = chosen {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(fc) = toml::from_str::<FileConfig>(&text) {
-                    if let Some(v) = fc.enabled {
-                        cfg.enabled = v;
-                    }
-                    if let Some(v) = fc.project_dir {
-                        cfg.project_dir = v;
-                    }
-                    if let Some(v) = fc.global_dir {
-                        cfg.global_dir = expand_tilde(&v);
-                    }
-                    if let Some(v) = fc.include_global {
-                        cfg.include_global = v;
-                    }
-                    if let Some(v) = fc.prefix {
-                        if let Some(c) = v.chars().next() {
-                            cfg.prefix = c;
-                        }
-                    }
-                    if let Some(v) = fc.index_token {
-                        if !v.trim().is_empty() {
-                            cfg.index_token = v.trim().to_lowercase();
-                        }
-                    }
-                    if let Some(v) = fc.max_chars {
-                        cfg.max_chars = v;
-                    }
-                    if let Some(v) = fc.per_runbook_chars {
-                        cfg.per_runbook_chars = v;
-                    }
-                }
+        }
+        if let Some(v) = fc.index_token {
+            if !v.trim().is_empty() {
+                cfg.index_token = v.trim().to_lowercase();
             }
+        }
+        if let Some(v) = fc.max_chars {
+            cfg.max_chars = v;
+        }
+        if let Some(v) = fc.per_runbook_chars {
+            cfg.per_runbook_chars = v;
         }
         cfg.max_chars = cfg.max_chars.max(200);
         cfg.per_runbook_chars = cfg.per_runbook_chars.clamp(200, cfg.max_chars);

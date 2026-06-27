@@ -61,38 +61,29 @@ impl Config {
 
     pub fn load(root: &Path) -> Self {
         let mut cfg = Config::default();
-        let chosen = {
-            let p = Config::project_path(root);
-            if p.exists() {
-                Some(p)
-            } else {
-                let h = Config::home_path();
-                h.exists().then_some(h)
-            }
-        };
-        if let Some(path) = chosen {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(fc) = toml::from_str::<FileConfig>(&text) {
-                    if let Some(v) = fc.enabled {
-                        cfg.enabled = v;
-                    }
-                    if let Some(v) = fc.store_dir {
-                        cfg.store_dir = expand_tilde(&v);
-                    }
-                    if let Some(v) = fc.top_k {
-                        cfg.top_k = v;
-                    }
-                    if let Some(v) = fc.min_score {
-                        cfg.min_score = v;
-                    }
-                    if let Some(v) = fc.max_chars {
-                        cfg.max_chars = v;
-                    }
-                    if let Some(v) = fc.include_global {
-                        cfg.include_global = v;
-                    }
-                }
-            }
+        // 3-layer resolution (project file → global file → defaults) lives in
+        // harness_core; this crate only owns how its own fields merge on top.
+        let fc = harness_core::inject::load_layered::<FileConfig>(
+            &Config::project_path(root),
+            &Config::home_path(),
+        );
+        if let Some(v) = fc.enabled {
+            cfg.enabled = v;
+        }
+        if let Some(v) = fc.store_dir {
+            cfg.store_dir = expand_tilde(&v);
+        }
+        if let Some(v) = fc.top_k {
+            cfg.top_k = v;
+        }
+        if let Some(v) = fc.min_score {
+            cfg.min_score = v;
+        }
+        if let Some(v) = fc.max_chars {
+            cfg.max_chars = v;
+        }
+        if let Some(v) = fc.include_global {
+            cfg.include_global = v;
         }
         cfg.top_k = cfg.top_k.max(1);
         cfg.max_chars = cfg.max_chars.max(120);

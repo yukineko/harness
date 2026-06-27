@@ -7,6 +7,8 @@
 
 use std::collections::HashSet;
 
+use harness_core::inject::CharBudget;
+
 use crate::config::Config;
 use crate::store::Note;
 
@@ -119,12 +121,12 @@ pub fn select<'a>(notes: &'a [Note], prompt: &str, cfg: &Config) -> Vec<&'a Note
     scored.sort_by(|a, b| b.score.cmp(&a.score).then(a.note.slug.cmp(&b.note.slug)));
 
     let mut chosen: Vec<&Note> = Vec::new();
-    let mut used = 0usize;
+    let mut budget = CharBudget::new(cfg.max_chars);
     let mut seen: HashSet<&str> = HashSet::new();
 
     // 1) always-notes first
     for n in notes.iter().filter(|n| n.meta.always) {
-        if push(&mut chosen, &mut used, &mut seen, n, cfg) {
+        if push(&mut chosen, &mut budget, &mut seen, n) {
             // budget exhausted
         }
     }
@@ -136,27 +138,26 @@ pub fn select<'a>(notes: &'a [Note], prompt: &str, cfg: &Config) -> Vec<&'a Note
         if sc.score < cfg.min_score || sc.note.meta.always {
             continue;
         }
-        push(&mut chosen, &mut used, &mut seen, sc.note, cfg);
+        push(&mut chosen, &mut budget, &mut seen, sc.note);
     }
     chosen
 }
 
 fn push<'a>(
     chosen: &mut Vec<&'a Note>,
-    used: &mut usize,
+    budget: &mut CharBudget,
     seen: &mut HashSet<&'a str>,
     n: &'a Note,
-    cfg: &Config,
 ) -> bool {
     if seen.contains(n.slug.as_str()) {
         return false;
     }
     let len = n.injected_len();
-    if *used + len > cfg.max_chars && !chosen.is_empty() {
+    if budget.would_overflow(len) {
         return true; // would overflow budget
     }
     seen.insert(n.slug.as_str());
-    *used += len;
+    budget.add(len);
     chosen.push(n);
     false
 }

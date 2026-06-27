@@ -5,6 +5,8 @@
 //! so stray `!` in prose or code (`x != y`, `!!`, `foo!`) never injects
 //! anything — there is nothing to resolve to.
 
+use harness_core::inject::{truncate_chars, CharBudget};
+
 use crate::config::Config;
 use crate::store::Runbook;
 
@@ -86,7 +88,7 @@ pub fn render(exp: &Expansion, all: &[Runbook], cfg: &Config) -> Option<String> 
         return None;
     }
     let mut out = String::from(HEADER);
-    let mut remaining = cfg.max_chars;
+    let mut budget = CharBudget::new(cfg.max_chars);
 
     for (idx, rb) in exp.matched.iter().enumerate() {
         let desc = if rb.meta.description.is_empty() {
@@ -94,10 +96,10 @@ pub fn render(exp: &Expansion, all: &[Runbook], cfg: &Config) -> Option<String> 
         } else {
             format!(" — {}", rb.meta.description)
         };
-        let body = truncate(&rb.body, cfg.per_runbook_chars);
+        let body = truncate_chars(&rb.body, cfg.per_runbook_chars, "\n…（以下省略）");
         let block = format!("\n\n## 📓 {}{}\n{}", rb.name, desc, body);
         let len = block.chars().count();
-        if idx > 0 && len > remaining {
+        if budget.would_overflow(len) {
             out.push_str(&format!(
                 "\n\n…（残り {} 件の runbook は文字数上限のため省略。`runbook show <name>` で参照）",
                 exp.matched.len() - idx
@@ -105,7 +107,7 @@ pub fn render(exp: &Expansion, all: &[Runbook], cfg: &Config) -> Option<String> 
             break;
         }
         out.push_str(&block);
-        remaining = remaining.saturating_sub(len);
+        budget.add(len);
     }
 
     if exp.want_index {
@@ -135,15 +137,6 @@ fn render_index(all: &[Runbook], cfg: &Config) -> String {
         ));
     }
     s
-}
-
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max_chars).collect();
-    out.push_str("\n…（以下省略）");
-    out
 }
 
 #[cfg(test)]
