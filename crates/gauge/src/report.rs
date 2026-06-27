@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use crate::config::PriceOverride;
-use crate::pricing;
 use crate::store::{SessionRecord, Usage};
+use harness_core::pricing;
 
 /// Format an integer with thousands separators.
 pub fn commas(n: u64) -> String {

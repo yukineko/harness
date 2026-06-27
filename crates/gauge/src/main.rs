@@ -13,16 +13,15 @@
 mod config;
 mod install;
 mod model;
-mod pricing;
 mod report;
 mod store;
-mod transcript;
 
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
 use harness_core::hook::{read_stdin, run_hook};
+use harness_core::{pricing, usage};
 
 use config::Config;
 use model::HookInput;
@@ -106,7 +105,7 @@ fn record_hook() {
     if !cfg.enabled {
         return;
     }
-    let Some(agg) = transcript::aggregate(&input.transcript_path) else {
+    let Some(agg) = usage::aggregate(&input.transcript_path) else {
         return;
     };
 
