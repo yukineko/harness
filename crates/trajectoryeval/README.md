@@ -1,0 +1,71 @@
+# trajectoryeval
+
+A **trajectory-match verifier** — the sibling of an output verifier.
+
+condukt's online verifier checks a task's **OUTPUT** (its `done_criteria`).
+`trajectoryeval` checks the **PATH** the worker took to get there: the ordered
+sequence of tool calls it made, against an *expected* trajectory spec. It is
+inspired by the trajectory matchers in
+[langchain-ai/agentevals](https://github.com/langchain-ai/agentevals).
+
+It is **subscription-native**: one bundled Rust binary, no API key, no network.
+
+## Subcommands
+
+### `trajectoryeval check --expected <spec.json> --actual <actual.json> [--json]`
+
+Compares an actual ordered tool sequence against an expected spec and reports
+`{ pass, missing, unexpected, out_of_order }` (human report, or `--json` for the
+serialized result).
+
+- **expected** spec JSON:
+  ```json
+  { "mode": "strict",
+    "steps": [ { "tool": "Read" }, { "tool": "Edit", "optional": true } ] }
+  ```
+  `optional` defaults to `false`.
+- **actual** JSON: an array of tool-name strings, e.g. `["Read", "Edit"]`
+  (pipe the output of `extract` straight in).
+
+### `trajectoryeval extract --transcript <jsonl>`
+
+Streams a Claude Code transcript **line-by-line** (it never loads the whole
+transcript into memory) and prints the ordered `tool_use` names as a JSON array
+on stdout — ready to feed into `check --actual`.
+
+## Modes
+
+- **strict** — the actual sequence must equal the expected REQUIRED steps in
+  order. Optional steps may be absent, but if present must sit in their slot.
+  `missing` = required steps not matched; `unexpected` = actual tools with no
+  place in the expected order; `out_of_order` = the right set appeared but in the
+  wrong order.
+- **unordered** — order is ignored. `missing` = required expected tools absent
+  from actual (as a set); `unexpected` = actual tools not in the expected set;
+  `out_of_order` is always false.
+- **subsequence** — the required steps must appear in `actual` in order but not
+  necessarily contiguously (other tools may interleave). `missing` = required
+  steps not found as an in-order subsequence; extras are allowed, so `unexpected`
+  stays empty; `out_of_order` is false.
+
+In every mode: `pass = missing.is_empty() && unexpected.is_empty() && !out_of_order`.
+
+## Exit codes
+
+Mirrors the evalkit / schemaguard 0/1/2 gate policy:
+
+| code | meaning |
+|------|---------|
+| `0`  | trajectory matched the spec (pass) |
+| `1`  | a deviation (missing / unexpected / out-of-order steps) |
+| `2`  | harness error (unreadable or unparseable input) |
+
+This is a plain CLI **gate**, not a lifecycle hook.
+
+## Example
+
+```sh
+trajectoryeval extract --transcript session.jsonl > actual.json
+echo '{"mode":"strict","steps":[{"tool":"Read"},{"tool":"Edit"}]}' > spec.json
+trajectoryeval check --expected spec.json --actual actual.json --json
+```
