@@ -366,6 +366,26 @@ verifier 起動プロンプトには以下を渡す:
 pass なら `condukt state set --run $RID --task <id> --status verified`、fail なら `--status failed`
 にし理由を控える。
 
+**trajectory 検証 (第2の verifier 次元・soft 依存)**: condukt-verifier は **出力** (done_criteria)
+を見るが、worker が辿った **経路** (実装前にテストを走らせたか・tool 呼出順序) は見ない。タスクが
+`expected_trajectory` (期待する tool-call 軌跡。`{mode: strict|unordered|subsequence, steps:[{tool}]}`)
+を持つときに限り、出力検証と**並行して** 経路面を `trajectoryeval` で照合する (tdd/specguard を経路面
+から補強。agentevals 相当)。`trajectoryeval` バイナリが無ければ丸ごと skip する (soft・Phase 6 を
+壊さない):
+```bash
+if command -v trajectoryeval >/dev/null 2>&1 && [ -n "$EXPECTED_TRAJ" ]; then
+  # worker の実軌跡を取る: worker は subagent なので、その agent transcript
+  # (transcript ディレクトリの agent-<id>.jsonl) を軌跡ソースに使う。
+  trajectoryeval extract --transcript "$WORKER_TRANSCRIPT" > /tmp/actual-traj.json 2>/dev/null || true
+  trajectoryeval check --expected "$EXPECTED_TRAJ" --actual /tmp/actual-traj.json --json
+  # exit 0=経路一致 / 1=逸脱 (out_of_order・missing・unexpected を verifier レポートに記録) / 2=照合不能
+fi
+```
+経路逸脱 (exit 1) は **出力検証の pass/fail を上書きしない** — 出力が done_criteria を満たすなら
+verified のままにし、逸脱は verifier レポートに `reason` として併記して可視化する (HOTL)。
+照合不能 (exit 2: 軌跡が取れない等) は無視する。`linked_hypotheses` があるタスクでは、この経路
+verdict を `hypothesis ... --evidence` の観測値の一部として書き戻してよい (build≠validate の証拠補強)。
+
 **confidence 再検証 (low-confidence pass の二重確認)**: verifier が `pass` かつ `confidence: low`
 を返した場合は、model を 1 ティア上げて同じタスクを再度 verifier に投げ、2 回 pass で verified
 に昇格する (Devin confidence-gated clarification の検証側相当)。2 回目も pass なら verified、fail
