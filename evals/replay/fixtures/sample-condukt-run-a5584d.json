@@ -1,0 +1,63 @@
+{
+  "run_id": "sample-condukt-run",
+  "steps": [
+    {
+      "span_id": "interpret",
+      "name": "decompose goal",
+      "phase": "interpreter",
+      "model": "sonnet",
+      "status": "ok",
+      "ms": 2100,
+      "cost_usd": 0.012
+    },
+    {
+      "span_id": "t1",
+      "parent_id": "interpret",
+      "name": "implement t1",
+      "phase": "worker",
+      "model": "sonnet",
+      "status": "ok",
+      "ms": 6400,
+      "cost_usd": 0.052
+    },
+    {
+      "span_id": "t1v",
+      "parent_id": "t1",
+      "name": "verify t1",
+      "phase": "verifier",
+      "model": "sonnet",
+      "status": "verified",
+      "ms": 1300,
+      "cost_usd": 0.009
+    },
+    {
+      "span_id": "t2",
+      "parent_id": "interpret",
+      "name": "implement t2",
+      "phase": "worker",
+      "model": "haiku",
+      "status": "ok",
+      "ms": 3800,
+      "cost_usd": 0.011
+    },
+    {
+      "span_id": "t2v",
+      "parent_id": "t2",
+      "name": "verify t2",
+      "phase": "verifier",
+      "model": "sonnet",
+      "status": "verified",
+      "ms": 1100,
+      "cost_usd": 0.008
+    }
+  ],
+  "expect": {
+    "phases": [
+      "interpreter",
+      "worker",
+      "verifier"
+    ],
+    "max_error_count": 0,
+    "max_cost_usd": 0.092
+  }
+}

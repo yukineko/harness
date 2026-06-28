@@ -523,6 +523,23 @@ fi
 ```
 wiki 更新の失敗は condukt 完了を阻害しない。
 
+**replay golden への promote (soft 依存)**: gate PASS 後、この run のトレースを evalkit の回帰
+golden へ昇格し、実 run を「commit 済み回帰 fixture」として固定する (curate の playbook→golden に
+対する trace→golden の対)。`replaykit` バイナリが PATH 上にあり、かつ tracekit がこの run を
+記録している (`~/.tracekit/<RID>/spans.jsonl` が存在する) 場合のみ実行する。トレースが無ければ
+silent no-op (tracekit 配線が入れば自動で発火する)。
+
+```bash
+if command -v replaykit >/dev/null 2>&1 && test -f "$HOME/.tracekit/$RID/spans.jsonl"; then
+  replaykit promote --run "$RID" --root . --evals-dir evals --dataset replayed 2>/dev/null || true
+  echo "replaykit: trace を evals/replay の回帰 golden へ promote"
+fi
+```
+`promote` は `evals/replay/fixtures/<id>.json` (可搬な trajectory summary) を書き出し、`evalkit run`
+が拾う golden 行 (`cmd: replaykit verify <fixture>`) を id 重複排除しつつ append する。以降 CI の
+`evalkit` が「この run の phase 列・error 数・cost が回帰していないか」を検証する。promote の失敗は
+condukt 完了を阻害しない。
+
 ## ユーティリティ操作
 
 ### タスクのキャンセル (interactive)
