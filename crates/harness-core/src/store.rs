@@ -286,6 +286,34 @@ impl Store {
     }
 }
 
+/// Load a JSON value, returning `Default` on any miss/parse error (fail-soft).
+///
+/// This captures the read→`from_str`→`unwrap_or_default` idiom repeated across
+/// the plugin state stores. The cardinal rule holds: a missing or corrupt file
+/// yields the type's default, never an error that could break a hook turn.
+/// Callers keep their own `path()` schemes; only the read body lives here.
+pub fn load_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Save a JSON value (compact), creating parent dirs. Fail-soft: IO/serialize
+/// errors are swallowed.
+///
+/// The compact counterpart of `load_json`; routes the
+/// `create_dir_all`→`to_string`→`write` idiom through one place. Pretty-printed
+/// or `Result`-returning save sites deliberately keep their own bodies.
+pub fn save_json<T: serde::Serialize>(path: &Path, val: &T) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string(val) {
+        let _ = std::fs::write(path, s);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +324,37 @@ mod tests {
             std::env::temp_dir().join(format!("harness-store-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         (Store::new(root.clone()), root)
+    }
+
+    #[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Demo {
+        a: u32,
+        b: String,
+    }
+
+    #[test]
+    fn json_roundtrips_compact() {
+        let root = std::env::temp_dir().join(format!("harness-json-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("nested").join("demo.json");
+        // Missing file → Default, never an error.
+        assert_eq!(load_json::<Demo>(&path), Demo::default());
+
+        let val = Demo {
+            a: 7,
+            b: "hi".into(),
+        };
+        save_json(&path, &val); // creates parent dirs
+        assert_eq!(load_json::<Demo>(&path), val);
+        // Compact: no pretty-print newlines/indent.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains('\n'), "save_json must be compact: {raw}");
+
+        // Corrupt file → Default, fail-soft.
+        std::fs::write(&path, "{ not json").unwrap();
+        assert_eq!(load_json::<Demo>(&path), Demo::default());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

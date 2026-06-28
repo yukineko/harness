@@ -32,17 +32,9 @@ fn state_path(state_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 pub fn load(state_dir: &Path, session_id: &str) -> SessionState {
-    std::fs::read_to_string(state_path(state_dir, session_id))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    harness_core::store::load_json(&state_path(state_dir, session_id))
 }
 
 pub fn save(state_dir: &Path, session_id: &str, s: &SessionState) {
-    if let Some(parent) = state_path(state_dir, session_id).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(text) = serde_json::to_string(s) {
-        let _ = std::fs::write(state_path(state_dir, session_id), text);
-    }
+    harness_core::store::save_json(&state_path(state_dir, session_id), s);
 }

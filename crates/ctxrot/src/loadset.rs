@@ -43,11 +43,7 @@ pub fn path_for(state_dir: &Path, cwd: &Path) -> PathBuf {
 impl LoadSet {
     /// Load the loadset for `cwd`, or an empty one if absent/unreadable/corrupt.
     pub fn load(state_dir: &Path, cwd: &Path) -> Self {
-        let p = path_for(state_dir, cwd);
-        std::fs::read_to_string(&p)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        harness_core::store::load_json(&path_for(state_dir, cwd))
     }
 
     /// Persist atomically-ish (write whole file). Creates `state_dir` if needed.

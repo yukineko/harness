@@ -44,10 +44,7 @@ fn path_for(cfg: &Config, session: &str) -> PathBuf {
 }
 
 pub fn load(cfg: &Config, session: &str) -> Session {
-    std::fs::read_to_string(path_for(cfg, session))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    harness_core::store::load_json(&path_for(cfg, session))
 }
 
 pub fn save(cfg: &Config, session: &str, s: &Session) {

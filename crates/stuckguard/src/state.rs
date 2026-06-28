@@ -44,20 +44,11 @@ pub fn path(state_dir: &Path, session: &str) -> PathBuf {
 }
 
 pub fn load(state_dir: &Path, session: &str) -> SessionState {
-    std::fs::read_to_string(path(state_dir, session))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    harness_core::store::load_json(&path(state_dir, session))
 }
 
 pub fn save(state_dir: &Path, session: &str, st: &SessionState) {
-    let p = path(state_dir, session);
-    if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(s) = serde_json::to_string(st) {
-        let _ = std::fs::write(&p, s);
-    }
+    harness_core::store::save_json(&path(state_dir, session), st);
 }
 
 impl SessionState {

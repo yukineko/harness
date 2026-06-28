@@ -14,8 +14,5 @@ pub fn load_metrics(session_id: &str) -> SessionMetrics {
         .join(".session-insights")
         .join("state")
         .join(format!("{session_id}.json"));
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    harness_core::store::load_json(&path)
 }
