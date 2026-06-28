@@ -43,6 +43,16 @@ pub struct HookInput {
     pub tool_input: Option<Value>,
     #[serde(default)]
     pub tool_response: Option<Value>,
+
+    /// Notification: text supplied by Claude Code on a `Notification` event
+    /// (e.g. "Claude needs your permission to use Bash").
+    #[serde(default)]
+    pub message: String,
+
+    /// Stop / SubagentStop: true when this stop is itself the result of a
+    /// previous stop-hook continuation.
+    #[serde(default)]
+    pub stop_hook_active: bool,
 }
 
 impl HookInput {
@@ -62,6 +72,39 @@ impl HookInput {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         } else {
             std::path::PathBuf::from(&self.cwd)
+        }
+    }
+
+    /// Short, human-facing project label — the basename of `cwd`.
+    pub fn project_name(&self) -> String {
+        self.cwd_or_current()
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "project".to_string())
+    }
+
+    /// A stable session key for per-session state. Empty session ids (manual
+    /// runs) collapse to a shared "_local" bucket.
+    pub fn session_key(&self) -> String {
+        if self.session_id.is_empty() {
+            "_local".to_string()
+        } else {
+            self.session_id.clone()
+        }
+    }
+
+    /// A short detail for the touched-file / command set, if extractable from
+    /// the tool input (the path a file-oriented tool acted on).
+    pub fn target(&self) -> Option<String> {
+        let ti = self.tool_input.as_ref()?;
+        match self.tool_name.as_str() {
+            "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => ti
+                .get("file_path")
+                .or_else(|| ti.get("notebook_path"))
+                .and_then(Value::as_str)
+                .map(|s| s.to_string()),
+            _ => None,
         }
     }
 }
