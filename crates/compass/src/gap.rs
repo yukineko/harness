@@ -37,6 +37,26 @@ pub struct GapInputs {
     /// loop: the skill sees how the last move actually moved the needle. Set by
     /// `gap_command`; `assemble_gap_inputs` leaves it `None`.
     pub last_outcome: Option<Outcome>,
+    /// Per-opportunity gap scaffolding (§3, OST). One entry per opportunity under
+    /// the active outcome (charter `north_star`), so the skill derives a gap
+    /// *per named bet* instead of one flat gap. The binary supplies `id`/`title`
+    /// deterministically; the SKILL fills each `gap` (LLM job — left `None`
+    /// here). Set by `gap_command`; `assemble_gap_inputs` leaves it empty.
+    pub opportunities: Vec<OpportunityGap>,
+}
+
+/// One opportunity's gap slot in the gap output (§3, OST). The deterministic
+/// `id`/`title` scaffold the skill's per-opportunity gap reasoning; `gap` is the
+/// skill-derived text (None until written — no LLM in the binary).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct OpportunityGap {
+    /// The opportunity identifier (slug + hash), matching `Opportunity::id`.
+    pub id: String,
+    /// The opportunity's human-readable named bet (`Opportunity::title`).
+    pub title: String,
+    /// The skill-derived gap for this opportunity; `None` until the skill writes
+    /// it. The binary never fills this (no LLM judgment here).
+    pub gap: Option<String>,
 }
 
 /// Deterministically assemble the gap inputs from the charter (the stated goal)
@@ -73,9 +93,10 @@ pub fn assemble_gap_inputs(charter: &Charter, bundle: &Bundle) -> GapInputs {
         recent_activity,
         progress_excerpt,
         measuring_stick: charter.measuring_stick.clone(),
-        // The caller (`gap_command`) fills this from the outcomes store; the
-        // pure assembly has no repo root to read it from.
+        // The caller (`gap_command`) fills these from the outcomes/opportunity
+        // stores; the pure assembly has no repo root to read them from.
         last_outcome: None,
+        opportunities: Vec::new(),
     }
 }
 
@@ -183,6 +204,71 @@ mod tests {
         assert_eq!(json["last_outcome"]["verdict"], "forward");
         assert_eq!(json["last_outcome"]["evidence"][0], "p95 fell 20%");
         assert_eq!(json["last_outcome"]["current_gap"], "moves are unjudged");
+    }
+
+    #[test]
+    fn assemble_leaves_opportunities_empty() {
+        // The pure assembly has no repo root; per-opportunity scaffolding is the
+        // caller's (gap_command's) job. Output array is present but empty.
+        let charter = Charter::default();
+        let inputs = assemble_gap_inputs(&charter, &Bundle { fragments: vec![] });
+        assert!(inputs.opportunities.is_empty());
+
+        let json = serde_json::to_value(&inputs).expect("serialize");
+        assert!(json["opportunities"].is_array());
+        assert_eq!(json["opportunities"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn opportunities_surface_per_opportunity_gap_array() {
+        use crate::opportunity;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let north_star = "ship the OST loop";
+        let charter = Charter {
+            north_star: north_star.to_string(),
+            ..Charter::default()
+        };
+
+        // Two named bets under the active outcome.
+        opportunity::record(root, "faster cold start", north_star).expect("record a");
+        opportunity::record(root, "fewer retries", north_star).expect("record b");
+        // One bet under a *different* outcome — must not leak into this gap.
+        opportunity::record(root, "unrelated bet", "some other north_star").expect("record c");
+
+        // Mirror what gap_command does to fill the per-opportunity scaffold.
+        let mut inputs = assemble_gap_inputs(&charter, &Bundle { fragments: vec![] });
+        inputs.opportunities = opportunity::list_under(root, north_star)
+            .expect("list_under")
+            .into_iter()
+            .map(|o| OpportunityGap {
+                id: o.id,
+                title: o.title,
+                gap: None,
+            })
+            .collect();
+
+        // Per-opportunity array (not a flat single gap), scoped to this outcome.
+        assert_eq!(inputs.opportunities.len(), 2);
+        let titles: Vec<&str> = inputs
+            .opportunities
+            .iter()
+            .map(|o| o.title.as_str())
+            .collect();
+        assert!(titles.contains(&"faster cold start"));
+        assert!(titles.contains(&"fewer retries"));
+        assert!(!titles.contains(&"unrelated bet"));
+
+        let json = serde_json::to_value(&inputs).expect("serialize");
+        let arr = json["opportunities"].as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        // Each entry carries id + title and a null (skill-derived) gap slot.
+        for entry in arr {
+            assert!(entry["id"].is_string());
+            assert!(entry["title"].is_string());
+            assert!(entry["gap"].is_null());
+        }
     }
 
     #[test]
