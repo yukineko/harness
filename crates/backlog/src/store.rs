@@ -510,7 +510,10 @@ mod tests {
         add_with_weight(&path, "Heavy", "/repo", vec!["p1".into()], "", 0.9, 200).unwrap();
         add_with_weight(&path, "Mid", "/repo", vec!["p1".into()], "", 0.5, 150).unwrap();
         let t = next(&path, None, None).unwrap().unwrap();
-        assert_eq!(t.title, "Heavy", "highest weight wins within the priority tier");
+        assert_eq!(
+            t.title, "Heavy",
+            "highest weight wins within the priority tier"
+        );
     }
 
     #[test]
