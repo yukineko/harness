@@ -1,17 +1,17 @@
 ## north_star
-完了した一手の成果を compass measuring_stick で judge し、その判定を記録して次の gap に反映する。build より validate に寄せ、計測ループ（awaiting-measurement から validated か rejected まで）を閉じる。
+出荷物だけでなく『どの機会(opportunity)に賭けたか』を構造として持ち、measure した outcome を機会へ還元する。compass は north_star→gap→単一 solution-action だったが、その間に opportunity(顧客ニーズ/PDO の OST)層を挟み、discovery→solution→measure→learn を上流(機会)まで閉じる。
 
 ## definition_of_done
-- move 完了後の成果を measuring_stick で判定する step を compass が持つ（ crates/compass/src/route.rs で handoff に書くだけだった measuring_stick を、新しい outcome 記録経路が読み戻して 前進・不変・後退 を判定する）
-- 判定結果が永続化され次サイクルの gap に反映される（ crates/compass/src/gap.rs が記録済み outcome を読み、 compass gap の出力に直近 move の判定を含める）
-- outcome 記録は measured evidence を必須とする（証拠なしの記録は失敗する＝ build より validate）
+- active outcome 配下に opportunity が永続化され query 可能（compass の新コマンドが active outcome 下の opportunity を >=2 件 JSON で列挙でき、空ストアでは空配列を返す）
+- condukt に渡る handoff(solution)が named opportunity ref を携える（compass route の to_condukt handoff テキストに、その solution が紐づく opportunity の識別子と見出しが印字される）
+- compass gap が opportunity 別に gap を出せる（compass gap の出力 JSON が flat な単一 gap でなく opportunity ごとの gap 配列を含む）
 - cargo test --workspace が全件 pass（既存の不変条件を壊さない）
 
 ## measuring_stick
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
-計測ループは end-to-end で閉じた: compass outcome（決定論コア, 4370feb）＋ flow/compass sink の自動 outcome 記録（統合, SKILL.md）。完了 move は人手なしで measuring_stick 判定され、last_outcome が次 gap に反映される。charter DoD 全充足＋north_star 意図達成。残りは別 north_star: p2 discovery アーキテクチャ群（OST/input-metrics/dual-track/scoring/cadence）と独立 health 群（fmt/CHANGELOG/dependabot 等）。次は PR マージ後に /compass で次ゴール定義。
+compass は north_star→gap→単一 solution を直行し(route.rs)、その間に opportunity(顧客ニーズ)層が無い。hypothesis も flat list。最大の右サイズ差分は『active outcome 配下に opportunity を永続化する store + compass opportunity add/list コマンド』(DoD#1)。handoff への ref 印字(DoD#2)と opportunity 別 gap(DoD#3)はその上に乗る後続。まず store を validate-first で切る。
 
 ## next_action
 

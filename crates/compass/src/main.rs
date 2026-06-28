@@ -14,6 +14,7 @@ mod freshness;
 mod gap;
 mod gates;
 mod gather;
+mod opportunity;
 mod outcome;
 mod route;
 
@@ -67,6 +68,10 @@ enum Command {
     /// (§7). Requires measured evidence (build is not validation). Surfaced as
     /// `last_outcome` in `compass gap`.
     Outcome(OutcomeArgs),
+    /// Manage the opportunity layer (PDO OST): named bets sitting under the
+    /// active outcome (charter `north_star`), the discovery-side layer between
+    /// the goal and the single solution `route` hands to condukt.
+    Opportunity(OpportunityArgs),
 }
 
 #[derive(Args)]
@@ -123,6 +128,39 @@ struct OutcomeArgs {
     evidence: Vec<String>,
 }
 
+#[derive(Args)]
+struct OpportunityArgs {
+    #[command(subcommand)]
+    cmd: OpportunityCmd,
+}
+
+#[derive(Subcommand)]
+enum OpportunityCmd {
+    /// Record a named opportunity under the active outcome (charter
+    /// `north_star`, unless `--outcome` overrides it). Title is required and
+    /// must be non-empty.
+    Add {
+        /// The opportunity statement (a named bet / customer need).
+        #[arg(long, value_name = "TITLE")]
+        title: String,
+        /// Override the active outcome this opportunity sits under. Defaults to
+        /// the charter `north_star`.
+        #[arg(long, value_name = "REF")]
+        outcome: Option<String>,
+    },
+    /// List opportunities under the active outcome (charter `north_star`, unless
+    /// `--outcome` overrides it). `--json` prints a JSON array (empty store/no
+    /// match => `[]`).
+    List {
+        /// Print the opportunities as a JSON array instead of human lines.
+        #[arg(long)]
+        json: bool,
+        /// List under this outcome instead of the charter `north_star`.
+        #[arg(long, value_name = "REF")]
+        outcome: Option<String>,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let r = match cli.command {
@@ -135,6 +173,7 @@ fn main() {
         Command::Route(args) => route_command(args),
         Command::Charter(args) => charter_command(args),
         Command::Outcome(args) => outcome_command(args),
+        Command::Opportunity(args) => opportunity_command(args),
     };
     if let Err(e) = r {
         eprintln!("compass: {e}");
@@ -509,6 +548,46 @@ fn outcome_command(args: OutcomeArgs) -> Result<()> {
         recorded.verdict,
         outcome::store_path(&root).display()
     );
+    Ok(())
+}
+
+/// opportunity (PDO OST): record/list named bets under the active outcome. The
+/// "active outcome" is the charter `north_star` snapshot (mirroring how
+/// `outcome` snapshots its goal), overridable per-call with `--outcome`. The
+/// charter is loaded tolerantly: a missing/blank north_star still works (the
+/// opportunity is filed under the empty active outcome) so `add`/`list` never
+/// wedge on a not-yet-carved charter.
+fn opportunity_command(args: OpportunityArgs) -> Result<()> {
+    let root = project_root();
+    let active_outcome = Charter::load(&Charter::project_path(&root))
+        .map(|c| c.north_star)
+        .unwrap_or_default();
+
+    match args.cmd {
+        OpportunityCmd::Add { title, outcome } => {
+            let outcome_ref = outcome.unwrap_or(active_outcome);
+            let rec = opportunity::record(&root, &title, &outcome_ref)?;
+            println!(
+                "compass: recorded opportunity [{}] \"{}\" under outcome — {}",
+                rec.id,
+                rec.title,
+                opportunity::store_path(&root).display()
+            );
+        }
+        OpportunityCmd::List { json, outcome } => {
+            let outcome_ref = outcome.unwrap_or(active_outcome);
+            let found = opportunity::list_under(&root, &outcome_ref)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&found)?);
+            } else if found.is_empty() {
+                println!("(no opportunities under active outcome)");
+            } else {
+                for o in &found {
+                    println!("- [{}] {}", o.id, o.title);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
