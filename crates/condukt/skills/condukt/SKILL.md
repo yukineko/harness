@@ -580,9 +580,9 @@ condukt state cancel --run <run_id> --task <task_id>
   内で手動マージ解消後に Phase 7 リトライするか、大きな衝突は再実装として Phase 5 に戻す。詳細は
   Phase 7「merge pre-flight 衝突への対処」を参照。
 - **condukt 自身を改修する場合** → 触れてよいファイルは必ず **git リポジトリ側**
-  (`crates/condukt/agents/`・`crates/condukt/skills/`・`crates/condukt/src/` を含む
-  worktree) を指す。**install キャッシュ (`~/.claude/plugins/cache/.../condukt/...`) を
-  worker に編集させない** — キャッシュ編集は git 外でリポジトリと黙って乖離し、新規 install で
-  消える。worker に渡す touched_files はリポジトリ相対パスにし、統合後に
-  `crates/condukt/scripts/sync-plugin-assets.sh` でローカル install を更新する
-  (`--check` で乖離検出)。
+  (`crates/condukt/{agents,skills,src}` を含む worktree) を指し、**install キャッシュ
+  (`~/.claude/plugins/cache/.../condukt/...`) は worker に編集させない**。worker に渡す
+  touched_files はリポジトリ相対パスにし、統合後に `crates/condukt/scripts/sync-plugin-assets.sh`
+  でローカル install を更新する (`--check` で乖離検出)。**理由とポリシーの正典は
+  `crates/condukt/README.md` の「Source of truth: edit the repo, not the cache」節**
+  (キャッシュ編集が git 外で黙って乖離する仕組みはそこを参照。本節では繰り返さない)。
