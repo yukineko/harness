@@ -1,0 +1,25 @@
+#!/bin/sh
+# replaykit plugin launcher — selects the per-platform binary bundled in this dir.
+#
+# replaykit is a gate: evalkit invokes `replaykit verify` as a golden case's cmd,
+# so if it cannot run the caller must NOT treat that as "replay matched". A
+# missing binary therefore exits 1 (like evalkit/trajectoryeval), never 0.
+root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+case "$(uname -s)" in
+  Linux)  os=linux ;;
+  Darwin) os=darwin ;;
+  *)      os="$(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64)   arch=x86_64 ;;
+  arm64|aarch64)  arch=arm64 ;;
+  *)              arch="$(uname -m)" ;;
+esac
+
+binary="$root/replaykit-$os-$arch"
+if [ ! -x "$binary" ]; then
+  echo "replaykit: no bundled binary for $os-$arch ($binary)." >&2
+  exit 1
+fi
+exec "$binary" "$@"
