@@ -49,6 +49,10 @@ enum Command {
         /// Pre-registered kill criterion, e.g. --kill "activation <= 0.2"
         #[arg(long)]
         kill: Option<String>,
+        /// Discovery confidence (verification priority; higher = validated
+        /// sooner). Omit to use the default (0.5).
+        #[arg(long)]
+        confidence: Option<f64>,
     },
     /// Mark a hypothesis as validated
     Validate {
@@ -92,6 +96,8 @@ enum Command {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Set a hypothesis's discovery confidence (verification priority)
+    Confidence { id: String, value: f64 },
     /// List hypotheses
     List {
         #[arg(long)]
@@ -118,11 +124,16 @@ fn run() -> Result<()> {
             goal,
             success,
             kill,
+            confidence,
         } => {
             let success = success.as_deref().map(Criterion::parse).transpose()?;
             let kill = kill.as_deref().map(Criterion::parse).transpose()?;
             let mut st = store::Store::load(&cfg)?;
             let id = st.add_with_criteria(text, goal, success, kill)?;
+            // Default confidence (0.5) is set by `new()`; only override when given.
+            if let Some(c) = confidence {
+                st.set_confidence(&id, c)?;
+            }
             println!("{id}");
         }
         Command::Validate {
@@ -174,6 +185,11 @@ fn run() -> Result<()> {
             st.mark_assumption_tested(&id, index)?;
             println!("{id} assumption {index} marked tested");
         }
+        Command::Confidence { id, value } => {
+            let mut st = store::Store::load(&cfg)?;
+            st.set_confidence(&id, value)?;
+            println!("{id} confidence set to {value}");
+        }
         Command::AwaitMeasurement { id, run } => {
             let mut st = store::Store::load(&cfg)?;
             st.mark_awaiting_measurement(&id, run)?;
@@ -209,8 +225,8 @@ fn run() -> Result<()> {
                     .map(|a| format!(" [RAT: {}]", a.text))
                     .unwrap_or_default();
                 println!(
-                    "[{}] {} — {}{}{}{}",
-                    h.status, h.id, h.text, crit_info, rat_info, run_info
+                    "[{}] (conf {:.2}) {} — {}{}{}{}",
+                    h.status, h.confidence, h.id, h.text, crit_info, rat_info, run_info
                 );
             }
         }

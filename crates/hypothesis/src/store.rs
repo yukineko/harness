@@ -311,12 +311,8 @@ impl Store {
 
     /// Update a hypothesis's discovery confidence and persist. Errors if no
     /// hypothesis has the given id. Changing confidence re-orders [`Store::list`]
-    /// (and therefore flow's open-hypothesis pick) deterministically.
-    ///
-    /// `#[allow(dead_code)]` mirrors `add`/`validate` above: the binary wires the
-    /// `confidence` CLI subcommand in a follow-up slice; until then this is the
-    /// tested entry point.
-    #[allow(dead_code)]
+    /// (and therefore flow's open-hypothesis pick) deterministically. Wired to the
+    /// `confidence <id> <value>` CLI subcommand and `add --confidence`.
     pub fn set_confidence(&mut self, id: &str, value: f64) -> Result<()> {
         let h = self
             .hypotheses

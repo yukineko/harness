@@ -110,8 +110,10 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
    priority を上書きしない（priority が第一鍵）。
 4. backlog も空なら **hypothesis（新規 discovery: open 仮説）**:
    ```bash
-   hypothesis list --status open    # 空なら次へ
+   hypothesis list --status open    # confidence 降順（同点 created_at 昇順）でソート済み。空なら次へ
    ```
+   **`list --status open` は confidence 降順で並ぶ**ので、**先頭（最高 confidence ＝ 最も検証価値が高い仮説）から順にピック**する
+   （挿入順ではなくスコア順で discovery を駆動する。各行頭の `(conf X.XX)` が検証優先度）。
    open な仮説があれば、**full build に直行する前に RAT ゲート（riskiest-assumption test）を通す**:
    ```bash
    RAT=$(hypothesis rat <hid>)      # 未テストの最重要×弱証拠 assumption（leap of faith）を 1 行返す
