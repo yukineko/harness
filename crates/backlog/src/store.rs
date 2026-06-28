@@ -48,13 +48,30 @@ pub fn save(path: &Path, tasks: &[Task]) -> Result<()> {
     Ok(())
 }
 
-/// タスクを追加して保存。生成した id を返す。
+/// タスクを追加して保存。生成した id を返す。weight は 0.0 (= 既定の優先順位)。
+/// weight を明示したい呼び出し元は [`add_with_weight`] を使う。
 pub fn add(
     path: &Path,
     title: &str,
     project: &str,
     tags: Vec<String>,
     notes: &str,
+    now: i64,
+) -> Result<String> {
+    add_with_weight(path, title, project, tags, notes, 0.0, now)
+}
+
+/// [`add`] に ordering weight を添えた版。weight は同一 priority 内の並び順を
+/// 降順で駆動する (高い weight ほど next/list で先に来る)。compass opportunity
+/// の weight をここへ供給すると、source 層のキュー順が opportunity の impact で
+/// 決まる。weight=0.0 は legacy 既定で、従来の (priority, created_at) 順を保つ。
+pub fn add_with_weight(
+    path: &Path,
+    title: &str,
+    project: &str,
+    tags: Vec<String>,
+    notes: &str,
+    weight: f64,
     now: i64,
 ) -> Result<String> {
     let mut tasks = load(path)?;
@@ -69,6 +86,7 @@ pub fn add(
         created_at: now,
         updated_at: now,
         defer_until: None,
+        weight,
     };
     tasks.push(task);
     save(path, &tasks)?;
@@ -100,8 +118,23 @@ pub fn next(
         })
         .collect();
 
-    candidates.sort_by_key(|t| (t.priority(), t.created_at));
+    candidates.sort_by(|a, b| queue_order(a, b));
     Ok(candidates.first().map(|t| (*t).clone()))
+}
+
+/// The deterministic source-layer queue order:
+///   1. priority() ascending (p0 before p1 …),
+///   2. weight descending (higher opportunity impact surfaces first),
+///   3. created_at ascending (older first — the original FIFO tie-break).
+///
+/// `f64::total_cmp` gives a total order over weight (no NaN panics). With all
+/// weights at the 0.0 default this collapses to the legacy (priority,
+/// created_at) order, so existing tasks.toml files are unaffected.
+fn queue_order(a: &Task, b: &Task) -> std::cmp::Ordering {
+    a.priority()
+        .cmp(&b.priority())
+        .then(b.weight.total_cmp(&a.weight))
+        .then(a.created_at.cmp(&b.created_at))
 }
 
 /// defer_until <= now のタスクの defer_until を None にクリアして status を "pending" に戻す。
@@ -199,7 +232,7 @@ pub fn list(
     status_filter: Option<&str>,
 ) -> Result<Vec<Task>> {
     let tasks = load(path)?;
-    let result = tasks
+    let mut result: Vec<Task> = tasks
         .into_iter()
         .filter(|t| match tag_filter {
             Some(tag) => t.tags.iter().any(|tg| tg == tag),
@@ -214,6 +247,9 @@ pub fn list(
             None => true,
         })
         .collect();
+    // Same weight-aware order as `next`, so `list` surfaces tasks in the order
+    // they would actually be picked (priority → weight desc → created_at).
+    result.sort_by(queue_order);
     Ok(result)
 }
 
@@ -457,5 +493,74 @@ mod tests {
         // now を小さい値にして期限切れタスクがない状態でテスト
         let count = requeue_expired(&path, 0).unwrap();
         assert_eq!(count, 0);
+    }
+
+    // --- weight ordering (opportunity weight drives the source-layer queue) ---
+
+    #[test]
+    fn next_orders_by_weight_desc_within_priority() {
+        let path = tmp_path();
+        // Same priority (p1). Insertion/created_at order would put "First" ahead,
+        // but the higher weight must win.
+        add_with_weight(&path, "Light", "/repo", vec!["p1".into()], "", 0.2, 100).unwrap();
+        add_with_weight(&path, "Heavy", "/repo", vec!["p1".into()], "", 0.9, 200).unwrap();
+        add_with_weight(&path, "Mid", "/repo", vec!["p1".into()], "", 0.5, 150).unwrap();
+        let t = next(&path, None, None).unwrap().unwrap();
+        assert_eq!(t.title, "Heavy", "highest weight wins within the priority tier");
+    }
+
+    #[test]
+    fn priority_dominates_weight() {
+        let path = tmp_path();
+        // A heavy p2 must still sit behind a light p0: priority is the primary key.
+        add_with_weight(&path, "Heavy p2", "/repo", vec!["p2".into()], "", 9.0, 100).unwrap();
+        add_with_weight(&path, "Light p0", "/repo", vec!["p0".into()], "", 0.1, 200).unwrap();
+        let t = next(&path, None, None).unwrap().unwrap();
+        assert_eq!(t.title, "Light p0");
+    }
+
+    #[test]
+    fn equal_weight_falls_back_to_created_at() {
+        let path = tmp_path();
+        // Equal weight → the legacy FIFO (created_at asc) tie-break still applies.
+        add_with_weight(&path, "Newer", "/repo", vec!["p1".into()], "", 0.5, 200).unwrap();
+        add_with_weight(&path, "Older", "/repo", vec!["p1".into()], "", 0.5, 100).unwrap();
+        let t = next(&path, None, None).unwrap().unwrap();
+        assert_eq!(t.title, "Older");
+    }
+
+    #[test]
+    fn changing_weight_changes_next_pick() {
+        // The load-bearing assertion: editing weight reorders the queue.
+        let path = tmp_path();
+        add_with_weight(&path, "A", "/repo", vec!["p1".into()], "", 0.3, 100).unwrap();
+        add_with_weight(&path, "B", "/repo", vec!["p1".into()], "", 0.6, 200).unwrap();
+        // Initially B (heavier) is next.
+        assert_eq!(next(&path, None, None).unwrap().unwrap().title, "B");
+
+        // Bump A above B and persist.
+        let mut tasks = load(&path).unwrap();
+        for t in tasks.iter_mut() {
+            if t.title == "A" {
+                t.weight = 0.9;
+            }
+        }
+        save(&path, &tasks).unwrap();
+
+        // Now A is next — the same store, only the weight changed the order.
+        assert_eq!(next(&path, None, None).unwrap().unwrap().title, "A");
+    }
+
+    #[test]
+    fn list_is_weight_ordered() {
+        let path = tmp_path();
+        add_with_weight(&path, "Light", "/repo", vec!["p1".into()], "", 0.2, 100).unwrap();
+        add_with_weight(&path, "Heavy", "/repo", vec!["p1".into()], "", 0.9, 200).unwrap();
+        let titles: Vec<String> = list(&path, None, None, Some("pending"))
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(titles, vec!["Heavy".to_string(), "Light".to_string()]);
     }
 }

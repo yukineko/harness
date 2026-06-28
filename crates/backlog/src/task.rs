@@ -16,6 +16,14 @@ pub struct Task {
     /// Absent in older tasks.toml files; treated as None (not deferred).
     #[serde(default)]
     pub defer_until: Option<i64>,
+    /// Ordering weight (higher = surfaced sooner within the same priority tier).
+    /// Carries a compass opportunity's weight so the source layer's queue order
+    /// is driven by opportunity impact, not just priority + insertion time.
+    /// Absent in older tasks.toml files; `#[serde(default)]` makes those load as
+    /// 0.0, which preserves the legacy `(priority, created_at)` order exactly
+    /// (all-equal weight → tie-break falls through to created_at).
+    #[serde(default)]
+    pub weight: f64,
 }
 
 impl Task {
@@ -85,6 +93,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             defer_until: None,
+            weight: 0.0,
         }
     }
 
@@ -209,5 +218,8 @@ mod tests {
         }"#;
         let t: Task = serde_json::from_str(json).expect("deserialize without defer_until");
         assert!(t.defer_until.is_none());
+        // weight is also absent in this legacy record → defaults to 0.0,
+        // which keeps legacy tasks ordering identically to before.
+        assert_eq!(t.weight, 0.0);
     }
 }
