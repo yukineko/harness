@@ -532,9 +532,10 @@ fn gap_command(args: GapArgs) -> Result<()> {
     // Close the measurement loop: surface the latest judged outcome (§7).
     inputs.last_outcome = outcome::latest(&root)?;
     // OST (§3): scaffold one gap slot per opportunity under the active outcome
-    // so the skill derives a gap per named bet, not one flat gap. Tolerant load
-    // — a missing/corrupt store must not break `gap`.
-    inputs.opportunities = opportunity::list_under(&root, &charter.north_star)
+    // so the skill derives a gap per named bet, not one flat gap. Ranked by
+    // weight descending (load-bearing — heaviest bet leads). Tolerant load — a
+    // missing/corrupt store must not break `gap`.
+    inputs.opportunities = opportunity::list_under_ranked(&root, &charter.north_star)
         .unwrap_or_default()
         .into_iter()
         .map(|o| gap::OpportunityGap {
@@ -647,7 +648,8 @@ fn route_command(args: RouteArgs) -> Result<()> {
     // named opportunities under the active outcome (charter north_star) so the
     // handed-off solution carries its opportunity refs (DoD#2).
     let charter = Charter::load(&Charter::project_path(&root)).unwrap_or_default();
-    let opportunities = opportunity::list_under(&root, &charter.north_star).unwrap_or_default();
+    let opportunities =
+        opportunity::list_under_ranked(&root, &charter.north_star).unwrap_or_default();
     println!();
     print!(
         "{}",

@@ -169,6 +169,18 @@ pub fn list_under(root: &Path, outcome_ref: &str) -> Result<Vec<Opportunity>> {
         .collect())
 }
 
+/// Opportunities under `outcome_ref`, ranked by `weight` descending so the layer
+/// is load-bearing (the heaviest bet leads). The sort is STABLE and starts from
+/// [`list_under`]'s oldest-first order, so equal weights keep insertion order as
+/// the deterministic tiebreak. `f64::total_cmp` gives a total order (no NaN
+/// surprises). This is the single canonical ranking both `gap` and the `route`
+/// handoff consume.
+pub fn list_under_ranked(root: &Path, outcome_ref: &str) -> Result<Vec<Opportunity>> {
+    let mut found = list_under(root, outcome_ref)?;
+    found.sort_by(|a, b| b.weight.total_cmp(&a.weight));
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +265,31 @@ mod tests {
 
         // a non-matching outcome yields empty.
         assert!(list_under(root, "outcome-X").expect("list x").is_empty());
+    }
+
+    #[test]
+    fn list_under_ranked_orders_by_weight_desc_with_insertion_tiebreak() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // recorded out of weight order; two share a weight (insertion tiebreak).
+        record(root, "low bet", "o", 1.0).expect("low");
+        record(root, "top bet", "o", 9.0).expect("top");
+        record(root, "mid bet A", "o", 5.0).expect("mid a");
+        record(root, "mid bet B", "o", 5.0).expect("mid b");
+
+        let ranked: Vec<String> = list_under_ranked(root, "o")
+            .expect("ranked")
+            .into_iter()
+            .map(|o| o.title)
+            .collect();
+        // weight desc; equal weights (5.0) keep insertion order A before B.
+        assert_eq!(ranked, vec!["top bet", "mid bet A", "mid bet B", "low bet"]);
+
+        // changing a weight changes the order: bump "low bet" above the rest.
+        record(root, "low bet now heavy", "o", 99.0).expect("heavy");
+        let top = list_under_ranked(root, "o").expect("ranked2");
+        assert_eq!(top[0].title, "low bet now heavy");
     }
 
     #[test]
