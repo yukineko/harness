@@ -278,6 +278,16 @@ CONFLICT_EXIT=$?
 RID=$(condukt state init --file <json>)   # tasks=pending で run を作成、run id を返す
 ```
 
+**trace 記録の起点 (soft 依存)**: `tracekit` バイナリが PATH 上にあれば、この run の **interpreter
+span を root として 1 回記録**する。これが worker/verifier span の親になり、Phase 8 の
+`replaykit promote` が拾うトレース (`~/.tracekit/$RID/spans.jsonl`) の土台になる。未導入なら no-op:
+```bash
+if command -v tracekit >/dev/null 2>&1; then
+  tracekit record --run "$RID" --span interpret --name "decompose goal" \
+    --phase interpreter --model <interpreter に使ったモデル> --status ok 2>/dev/null || true
+fi
+```
+
 ### Phase 4.5 — ベースライン取得
 実装開始前にテストスイートの現状を記録する:
 ```
@@ -422,6 +432,26 @@ SKILL.md 群を hash した短い hex を返す決定論ヘルパで、古い fu
 `2>/dev/null || true` で soft に握り潰す (記録自体は壊さない)。版間の pass率/コスト差は
 `evalkit canary --baseline <旧> --current <新>` が golden replay の delta として出す
 (promptfoo side-by-side 相当)。
+
+**trace span の記録 (soft 依存)**: fugu-router record と同じ位置で、この task の **worker span と
+verifier span を `tracekit` に追記**する (phase/model/status を span 木として残す)。worker span は
+interpreter root を、verifier span は worker span を親に取り、`replaykit promote` が拾える
+`interpreter→worker→verifier` の経路を作る。`tracekit` が無ければ丸ごと skip (soft・Phase 6 を
+壊さない):
+```bash
+if command -v tracekit >/dev/null 2>&1; then
+  # worker span (実装フェーズ。status は worker の done/needs-serial 等を ok|error に丸める)
+  tracekit record --run "$RID" --span "<t.id>" --parent interpret --name "<task.title>" \
+    --phase worker --model <worker に使ったモデル> --task "<t.id>" \
+    --status <ok|error> --cost <gauge から取れれば> 2>/dev/null || true
+  # verifier span (検証フェーズ。status は verified|failed をそのまま)
+  tracekit record --run "$RID" --span "<t.id>-v" --parent "<t.id>" --name "verify <task.title>" \
+    --phase verifier --model <verifier_model> --task "<t.id>" \
+    --status <verified|failed> 2>/dev/null || true
+fi
+```
+これにより run 完了後の `tracekit trace $RID` で段ごとの model/cost/status が見え、Phase 8 の
+`replaykit promote` がこの run を回帰 golden に固定できる (record→trace→replay→evalkit のループ)。
 
 **golden 化の提案 (soft 依存・任意)**: verified タスクの `done_criteria` が**機械的** (`cargo test`・
 backtick で囲んだコマンド等) なら、その run を回帰 golden に固定できる。`curate` バイナリが
