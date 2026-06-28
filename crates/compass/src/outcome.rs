@@ -154,6 +154,112 @@ pub fn latest(root: &Path) -> Result<Option<Outcome>> {
     Ok(load(root)?.into_iter().next_back())
 }
 
+// `#[allow(dead_code)]` on the pivot-signal API mirrors the `hypothesis::store`
+// convention: the deterministic core + its tests ship first; the `pivot-check`
+// CLI subcommand that calls it (and flow's loop-end consume) is the parked
+// follow-up slice. Until that lands these are the tested entry points.
+
+/// Default pivot threshold: this many consecutive non-forward (unchanged or
+/// backward) outcomes at the tail of the history recommends a pivot.
+#[allow(dead_code)]
+pub const DEFAULT_PIVOT_THRESHOLD: usize = 3;
+
+/// Whether the accumulated outcome trend says to stay the course or to change
+/// direction at the north_star level (DESIGN: pivot-or-persevere gate).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Recommendation {
+    /// Keep the current north_star — the trend is not a sustained stall.
+    Persevere,
+    /// The tail shows a sustained stall/regression — re-orient the north_star.
+    Pivot,
+}
+
+/// A pivot-or-persevere recommendation derived from the trailing outcome streak.
+/// Self-describing: carries the measured streak, the threshold it was judged
+/// against, and a human-readable aggregation reason.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PivotSignal {
+    /// persevere | pivot.
+    pub recommendation: Recommendation,
+    /// Length of the trailing run of consecutive unchanged/backward verdicts.
+    pub streak: usize,
+    /// The threshold `streak` was compared against (>= => pivot).
+    pub threshold: usize,
+    /// Aggregation reason: streak length, the verdict run, and the last forward.
+    pub reason: String,
+}
+
+/// Aggregate the trailing streak of consecutive non-forward (unchanged or
+/// backward) outcomes and recommend pivot vs persevere. Deterministic, pure over
+/// the supplied history. Empty history or a forward tail => persevere (streak 0);
+/// `threshold > 0 && streak >= threshold` => pivot. A forward outcome anywhere in
+/// the tail resets the streak (only the run *after* the last forward counts).
+#[allow(dead_code)]
+pub fn pivot_signal(outcomes: &[Outcome], threshold: usize) -> PivotSignal {
+    let mut streak = 0usize;
+    let mut last_forward_seq: Option<u64> = None;
+    for o in outcomes.iter().rev() {
+        if o.verdict == Verdict::Forward {
+            last_forward_seq = Some(o.seq);
+            break;
+        }
+        streak += 1;
+    }
+
+    let recommendation = if threshold > 0 && streak >= threshold {
+        Recommendation::Pivot
+    } else {
+        Recommendation::Persevere
+    };
+
+    let verdict_run: Vec<&str> = outcomes
+        .iter()
+        .rev()
+        .take(streak)
+        .map(|o| match o.verdict {
+            Verdict::Unchanged => "unchanged",
+            Verdict::Backward => "backward",
+            Verdict::Forward => "forward", // unreachable within the streak
+        })
+        .collect();
+
+    let reason = if streak == 0 {
+        if outcomes.is_empty() {
+            "no outcomes recorded yet; persevere".to_string()
+        } else {
+            "latest outcome is forward; persevere".to_string()
+        }
+    } else {
+        let cmp = if recommendation == Recommendation::Pivot {
+            ">="
+        } else {
+            "<"
+        };
+        let tail = match last_forward_seq {
+            Some(s) => format!("; last forward at seq {s}"),
+            None => "; no forward outcome on record".to_string(),
+        };
+        format!(
+            "{} consecutive non-forward outcome(s) ({} threshold {}): [{}]{}",
+            streak,
+            cmp,
+            threshold,
+            verdict_run.join(", "),
+            tail
+        )
+    };
+
+    PivotSignal {
+        recommendation,
+        streak,
+        threshold,
+        reason,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +332,85 @@ mod tests {
     fn latest_is_none_when_no_store() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert_eq!(latest(dir.path()).expect("latest"), None);
+    }
+
+    /// Build a bare Outcome fixture with just the fields the streak logic reads.
+    fn out(seq: u64, verdict: Verdict) -> Outcome {
+        Outcome {
+            seq,
+            recorded_at: 0,
+            verdict,
+            evidence: vec!["e".to_string()],
+            north_star: String::new(),
+            current_gap: String::new(),
+        }
+    }
+
+    #[test]
+    fn pivot_signal_empty_history_perseveres() {
+        let sig = pivot_signal(&[], DEFAULT_PIVOT_THRESHOLD);
+        assert_eq!(sig.recommendation, Recommendation::Persevere);
+        assert_eq!(sig.streak, 0);
+        assert!(sig.reason.contains("no outcomes recorded"));
+    }
+
+    #[test]
+    fn pivot_signal_forward_tail_perseveres() {
+        // a trailing forward => streak 0 => persevere, regardless of earlier stalls.
+        let hist = [
+            out(0, Verdict::Backward),
+            out(1, Verdict::Unchanged),
+            out(2, Verdict::Forward),
+        ];
+        let sig = pivot_signal(&hist, DEFAULT_PIVOT_THRESHOLD);
+        assert_eq!(sig.recommendation, Recommendation::Persevere);
+        assert_eq!(sig.streak, 0);
+        assert!(sig.reason.contains("latest outcome is forward"));
+    }
+
+    #[test]
+    fn pivot_signal_below_threshold_perseveres() {
+        // threshold-1 (=2) consecutive unchanged at the tail => persevere.
+        let hist = [
+            out(0, Verdict::Forward),
+            out(1, Verdict::Unchanged),
+            out(2, Verdict::Unchanged),
+        ];
+        let sig = pivot_signal(&hist, 3);
+        assert_eq!(sig.recommendation, Recommendation::Persevere);
+        assert_eq!(sig.streak, 2);
+        assert!(sig.reason.contains("< threshold 3"));
+        assert!(sig.reason.contains("last forward at seq 0"));
+    }
+
+    #[test]
+    fn pivot_signal_at_threshold_pivots() {
+        // threshold (=3) consecutive backward at the tail => pivot.
+        let hist = [
+            out(0, Verdict::Backward),
+            out(1, Verdict::Backward),
+            out(2, Verdict::Backward),
+        ];
+        let sig = pivot_signal(&hist, 3);
+        assert_eq!(sig.recommendation, Recommendation::Pivot);
+        assert_eq!(sig.streak, 3);
+        assert!(sig.reason.contains(">= threshold 3"));
+        assert!(sig.reason.contains("no forward outcome on record"));
+    }
+
+    #[test]
+    fn pivot_signal_forward_resets_streak() {
+        // an intervening forward resets: only the run AFTER it counts.
+        let hist = [
+            out(0, Verdict::Backward),
+            out(1, Verdict::Backward),
+            out(2, Verdict::Forward),
+            out(3, Verdict::Backward),
+        ];
+        let sig = pivot_signal(&hist, 3);
+        assert_eq!(sig.recommendation, Recommendation::Persevere);
+        assert_eq!(sig.streak, 1);
+        assert!(sig.reason.contains("last forward at seq 2"));
     }
 
     #[test]
