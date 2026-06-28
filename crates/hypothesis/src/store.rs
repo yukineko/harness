@@ -286,15 +286,46 @@ impl Store {
         self.save()
     }
 
+    /// List hypotheses (optionally filtered by status) in **discovery order**:
+    /// confidence descending, then created_at ascending as the deterministic
+    /// tie-break. This is what makes confidence load-bearing — the open list is
+    /// no longer insertion-ordered, so the highest-confidence bet surfaces first
+    /// for validation. `f64::total_cmp` gives a total order (NaN-safe); created_at
+    /// is an ISO-8601 string so a lexicographic compare is chronological.
     pub fn list(&self, status: Option<&str>) -> Vec<&Hypothesis> {
-        match status {
+        let mut out: Vec<&Hypothesis> = match status {
             None => self.hypotheses.iter().collect(),
             Some(s) => self
                 .hypotheses
                 .iter()
                 .filter(|h| h.status.to_string() == s)
                 .collect(),
-        }
+        };
+        out.sort_by(|a, b| {
+            b.confidence
+                .total_cmp(&a.confidence)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        out
+    }
+
+    /// Update a hypothesis's discovery confidence and persist. Errors if no
+    /// hypothesis has the given id. Changing confidence re-orders [`Store::list`]
+    /// (and therefore flow's open-hypothesis pick) deterministically.
+    ///
+    /// `#[allow(dead_code)]` mirrors `add`/`validate` above: the binary wires the
+    /// `confidence` CLI subcommand in a follow-up slice; until then this is the
+    /// tested entry point.
+    #[allow(dead_code)]
+    pub fn set_confidence(&mut self, id: &str, value: f64) -> Result<()> {
+        let h = self
+            .hypotheses
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| anyhow::anyhow!("hypothesis not found: {id}"))?;
+        h.confidence = value;
+        h.updated_at = now_iso();
+        self.save()
     }
 
     /// All hypotheses as a backing slice (for callers that filter themselves).
@@ -335,6 +366,74 @@ mod tests {
         assert_eq!(hypotheses[0].id, id);
         assert_eq!(hypotheses[0].text, "my hypothesis text");
         assert!(hypotheses[0].status.is_open());
+    }
+
+    // --- confidence ordering (discovery layer made load-bearing) ---
+
+    #[test]
+    fn list_sorts_by_confidence_descending() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+        let mut st = Store::load(&cfg).unwrap();
+        // Insertion order is low, high, mid — confidence must override it.
+        let lo = st.add("low".to_string(), None).unwrap();
+        let hi = st.add("high".to_string(), None).unwrap();
+        let mid = st.add("mid".to_string(), None).unwrap();
+        st.set_confidence(&lo, 0.1).unwrap();
+        st.set_confidence(&hi, 0.9).unwrap();
+        st.set_confidence(&mid, 0.5).unwrap();
+        let order: Vec<&str> = st.list(None).iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(order, vec!["high", "mid", "low"]);
+    }
+
+    #[test]
+    fn list_confidence_tiebreak_by_created_at() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+        let mut st = Store::load(&cfg).unwrap();
+        let older = st.add("older".to_string(), None).unwrap();
+        let newer = st.add("newer".to_string(), None).unwrap();
+        // Equal confidence; force distinct created_at so the tie-break is
+        // deterministic regardless of how fast the two adds happened.
+        st.set_confidence(&older, 0.5).unwrap();
+        st.set_confidence(&newer, 0.5).unwrap();
+        for h in st.hypotheses.iter_mut() {
+            if h.id == older {
+                h.created_at = "2026-01-01T00:00:00Z".to_string();
+            } else if h.id == newer {
+                h.created_at = "2026-02-01T00:00:00Z".to_string();
+            }
+        }
+        let order: Vec<&str> = st.list(None).iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(order, vec!["older", "newer"]);
+    }
+
+    #[test]
+    fn set_confidence_changes_list_order() {
+        // The load-bearing assertion: editing confidence reorders the queue
+        // and the new order survives a reload from disk.
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+        let mut st = Store::load(&cfg).unwrap();
+        let a = st.add("A".to_string(), None).unwrap();
+        let b = st.add("B".to_string(), None).unwrap();
+        st.set_confidence(&a, 0.3).unwrap();
+        st.set_confidence(&b, 0.6).unwrap();
+        assert_eq!(st.list(None)[0].text, "B");
+
+        st.set_confidence(&a, 0.9).unwrap();
+        assert_eq!(st.list(None)[0].text, "A");
+        // persisted, not just in-memory
+        let st2 = Store::load(&cfg).unwrap();
+        assert_eq!(st2.list(None)[0].text, "A");
+    }
+
+    #[test]
+    fn set_confidence_unknown_id_errors() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cfg(&dir);
+        let mut st = Store::load(&cfg).unwrap();
+        assert!(st.set_confidence("nonexistent", 0.9).is_err());
     }
 
     #[test]

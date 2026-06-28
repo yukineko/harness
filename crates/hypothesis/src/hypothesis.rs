@@ -343,8 +343,23 @@ pub struct Hypothesis {
     /// Beliefs the bet rests on; the riskiest untested one is the RAT target.
     #[serde(default)]
     pub assumptions: Vec<Assumption>,
+    /// Discovery-ordering score (higher = validate sooner). Symmetric to an
+    /// opportunity's execution weight: confidence drives the order in which open
+    /// hypotheses surface for validation, turning the open list from insertion
+    /// order into a deterministic score order. Absent in older stores;
+    /// `#[serde(default)]` loads those at [`default_confidence`] (a neutral 0.5),
+    /// which keeps legacy hypotheses ordering by created_at among themselves.
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Neutral default confidence for hypotheses created or loaded without one.
+/// 0.5 sits in the middle of the [0,1] band so an unscored bet neither jumps
+/// the queue nor sinks below every scored one.
+pub fn default_confidence() -> f64 {
+    0.5
 }
 
 impl Hypothesis {
@@ -373,6 +388,7 @@ impl Hypothesis {
             success_criterion: None,
             kill_criterion: None,
             assumptions: vec![],
+            confidence: default_confidence(),
             created_at: now.clone(),
             updated_at: now,
         }
@@ -471,6 +487,15 @@ mod tests {
         assert!(h.evidence.is_empty());
         assert!(h.linked_goal.is_none());
         assert!(h.status.is_open());
+        // confidence is also absent in this legacy record → defaults to 0.5,
+        // so legacy hypotheses keep ordering by created_at among themselves.
+        assert_eq!(h.confidence, default_confidence());
+    }
+
+    #[test]
+    fn new_sets_default_confidence() {
+        let h = Hypothesis::new("a fresh bet", None);
+        assert_eq!(h.confidence, 0.5);
     }
 
     #[test]
