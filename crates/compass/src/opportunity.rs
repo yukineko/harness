@@ -23,10 +23,24 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Default weight for an opportunity recorded without an explicit `--weight`
+/// (and for legacy records persisted before the field existed). A neutral 1.0 so
+/// an unweighted opportunity neither floats to the top nor sinks: the layer stays
+/// backward-compatible until someone actually scores a bet.
+pub const DEFAULT_WEIGHT: f64 = 1.0;
+
+/// serde default for the `weight` field: legacy `opportunities.json` written
+/// before `weight` existed deserialize to [`DEFAULT_WEIGHT`] rather than failing.
+fn default_weight() -> f64 {
+    DEFAULT_WEIGHT
+}
+
 /// A single named opportunity (customer need / bet) sitting under an active
 /// outcome. Self-describing: it snapshots the `outcome_ref` it was filed under so
 /// a later reader can group opportunities by outcome with no other context.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// (`Eq` is intentionally not derived: `weight` is an `f64`.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Opportunity {
     /// Stable, human-readable id derived from the title (slug + short hash).
     pub id: String,
@@ -35,6 +49,11 @@ pub struct Opportunity {
     /// The active outcome this opportunity sits under (charter `north_star`
     /// snapshot, or an explicit `--outcome` override).
     pub outcome_ref: String,
+    /// Relative weight (outcome-impact or confidence) that drives ordering: the
+    /// skill sorts opportunities by this so the layer is load-bearing, not inert.
+    /// Legacy records without it deserialize to [`DEFAULT_WEIGHT`].
+    #[serde(default = "default_weight")]
+    pub weight: f64,
     /// Wall-clock record time, unix seconds (0 if the clock is pre-epoch).
     pub created_at: u64,
 }
@@ -118,10 +137,11 @@ fn slug_id(title: &str) -> String {
     }
 }
 
-/// Record one named opportunity under `outcome_ref` and append it to the store.
-/// REQUIRES a non-empty title (trimmed); bails otherwise (an empty bet is not a
-/// recorded opportunity). Returns the persisted [`Opportunity`].
-pub fn record(root: &Path, title: &str, outcome_ref: &str) -> Result<Opportunity> {
+/// Record one named opportunity under `outcome_ref` (with `weight` driving later
+/// ordering) and append it to the store. REQUIRES a non-empty title (trimmed);
+/// bails otherwise (an empty bet is not a recorded opportunity). Returns the
+/// persisted [`Opportunity`].
+pub fn record(root: &Path, title: &str, outcome_ref: &str, weight: f64) -> Result<Opportunity> {
     let title = title.trim();
     if title.is_empty() {
         anyhow::bail!("opportunity requires a non-empty --title (a named bet, not a blank)");
@@ -131,6 +151,7 @@ pub fn record(root: &Path, title: &str, outcome_ref: &str) -> Result<Opportunity
         id: slug_id(title),
         title: title.to_string(),
         outcome_ref: outcome_ref.trim().to_string(),
+        weight,
         created_at: now_unix(),
     };
     opportunities.push(opportunity.clone());
@@ -161,12 +182,14 @@ mod tests {
             root,
             "  users can't see why a move was chosen  ",
             "ship OST",
+            2.5,
         )
         .expect("record");
 
-        // title trimmed, scoped to the outcome, stable id derived.
+        // title trimmed, scoped to the outcome, stable id derived, weight kept.
         assert_eq!(rec.title, "users can't see why a move was chosen");
         assert_eq!(rec.outcome_ref, "ship OST");
+        assert_eq!(rec.weight, 2.5);
         assert!(rec.id.ends_with(&rec.id[rec.id.len() - 6..]));
         assert!(!rec.id.is_empty());
 
@@ -177,11 +200,34 @@ mod tests {
     }
 
     #[test]
+    fn record_persists_weight_and_legacy_records_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // an explicitly weighted record round-trips its weight.
+        record(root, "high-impact bet", "outcome-1", 7.0).expect("record");
+        assert_eq!(load(root).expect("load")[0].weight, 7.0);
+
+        // a legacy store written WITHOUT a weight field deserializes to the
+        // default (backward compatible — no panic, no data loss).
+        let legacy = r#"{ "opportunities": [
+            { "id": "legacy-abc123", "title": "old bet", "outcome_ref": "outcome-1", "created_at": 1 }
+        ] }"#;
+        std::fs::create_dir_all(store_path(root).parent().unwrap()).unwrap();
+        std::fs::write(store_path(root), legacy).unwrap();
+
+        let loaded = load(root).expect("load legacy");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].title, "old bet");
+        assert_eq!(loaded[0].weight, DEFAULT_WEIGHT);
+    }
+
+    #[test]
     fn empty_title_is_rejected_and_persists_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
 
-        let err = record(root, "   ", "ship OST").unwrap_err();
+        let err = record(root, "   ", "ship OST", DEFAULT_WEIGHT).unwrap_err();
         assert!(err.to_string().contains("non-empty --title"));
 
         // nothing was written.
@@ -194,9 +240,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
 
-        record(root, "opportunity A", "outcome-1").expect("a");
-        record(root, "opportunity B", "outcome-1").expect("b");
-        record(root, "opportunity C", "outcome-2").expect("c");
+        record(root, "opportunity A", "outcome-1", DEFAULT_WEIGHT).expect("a");
+        record(root, "opportunity B", "outcome-1", DEFAULT_WEIGHT).expect("b");
+        record(root, "opportunity C", "outcome-2", DEFAULT_WEIGHT).expect("c");
 
         let under_1 = list_under(root, "outcome-1").expect("list 1");
         assert_eq!(under_1.len(), 2);

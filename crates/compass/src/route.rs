@@ -576,6 +576,7 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             outcome_ref: "active".to_string(),
+            weight: crate::opportunity::DEFAULT_WEIGHT,
             created_at: 0,
         }
     }

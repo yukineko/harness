@@ -147,6 +147,10 @@ enum OpportunityCmd {
         /// the charter `north_star`.
         #[arg(long, value_name = "REF")]
         outcome: Option<String>,
+        /// Relative weight (outcome-impact or confidence) driving ordering.
+        /// Defaults to a neutral weight when omitted.
+        #[arg(long, value_name = "WEIGHT")]
+        weight: Option<f64>,
     },
     /// List opportunities under the active outcome (charter `north_star`, unless
     /// `--outcome` overrides it). `--json` prints a JSON array (empty store/no
@@ -536,6 +540,7 @@ fn gap_command(args: GapArgs) -> Result<()> {
         .map(|o| gap::OpportunityGap {
             id: o.id,
             title: o.title,
+            weight: o.weight,
             gap: None,
         })
         .collect();
@@ -576,13 +581,19 @@ fn opportunity_command(args: OpportunityArgs) -> Result<()> {
         .unwrap_or_default();
 
     match args.cmd {
-        OpportunityCmd::Add { title, outcome } => {
+        OpportunityCmd::Add {
+            title,
+            outcome,
+            weight,
+        } => {
             let outcome_ref = outcome.unwrap_or(active_outcome);
-            let rec = opportunity::record(&root, &title, &outcome_ref)?;
+            let weight = weight.unwrap_or(opportunity::DEFAULT_WEIGHT);
+            let rec = opportunity::record(&root, &title, &outcome_ref, weight)?;
             println!(
-                "compass: recorded opportunity [{}] \"{}\" under outcome — {}",
+                "compass: recorded opportunity [{}] \"{}\" (weight {}) under outcome — {}",
                 rec.id,
                 rec.title,
+                rec.weight,
                 opportunity::store_path(&root).display()
             );
         }
@@ -595,7 +606,7 @@ fn opportunity_command(args: OpportunityArgs) -> Result<()> {
                 println!("(no opportunities under active outcome)");
             } else {
                 for o in &found {
-                    println!("- [{}] {}", o.id, o.title);
+                    println!("- [{}] (weight {}) {}", o.id, o.weight, o.title);
                 }
             }
         }

@@ -21,7 +21,9 @@ use crate::outcome::Outcome;
 
 /// The deterministic inputs to the (skill-side) gap derivation. Serialized to
 /// JSON and printed so the skill can read and reason over it.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+///
+/// (`Eq` is intentionally not derived: `opportunities` carry `f64` weights.)
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct GapInputs {
     /// Observable done conditions (charter `definition_of_done`).
     pub dod: Vec<String>,
@@ -46,14 +48,19 @@ pub struct GapInputs {
 }
 
 /// One opportunity's gap slot in the gap output (§3, OST). The deterministic
-/// `id`/`title` scaffold the skill's per-opportunity gap reasoning; `gap` is the
-/// skill-derived text (None until written — no LLM in the binary).
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// `id`/`title`/`weight` scaffold the skill's per-opportunity gap reasoning;
+/// `gap` is the skill-derived text (None until written — no LLM in the binary).
+///
+/// (`Eq` is intentionally not derived: `weight` is an `f64`.)
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OpportunityGap {
     /// The opportunity identifier (slug + hash), matching `Opportunity::id`.
     pub id: String,
     /// The opportunity's human-readable named bet (`Opportunity::title`).
     pub title: String,
+    /// The opportunity's ordering weight (`Opportunity::weight`), surfaced so the
+    /// skill (and a later deterministic sort) can prioritize by it.
+    pub weight: f64,
     /// The skill-derived gap for this opportunity; `None` until the skill writes
     /// it. The binary never fills this (no LLM judgment here).
     pub gap: Option<String>,
@@ -232,10 +239,10 @@ mod tests {
         };
 
         // Two named bets under the active outcome.
-        opportunity::record(root, "faster cold start", north_star).expect("record a");
-        opportunity::record(root, "fewer retries", north_star).expect("record b");
+        opportunity::record(root, "faster cold start", north_star, 1.0).expect("record a");
+        opportunity::record(root, "fewer retries", north_star, 1.0).expect("record b");
         // One bet under a *different* outcome — must not leak into this gap.
-        opportunity::record(root, "unrelated bet", "some other north_star").expect("record c");
+        opportunity::record(root, "unrelated bet", "some other north_star", 1.0).expect("record c");
 
         // Mirror what gap_command does to fill the per-opportunity scaffold.
         let mut inputs = assemble_gap_inputs(&charter, &Bundle { fragments: vec![] });
@@ -245,6 +252,7 @@ mod tests {
             .map(|o| OpportunityGap {
                 id: o.id,
                 title: o.title,
+                weight: o.weight,
                 gap: None,
             })
             .collect();
@@ -263,10 +271,11 @@ mod tests {
         let json = serde_json::to_value(&inputs).expect("serialize");
         let arr = json["opportunities"].as_array().expect("array");
         assert_eq!(arr.len(), 2);
-        // Each entry carries id + title and a null (skill-derived) gap slot.
+        // Each entry carries id + title + weight and a null (skill-derived) gap.
         for entry in arr {
             assert!(entry["id"].is_string());
             assert!(entry["title"].is_string());
+            assert!(entry["weight"].is_number());
             assert!(entry["gap"].is_null());
         }
     }
