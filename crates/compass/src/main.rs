@@ -620,12 +620,15 @@ fn route_command(args: RouteArgs) -> Result<()> {
     // Write parked tasks to the taskprog "残り" sink (self-feeding loop, §6).
     route::write_parked_to_taskprog(&root, &routing.parked)?;
 
-    // Print the condukt handoff 課題 text (context for the chosen move).
+    // Print the condukt handoff 課題 text (context for the chosen move), with the
+    // named opportunities under the active outcome (charter north_star) so the
+    // handed-off solution carries its opportunity refs (DoD#2).
     let charter = Charter::load(&Charter::project_path(&root)).unwrap_or_default();
+    let opportunities = opportunity::list_under(&root, &charter.north_star).unwrap_or_default();
     println!();
     print!(
         "{}",
-        route::condukt_handoff(&routing.to_condukt, &charter, &dec.goal)
+        route::condukt_handoff(&routing.to_condukt, &charter, &dec.goal, &opportunities)
     );
     Ok(())
 }

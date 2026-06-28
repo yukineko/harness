@@ -11,7 +11,7 @@
 私が今も擁護できるゴールに、測れるだけ近づくか（build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること）。
 
 ## current_gap
-compass は north_star→gap→単一 solution を直行し(route.rs)、その間に opportunity(顧客ニーズ)層が無い。hypothesis も flat list。最大の右サイズ差分は『active outcome 配下に opportunity を永続化する store + compass opportunity add/list コマンド』(DoD#1)。handoff への ref 印字(DoD#2)と opportunity 別 gap(DoD#3)はその上に乗る後続。まず store を validate-first で切る。
+DoD#1(opportunity store)達成。残 gap: condukt に渡る handoff(solution)が active outcome 配下の opportunity ref を携えていない(DoD#2)、gap も依然 flat で opportunity 別に出ない(DoD#3)。次の右サイズ一手は DoD#2: route の to_condukt handoff に active outcome 配下の opportunity(id+title)を印字し、solution が名前付き機会を携えるようにする。route.rs が opportunity::list_under を読み handoff に section を足す最小スライス。
 
 ## next_action
 

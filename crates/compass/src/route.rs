@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::charter::Charter;
 use crate::config::Config;
+use crate::opportunity::Opportunity;
 
 /// One decomposition task. Mirrors condukt's schema (DESIGN §6) with the new
 /// optional `size`; deserializes the JSON condukt-interpreter emits (with or
@@ -296,9 +297,16 @@ pub fn write_parked_to_taskprog(repo_root: &Path, parked: &[Task]) -> Result<()>
 }
 
 /// Produce the 課題 statement to hand to condukt (DESIGN §13): the chosen
-/// move(s) + project context (north_star / current_gap / measuring_stick).
+/// move(s) + project context (north_star / current_gap / measuring_stick) +
+/// the named opportunities (PDO OST) sitting under the active outcome, so the
+/// solution handed to condukt carries the named opportunity refs it serves.
 /// Plain markdown; condukt-interpreter re-decomposes from this.
-pub fn condukt_handoff(chosen: &[Task], charter: &Charter, dec_goal: &str) -> String {
+pub fn condukt_handoff(
+    chosen: &[Task],
+    charter: &Charter,
+    dec_goal: &str,
+    opportunities: &[Opportunity],
+) -> String {
     let mut out = String::new();
     out.push_str("# 課題（compass → condukt 受け渡し）\n\n");
 
@@ -333,6 +341,19 @@ pub fn condukt_handoff(chosen: &[Task], charter: &Charter, dec_goal: &str) -> St
         "- measuring_stick: {}\n",
         charter.measuring_stick.trim()
     ));
+
+    // 機会 (PDO OST): the named opportunities under the active outcome. Printing
+    // them here is what makes the handed-off solution "carry" its named
+    // opportunity refs (charter DoD#2) — the interpreter sees which bet(s) under
+    // the outcome this move serves.
+    out.push_str("\n## 機会（opportunity / この outcome 配下）\n");
+    if opportunities.is_empty() {
+        out.push_str("(この outcome 配下に登録された opportunity なし)\n");
+    } else {
+        for o in opportunities {
+            out.push_str(&format!("- [{}] {}\n", o.id, o.title.trim()));
+        }
+    }
 
     out
 }
@@ -548,5 +569,48 @@ mod tests {
         assert!(r.to_condukt.iter().any(|t| t.id == "a"));
         assert!(r.parked.iter().any(|t| t.id == "b"));
         assert!(r.parked.iter().any(|t| t.id == "dep"));
+    }
+
+    fn opp(id: &str, title: &str) -> Opportunity {
+        Opportunity {
+            id: id.to_string(),
+            title: title.to_string(),
+            outcome_ref: "active".to_string(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn handoff_carries_opportunities() {
+        let charter = Charter {
+            north_star: "ship OST".to_string(),
+            ..Charter::default()
+        };
+        let chosen = vec![task("t1", &[], Some("s"))];
+        let opps = vec![
+            opp(
+                "users-cant-see-why-ab12cd",
+                "users can't see why a move was chosen",
+            ),
+            opp(
+                "flat-list-grouping-34ef56",
+                "opportunities can't be grouped",
+            ),
+        ];
+
+        let out = condukt_handoff(&chosen, &charter, "ship the slice", &opps);
+
+        // the opportunity section is present and carries each id + title.
+        assert!(out.contains("## 機会"));
+        assert!(out.contains("[users-cant-see-why-ab12cd]"));
+        assert!(out.contains("users can't see why a move was chosen"));
+        assert!(out.contains("[flat-list-grouping-34ef56]"));
+    }
+
+    #[test]
+    fn handoff_notes_when_no_opportunities() {
+        let out = condukt_handoff(&[], &Charter::default(), "g", &[]);
+        assert!(out.contains("## 機会"));
+        assert!(out.contains("登録された opportunity なし"));
     }
 }
