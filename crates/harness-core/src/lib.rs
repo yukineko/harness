@@ -23,6 +23,7 @@ pub mod pricing;
 pub mod projkey;
 pub mod session;
 pub mod shell;
+pub mod spans;
 pub mod store;
 pub mod transcript;
 pub mod trust;
