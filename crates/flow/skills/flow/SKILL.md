@@ -99,6 +99,15 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
    ```bash
    backlog next [--project <path>]
    ```
+   `backlog next`/`list` は **同一 priority 内を opportunity weight 降順**で並べる（priority→weight 降順→created_at）。
+   そのため backlog にタスクを**積む**とき、それが compass opportunity 由来なら **その opportunity の weight を
+   供給する**こと（weight が compass→backlog→flow と実際に流れ、影響度の高い機会が先に pick される）:
+   ```bash
+   W=$(compass gap | jq -r '.opportunities[0].weight // empty')   # active outcome の最重要 opportunity の weight
+   backlog add --title "<課題>" --project "$PWD" --priority p1 --weight "${W:-0}"
+   ```
+   weight を渡さなければ既定 0.0＝従来の (priority, created_at) 順（後方互換）。weight は順序を変えるだけで
+   priority を上書きしない（priority が第一鍵）。
 4. backlog も空なら **hypothesis（新規 discovery: open 仮説）**:
    ```bash
    hypothesis list --status open    # 空なら次へ

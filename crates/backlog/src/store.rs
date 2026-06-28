@@ -50,6 +50,10 @@ pub fn save(path: &Path, tasks: &[Task]) -> Result<()> {
 
 /// タスクを追加して保存。生成した id を返す。weight は 0.0 (= 既定の優先順位)。
 /// weight を明示したい呼び出し元は [`add_with_weight`] を使う。
+///
+/// バイナリ側は `--weight` を取れる [`add_with_weight`] を直接呼ぶため、この
+/// 0.0 既定ラッパーはテスト専用 (`#[cfg(test)]`)。
+#[cfg(test)]
 pub fn add(
     path: &Path,
     title: &str,

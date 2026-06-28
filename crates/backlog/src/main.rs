@@ -40,6 +40,13 @@ enum Command {
         /// Notes
         #[arg(long, default_value = "")]
         notes: String,
+
+        /// Ordering weight (higher surfaces first within a priority tier).
+        /// Supply a compass opportunity's weight here so the queue order tracks
+        /// opportunity impact, not just priority + insertion time. Default 0.0
+        /// preserves the legacy (priority, created_at) order.
+        #[arg(long, default_value_t = 0.0)]
+        weight: f64,
     },
 
     /// List tasks
@@ -167,6 +174,7 @@ fn run(cli: Cli) -> Result<()> {
             mut tags,
             priority,
             notes,
+            weight,
         } => {
             // priority is a shortcut for adding a priority tag
             if let Some(p) = priority {
@@ -175,7 +183,8 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
             let now = now_unix();
-            let id = store::add(&tasks_path, &title, &project, tags, &notes, now)?;
+            let id =
+                store::add_with_weight(&tasks_path, &title, &project, tags, &notes, weight, now)?;
             println!("added: {id}");
         }
 
