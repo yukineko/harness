@@ -300,26 +300,72 @@ pub fn decide_bandit(
         (mean, var.sqrt(), count)
     };
 
-    // Cheapest-first: take the first tier whose sampled rate clears the bar.
-    let mut chosen: Option<(String, f64, usize)> = None;
+    // Cost-efficiency posterior sampling: sample a pass rate from each tier's
+    // Beta posterior, then adjust by the tier's cost-per-pass relative to the
+    // cheapest observed tier. A tier 4× more expensive per pass must sample 4×
+    // higher to win. When no cost data is recorded (all zeros), the adjustment
+    // is 1.0 everywhere and this degenerates to cheapest-first sampling.
+    let cpps: Vec<f64> = TIERS
+        .iter()
+        .filter_map(|t| stats.get(*t))
+        .filter(|s| s.passes > 0 && s.total_cost_usd > 0.0)
+        .map(|s| s.total_cost_usd / s.passes as f64)
+        .collect();
+    let min_cpp = cpps.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_cpp = cpps.iter().cloned().fold(0.0f64, f64::max);
+    let min_cpp = if min_cpp.is_finite() { min_cpp } else { 0.0 };
+    // Untested tiers default to the most expensive observed cpp so they don't
+    // appear "free" and incorrectly beat known-cheap tiers on random samples.
+    let default_cpp = if max_cpp > 0.0 { max_cpp } else { 0.0 };
+
+    let mut chosen: Option<(String, f64, usize, f64)> = None; // (tier, mean, count, efficiency)
     for tier in TIERS {
         let (mean, sd, count) = posterior(tier);
         let sample = rng.normal(mean, sd).clamp(0.0, 1.0);
-        if sample >= pass_threshold {
-            chosen = Some((tier.to_string(), mean, count));
+        // Only consider tiers that sampled above the threshold (exploration gate).
+        if sample < pass_threshold {
+            continue;
+        }
+        if min_cpp > 0.0 {
+            // Cost data available — score by efficiency; pick the best across all
+            // qualifying tiers (not just cheapest-first).
+            let cpp = stats
+                .get(*tier)
+                .and_then(|s| {
+                    if s.passes > 0 && s.total_cost_usd > 0.0 {
+                        Some(s.total_cost_usd / s.passes as f64)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(default_cpp); // untested → pessimistic max-cpp prior
+            let efficiency = if cpp > 0.0 {
+                sample / (cpp / min_cpp)
+            } else {
+                sample
+            };
+            if chosen.as_ref().map_or(true, |(_, _, _, best_eff)| efficiency > *best_eff) {
+                chosen = Some((tier.to_string(), mean, count, efficiency));
+            }
+        } else {
+            // No cost data at all — cheapest-first (original behaviour): take the
+            // first qualifying tier and stop so haiku is always preferred over sonnet
+            // when both sample above the bar (preserves exploration tests).
+            chosen = Some((tier.to_string(), mean, count, sample));
             break;
         }
     }
 
     let (worker, basis, confidence, rationale) = match chosen {
-        Some((m, mean, count)) => (
+        Some((m, mean, count, eff)) => (
             m.clone(),
             "bandit",
             if count >= min_samples { "high" } else { "low" },
             format!(
-                "Thompson: {m} cleared {:.0}% (posterior mean {:.0}%, {count} sample(s))",
+                "Thompson(cost-adj): {m} cleared {:.0}% (posterior mean {:.0}%, efficiency {:.3}, {count} sample(s))",
                 pass_threshold * 100.0,
-                mean * 100.0
+                mean * 100.0,
+                eff,
             ),
         ),
         None => {
@@ -640,6 +686,23 @@ mod tests {
         let d = decide("test task", &[], "parallel", &neighbors, 0.7, 3);
         assert_eq!(d.worker_model, "haiku", "haiku costs less per pass — should be chosen: {d:?}");
         assert!(d.rationale.contains("cost/pass="), "{}", d.rationale);
+    }
+
+    #[test]
+    fn bandit_cost_adj_favours_cheaper_tier_over_expensive_with_equal_accuracy() {
+        // haiku: 5/5 pass @ $0.10 each → cpp = $0.10
+        // sonnet: 5/5 pass @ $1.00 each → cpp = $1.00, 10× more expensive
+        // With cost data, haiku's efficiency score is 10× higher than sonnet's at
+        // equal sample values — haiku should dominate overwhelmingly.
+        let neighbors: Vec<Neighbor> = (0..5)
+            .map(|_| nb_cost("haiku", true, 0.10))
+            .chain((0..5).map(|_| nb_cost("sonnet", true, 1.00)))
+            .collect();
+        let t = tally_picks(&neighbors, 300);
+        assert!(
+            t.get("haiku").copied().unwrap_or(0) > 250,
+            "haiku should dominate with 10× cost advantage: {t:?}"
+        );
     }
 
     #[test]
