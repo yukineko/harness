@@ -72,6 +72,9 @@ enum Command {
     /// active outcome (charter `north_star`), the discovery-side layer between
     /// the goal and the single solution `route` hands to condukt.
     Opportunity(OpportunityArgs),
+    /// Pivot-or-persevere signal from the trailing outcome streak (§7).
+    /// Prints `{"recommendation":"persevere"|"pivot","streak":N,"threshold":N,"reason":"…"}` and exits 0.
+    PivotCheck,
 }
 
 #[derive(Args)]
@@ -178,6 +181,7 @@ fn main() {
         Command::Charter(args) => charter_command(args),
         Command::Outcome(args) => outcome_command(args),
         Command::Opportunity(args) => opportunity_command(args),
+        Command::PivotCheck => pivot_check_command(),
     };
     if let Err(e) = r {
         eprintln!("compass: {e}");
@@ -565,6 +569,28 @@ fn outcome_command(args: OutcomeArgs) -> Result<()> {
         recorded.seq,
         recorded.verdict,
         outcome::store_path(&root).display()
+    );
+    Ok(())
+}
+
+/// pivot-or-persevere signal from the trailing outcome streak. Loads the
+/// `.compass/outcomes.json` store, runs the deterministic `pivot_signal()`
+/// aggregation, and prints the result as JSON. Always exits 0 so downstream
+/// drivers (flow) can gate on the `recommendation` field without error handling.
+fn pivot_check_command() -> Result<()> {
+    let root = project_root();
+    let outcomes = outcome::load(&root).unwrap_or_default();
+    let sig = outcome::pivot_signal(&outcomes, outcome::DEFAULT_PIVOT_THRESHOLD);
+    let rec = match sig.recommendation {
+        outcome::Recommendation::Pivot => "pivot",
+        outcome::Recommendation::Persevere => "persevere",
+    };
+    println!(
+        "{{\"recommendation\":\"{rec}\",\"streak\":{streak},\"threshold\":{threshold},\"reason\":{reason}}}",
+        rec = rec,
+        streak = sig.streak,
+        threshold = sig.threshold,
+        reason = serde_json::to_string(&sig.reason).unwrap_or_else(|_| "\"\"".to_string()),
     );
     Ok(())
 }

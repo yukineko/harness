@@ -182,6 +182,20 @@ backlog lock release
 
 **早期脱出時もロック解放は必須**。最後に「処理件数・成功・失敗・残キュー・次に取り直した gap」を報告する。
 
+#### pivot-check（ループ終端の方向判断）
+
+ロック解放の直後、ループを正常終了した場合（中断・エラー以外）は以下を実行する:
+
+```bash
+compass pivot-check   # {"recommendation":"persevere"|"pivot","streak":N,"threshold":N,"reason":"…"}
+```
+
+- **`persevere`** → そのまま継続。「次の gap を取り直す」と報告する。
+- **`pivot`** → `reason` に集計理由（streak 長・対象 verdict 列）が入っている。それを引用してユーザーに提示し、
+  **north_star を彫り直す（再オリエンテーション）か否か**を問う（`AskUserQuestion`）。
+  ユーザーが「再オリエンテーション」を選んだら `/compass` を案内して終了。「継続」なら通常どおり報告して終了。
+  pivot 判定は `compass outcome` を積み重ねることで精度が上がるため、outcomes が 0 件なら pivot-check はスキップしてよい。
+
 ## 早期脱出
 
 | 状況 | 対応 |
