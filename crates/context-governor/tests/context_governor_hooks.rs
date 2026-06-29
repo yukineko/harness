@@ -269,3 +269,172 @@ fn injector_reads_reference_doc_from_env_and_injects() {
     // Clean up.
     std::env::remove_var("CONTEXT_GOVERNOR_REFERENCE_DOC");
 }
+
+// ── Phase 2: Guard / Rehydrator / Checkpointer end-to-end ─────────────────────
+
+use context_governor::backing::{TranscriptBackingStore, SNAPSHOT_KEY};
+use context_governor::defaults::{DefaultCheckpointer, DefaultGuard, DefaultRehydrator};
+use context_governor::handlers::BackingStore;
+use context_governor::{Checkpointer, CompactDecision, CompactionGuard, StateRehydrator};
+
+/// Pull the `additionalContext` string (if any) out of a rehydrate envelope.
+/// `additional_context` lives on `HookOutput.specific`, not the top level.
+fn additional_context(out: &HookOutput) -> Option<String> {
+    out.specific
+        .as_ref()
+        .and_then(|s| s.additional_context.clone())
+}
+
+/// Phase 2 — the real PreCompact backstop, SessionStart rehydrator, and Stop
+/// checkpointer, exercised against a live `TranscriptBackingStore`.
+///
+/// All three store-touching scenarios live in this one `#[test]` because
+/// `set_var("CONTEXT_GOVERNOR_STATE_DIR", …)` is process-global: keeping them
+/// single-threaded under one env set, with a distinct `cwd` per scenario (so
+/// `project_key(cwd)` isolates each store), avoids cross-test races and never
+/// touches `$HOME`.
+#[test]
+fn phase2_guard_rehydrator_checkpointer_end_to_end() {
+    use std::io::Write as _;
+
+    let td = tempfile::tempdir().expect("state dir");
+    // SAFETY: single-threaded test; we set the var once before any store opens.
+    unsafe {
+        std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", td.path());
+    }
+
+    // 1. put -> recall lossless round-trip for a non-snapshot key (Inline + Ref).
+    {
+        let cwd = td.path().join("proj_round_trip");
+        let cwd = cwd.to_str().unwrap();
+        let mut store = TranscriptBackingStore::open(cwd).expect("open store");
+
+        let inline = ContextItem {
+            id: ItemId(42),
+            lane: Lane::Verbatim,
+            tokens: 3,
+            body: ItemBody::Inline("hello inline body".to_string()),
+        };
+        let k_inline = store.put(&inline);
+        assert_ne!(
+            k_inline, SNAPSHOT_KEY,
+            "a non-snapshot put must not collide with the reserved snapshot key"
+        );
+        assert_eq!(
+            store.recall(&k_inline),
+            Some(inline),
+            "Inline body must round-trip byte-identically through put/recall"
+        );
+
+        let referenced = ContextItem {
+            id: ItemId(7),
+            lane: Lane::Evictable,
+            tokens: 1,
+            body: ItemBody::Ref(StoreKey(0xdead_beef)),
+        };
+        let k_ref = store.put(&referenced);
+        assert_eq!(
+            store.recall(&k_ref),
+            Some(referenced),
+            "Ref body must round-trip with its inner StoreKey preserved"
+        );
+    }
+
+    // 2. guard.snapshot -> rehydrate emits additionalContext (I1).
+    {
+        let cwd = td.path().join("proj_i1");
+        let cwd = cwd.to_str().unwrap();
+
+        let mut tf = tempfile::NamedTempFile::new().expect("transcript file");
+        writeln!(
+            tf,
+            r#"{{"message":{{"role":"user","content":"hello from the user turn"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            tf,
+            r#"{{"message":{{"role":"assistant","content":"reply from the assistant turn"}}}}"#
+        )
+        .unwrap();
+        tf.flush().unwrap();
+        let tpath = tf.path().to_str().unwrap().to_string();
+
+        let mut store = TranscriptBackingStore::open(cwd).expect("open store");
+        let input = HookInput {
+            transcript_path: tpath,
+            ..Default::default()
+        };
+
+        let mut guard = DefaultGuard;
+        assert!(
+            matches!(
+                guard.on_pre_compact(&input, &mut store),
+                CompactDecision::Proceed
+            ),
+            "PreCompact backstop proceeds after securing a snapshot"
+        );
+
+        // The snapshot landed under the reserved key, carrying transcript text.
+        match store.recall(&SNAPSHOT_KEY) {
+            Some(ContextItem {
+                body: ItemBody::Inline(text),
+                ..
+            }) => assert!(
+                text.contains("hello from the user turn"),
+                "snapshot must contain user-turn text; got: {text}"
+            ),
+            other => panic!("expected an Inline snapshot under SNAPSHOT_KEY, got: {other:?}"),
+        }
+
+        let out = DefaultRehydrator.rehydrate(&input, &store);
+        let ctx = additional_context(&out)
+            .expect("rehydrate must emit additionalContext after a snapshot");
+        assert!(
+            ctx.contains("hello from the user turn"),
+            "rehydrated additionalContext must carry the snapshot text; got: {ctx}"
+        );
+    }
+
+    // 3. guard + checkpointer no-panic on a missing transcript: guard proceeds,
+    //    no snapshot is written, and rehydrate falls back to the empty default.
+    {
+        let cwd = td.path().join("proj_missing");
+        let cwd = cwd.to_str().unwrap();
+        let mut store = TranscriptBackingStore::open(cwd).expect("open store");
+
+        let missing = HookInput {
+            transcript_path: "/no/such/transcript.jsonl".to_string(),
+            ..Default::default()
+        };
+
+        let mut guard = DefaultGuard;
+        assert!(
+            matches!(
+                guard.on_pre_compact(&missing, &mut store),
+                CompactDecision::Proceed
+            ),
+            "guard must proceed (not panic) when the transcript is missing"
+        );
+
+        // Checkpointer must be a no-op (never panic / block) on a missing path;
+        // stop_hook_active short-circuits the re-entrant Stop case too.
+        let mut checkpointer = DefaultCheckpointer;
+        checkpointer.checkpoint(&missing, &mut store);
+        let reentrant = HookInput {
+            transcript_path: "/no/such/transcript.jsonl".to_string(),
+            stop_hook_active: true,
+            ..Default::default()
+        };
+        checkpointer.checkpoint(&reentrant, &mut store);
+
+        assert!(
+            store.recall(&SNAPSHOT_KEY).is_none(),
+            "no snapshot should be written for a missing transcript"
+        );
+        let out = DefaultRehydrator.rehydrate(&missing, &store);
+        assert!(
+            additional_context(&out).is_none(),
+            "rehydrate must return the empty default when no snapshot exists"
+        );
+    }
+}
