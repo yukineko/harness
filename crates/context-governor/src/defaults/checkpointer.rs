@@ -10,6 +10,10 @@ use harness_core::hook::HookInput;
 use harness_core::transcript::last_usage_tokens;
 
 const DEFAULT_CHECKPOINT_THRESHOLD: u64 = 10_000;
+/// Minimum growth (in resident tokens) of the secured snapshot over the last
+/// `snapshotted` row before a fresh row is worth recording. Below this, a
+/// re-snapshot sits in the same content band and is shed (observe→act dedup).
+const DEFAULT_SNAPSHOT_DELTA: u64 = 5_000;
 
 pub struct DefaultCheckpointer;
 
@@ -32,7 +36,22 @@ impl Checkpointer for DefaultCheckpointer {
             if let Some(item) = s.recall(&key) {
                 if let ItemBody::Inline(text) = &item.body {
                     if !text.is_empty() {
-                        let resident = (text.chars().count().div_ceil(4).max(1)) as u32;
+                        let resident = (text.chars().count().div_ceil(4).max(1)) as u64;
+                        // observe→act: the ledger is the control input. If the
+                        // secured snapshot has not grown by a delta over the last
+                        // recorded snapshot, this re-snapshot sits in the same
+                        // content band — shed it (record no new row). With no prior
+                        // snapshot the session behaves exactly as before (threshold
+                        // gate only), keeping the path byte-compatible.
+                        if let Some(prev) = crate::ledger::last_snapshotted_resident(&i.cwd) {
+                            let delta = std::env::var("CONTEXT_GOVERNOR_SNAPSHOT_DELTA")
+                                .ok()
+                                .and_then(|v| v.parse::<u64>().ok())
+                                .unwrap_or(DEFAULT_SNAPSHOT_DELTA);
+                            if resident < prev.saturating_add(delta) {
+                                return;
+                            }
+                        }
                         let node = LedgerNode {
                             session: i.session_id.clone(),
                             hook: i.hook_event_name.clone(),
@@ -40,7 +59,7 @@ impl Checkpointer for DefaultCheckpointer {
                             action: Action::Snapshotted { to: key },
                             reason: "stop-checkpoint",
                         };
-                        Ledger::open(&i.cwd).append(&node, resident);
+                        Ledger::open(&i.cwd).append(&node, resident as u32);
                     }
                 }
             }
@@ -257,6 +276,84 @@ mod tests {
                 count, 0,
                 "missing transcript (below threshold) must produce no snapshotted row"
             );
+        }
+    }
+
+    /// observe→act: once a snapshot is recorded, an identical re-snapshot in the
+    /// same resident band is shed (no new row); a snapshot grown past the delta
+    /// records a fresh row.  Isolates ledger state to a private dir + fixed
+    /// session so the production read-back (which decides the dedup) is
+    /// deterministic.  Env is saved/restored under the held lock.
+    #[test]
+    fn checkpointer_dedups_redundant_snapshot_until_resident_grows() {
+        let _lock = crate::defaults::guard::acquire_env_lock();
+        let td = tempfile::tempdir().expect("tempdir");
+
+        let prev_state = std::env::var("CONTEXT_GOVERNOR_STATE_DIR").ok();
+        let prev_session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+        std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", td.path().join("state"));
+        std::env::set_var("CLAUDE_CODE_SESSION_ID", "snap-dedup-session");
+
+        let cwd = td.path().join("cp-dedup").to_str().unwrap().to_string();
+
+        // Transcript usage 15 000 ≥ threshold 10 000 for every call.
+        let tpath = td.path().join("cp-dedup-transcript.jsonl");
+        std::fs::write(
+            &tpath,
+            concat!(
+                "{\"message\":{\"role\":\"user\",\"content\":\"hello world\"}}\n",
+                "{\"message\":{\"role\":\"assistant\",",
+                "\"content\":[{\"type\":\"text\",\"text\":\"done\"}],",
+                "\"usage\":{\"input_tokens\":15000,",
+                "\"cache_read_input_tokens\":0,",
+                "\"cache_creation_input_tokens\":0}}}\n",
+            ),
+        )
+        .expect("write transcript");
+
+        let input = HookInput {
+            transcript_path: tpath.to_str().unwrap().to_string(),
+            cwd: cwd.clone(),
+            hook_event_name: "Stop".to_string(),
+            stop_hook_active: false,
+            ..Default::default()
+        };
+        let sink = current_ledger_path(&cwd);
+        let mut cp = DefaultCheckpointer;
+
+        // Call 1: first snapshot (no prior row to dedup against) → one row.
+        cp.checkpoint(&input, &mut MockStore::with_snapshot("hello world\n\ndone"));
+        assert_eq!(
+            count_snapshotted(&sink),
+            1,
+            "first snapshot records one row"
+        );
+
+        // Call 2: identical snapshot → same resident band → shed (no new row).
+        cp.checkpoint(&input, &mut MockStore::with_snapshot("hello world\n\ndone"));
+        assert_eq!(
+            count_snapshotted(&sink),
+            1,
+            "redundant same-band re-snapshot must be shed"
+        );
+
+        // Call 3: snapshot grown past the delta (resident ≈ 6000 ≫ prev+delta) →
+        // a fresh row is recorded.
+        let big = "x".repeat(24_000);
+        cp.checkpoint(&input, &mut MockStore::with_snapshot(&big));
+        assert_eq!(
+            count_snapshotted(&sink),
+            2,
+            "a snapshot grown by ≥ delta must record a new row"
+        );
+
+        match prev_state {
+            Some(v) => std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", v),
+            None => std::env::remove_var("CONTEXT_GOVERNOR_STATE_DIR"),
+        }
+        match prev_session {
+            Some(v) => std::env::set_var("CLAUDE_CODE_SESSION_ID", v),
+            None => std::env::remove_var("CLAUDE_CODE_SESSION_ID"),
         }
     }
 }
