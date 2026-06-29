@@ -234,6 +234,94 @@ fn ingest(
     saw_sub
 }
 
+/// Token usage for a single sub-agent (one `Task` invocation), keyed by its
+/// stable `agent_id` and enriched with the `description` / `agent_type` recorded
+/// in the `agent-<id>.meta.json` sidecar. Unlike the lumped [`AGENT_SUB`] bucket,
+/// this distinguishes individual sub-agents so a caller (e.g. condukt) can
+/// attribute cost to the specific worker that ran one task.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct SubAgentUsage {
+    pub agent_id: String,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub models: BTreeMap<String, ModelUsage>,
+    #[serde(default)]
+    pub turns: u64,
+}
+
+impl SubAgentUsage {
+    pub fn total_tokens(&self) -> u64 {
+        self.models.values().map(|u| u.total_tokens()).sum()
+    }
+}
+
+/// Per-sub-agent usage read **live** from the sibling transcript files
+/// `<dir>/<stem>/subagents/agent-<id>.jsonl`, keyed by `agent_id`.
+///
+/// Unlike [`aggregate`] (which lumps every sub-agent into the single
+/// [`AGENT_SUB`] bucket), this returns one [`SubAgentUsage`] per `Task`
+/// invocation, so cost can be attributed to the individual worker that ran a
+/// task — the granularity fugu-router's cost-per-pass routing needs. The
+/// `description` / `agent_type` come from the `agent-<id>.meta.json` sidecar
+/// written next to each transcript; correlate on `description` (the caller
+/// controls the `Task` description).
+///
+/// Reads the transcript files directly (not the post-Stop store), so it sees
+/// the spend of a sub-agent that has just finished, mid-session. Returns empty
+/// when the `subagents/` directory is absent (e.g. the older inline-sidechain
+/// layout, which is not attributable per agent). Fail-soft: unreadable files and
+/// parse errors are skipped.
+pub fn subagent_usage(main_transcript: &str) -> Vec<SubAgentUsage> {
+    let mut out = Vec::new();
+    for file in subagent_files(main_transcript) {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let mut agg = Aggregate::default();
+        ingest(&mut agg, &text, Some(AGENT_SUB), false, false);
+        if agg.turns == 0 {
+            continue;
+        }
+        // agent_id from the `agent-<id>.jsonl` stem.
+        let stem = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let agent_id = stem.strip_prefix("agent-").unwrap_or(stem).to_string();
+        // Sidecar: agent-<id>.jsonl -> agent-<id>.meta.json.
+        let (agent_type, description) = read_subagent_meta(&file.with_extension("meta.json"));
+        out.push(SubAgentUsage {
+            agent_id,
+            agent_type,
+            description,
+            models: agg.models,
+            turns: agg.turns,
+        });
+    }
+    out
+}
+
+/// Read `{agentType, description}` from an `agent-<id>.meta.json` sidecar.
+/// Returns `(None, None)` if the file is missing or malformed (fail-soft).
+fn read_subagent_meta(meta_path: &Path) -> (Option<String>, Option<String>) {
+    let Ok(text) = std::fs::read_to_string(meta_path) else {
+        return (None, None);
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return (None, None);
+    };
+    let s = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+    };
+    (s("agentType"), s("description"))
+}
+
 /// Locate sub-agent transcript files for a main transcript at `main_path`:
 /// `<dir>/<stem>/subagents/*.jsonl`. Returns empty if the directory is absent.
 fn subagent_files(main_path: &str) -> Vec<PathBuf> {
@@ -416,5 +504,79 @@ mod tests {
         assert_eq!(agg.last_ts.as_deref(), Some("2026-06-22T10:00:01Z"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn subagent_usage_splits_per_agent_with_meta() {
+        // Two sub-agents under <stem>/subagents/, each its own agent-<id>.jsonl
+        // + agent-<id>.meta.json sidecar. subagent_usage must key by agent_id
+        // (NOT lump them) and carry the description/agentType from the sidecar.
+        let base = std::env::temp_dir().join(format!(
+            "harness-core-subusage-{}-{}",
+            std::process::id(),
+            "x"
+        ));
+        let stem = "sess";
+        let sub_dir = base.join(stem).join("subagents");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let main_path = base.join(format!("{stem}.jsonl"));
+        std::fs::write(&main_path, "{\"type\":\"user\",\"message\":{}}\n").unwrap();
+
+        // Agent t1: opus, 100in/200out.
+        std::fs::write(
+            sub_dir.join("agent-t1aaa.jsonl"),
+            concat!(
+                r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-opus-4-8","content":[],"usage":{"input_tokens":100,"output_tokens":200}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            sub_dir.join("agent-t1aaa.meta.json"),
+            r#"{"agentType":"condukt:condukt-worker","description":"t1","toolUseId":"toolu_1"}"#,
+        )
+        .unwrap();
+
+        // Agent t2: haiku, 10in/20out, no meta sidecar (description stays None).
+        std::fs::write(
+            sub_dir.join("agent-t2bbb.jsonl"),
+            concat!(
+                r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let mut subs = subagent_usage(main_path.to_str().unwrap());
+        subs.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        assert_eq!(subs.len(), 2, "one entry per sub-agent");
+
+        let t1 = subs.iter().find(|s| s.agent_id == "t1aaa").unwrap();
+        assert_eq!(t1.description.as_deref(), Some("t1"));
+        assert_eq!(t1.agent_type.as_deref(), Some("condukt:condukt-worker"));
+        assert_eq!(t1.turns, 1);
+        assert_eq!(t1.total_tokens(), 300);
+        assert!(t1.models.contains_key("claude-opus-4-8"));
+
+        let t2 = subs.iter().find(|s| s.agent_id == "t2bbb").unwrap();
+        assert_eq!(t2.description, None, "missing sidecar → no description");
+        assert_eq!(t2.total_tokens(), 30);
+        assert!(t2.models.contains_key("claude-haiku-4-5"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn subagent_usage_empty_without_subagents_dir() {
+        let path = write_temp(
+            "no_subdir",
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-opus-4-8","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+            ),
+        );
+        assert!(subagent_usage(path.to_str().unwrap()).is_empty());
+        assert!(subagent_usage("").is_empty());
+        let _ = std::fs::remove_file(&path);
     }
 }

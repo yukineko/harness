@@ -62,6 +62,19 @@ enum Command {
         #[arg(long, value_name = "ID")]
         session: Option<String>,
     },
+    /// List per-sub-agent cost for a session, read **live** from the sub-agent
+    /// transcripts (`<session>/subagents/agent-<id>.jsonl`). Unlike `session`
+    /// (which lumps every sub-agent into one bucket), this attributes cost to
+    /// each `Task` invocation, so a caller can record per-task cost. Correlate
+    /// on the `description` recorded in the `Task`'s sidecar.
+    Subagents {
+        /// Emit JSON: `[{agent_id, agent_type, description, cost_usd, turns}]`.
+        #[arg(long)]
+        json: bool,
+        /// Session id whose sub-agents to list. Defaults to the newest transcript.
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
+    },
     /// Merge the gauge Stop hook into ~/.claude/settings.json.
     Install {
         #[arg(long)]
@@ -87,6 +100,7 @@ fn main() {
         Command::Record => run_hook(record_hook),
         Command::Report { project, since } => report_cmd(project, since),
         Command::Session { json, session } => session_cmd(json, session.as_deref()),
+        Command::Subagents { json, session } => subagents_cmd(json, session.as_deref()),
         Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init { force } => exit_on_err(init(force)),
@@ -254,6 +268,108 @@ fn session_cmd(json: bool, session_id: Option<&str>) {
         for (name, count) in tools.iter().take(15) {
             println!("  {:<24} {}", name, count);
         }
+    }
+}
+
+/// Resolve a session's main transcript file: `~/.claude/projects/*/<id>.jsonl`.
+/// With no id, the most-recently-modified `*.jsonl` across all project dirs.
+/// Globs the project dir (whose name is Claude's own path encoding) by matching
+/// the session-id filename, so we never reimplement that encoding.
+fn find_transcript(session_id: Option<&str>) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let projects = Path::new(&home).join(".claude").join("projects");
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for proj in std::fs::read_dir(&projects).ok()?.flatten() {
+        let dir = proj.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Some(id) = session_id {
+            let cand = dir.join(format!("{id}.jsonl"));
+            if cand.is_file() {
+                return Some(cand);
+            }
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for f in entries.flatten() {
+            let p = f.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(modified) = f.metadata().and_then(|md| md.modified()) else {
+                continue;
+            };
+            if best.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+                best = Some((modified, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn subagents_cmd(json: bool, session_id: Option<&str>) {
+    let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let cfg = Config::load(&root);
+    let Some(path) = find_transcript(session_id) else {
+        if json {
+            println!("[]");
+        } else {
+            println!("no transcript found.");
+        }
+        return;
+    };
+    let subs = usage::subagent_usage(&path.to_string_lossy());
+    let cost_of = |s: &usage::SubAgentUsage| -> f64 {
+        s.models
+            .iter()
+            .map(|(m, u)| pricing::cost(m, u, &cfg.pricing))
+            .sum()
+    };
+
+    if json {
+        let arr: Vec<serde_json::Value> = subs
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "agent_id": s.agent_id,
+                    "agent_type": s.agent_type,
+                    "description": s.description,
+                    "cost_usd": cost_of(s),
+                    "turns": s.turns,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::Value::Array(arr)).unwrap_or_else(|_| "[]".into())
+        );
+        return;
+    }
+
+    if subs.is_empty() {
+        println!("no sub-agents recorded for this session.");
+        return;
+    }
+    println!(
+        "sub-agents  {}",
+        path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+    );
+    let mut subs = subs;
+    subs.sort_by_key(|s| std::cmp::Reverse(s.turns));
+    for s in &subs {
+        println!(
+            "  {:<18} {:>9}  {} turns  {}",
+            s.agent_id,
+            report::money(cost_of(s)),
+            s.turns,
+            s.description
+                .as_deref()
+                .or(s.agent_type.as_deref())
+                .unwrap_or(""),
+        );
     }
 }
 

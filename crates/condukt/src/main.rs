@@ -167,11 +167,30 @@ enum StateAction {
         /// Explicitly clear the branch field (set it to null).
         #[arg(long)]
         clear_branch: bool,
+        /// Model actually used to execute the task (recorded for fugu-router).
+        /// Omitted → unchanged; falls back to the decomposition's suggested_model.
+        #[arg(long)]
+        model: Option<String>,
+        /// Observed USD cost of the task (recorded for fugu-router). Omitted → unchanged.
+        #[arg(long)]
+        cost: Option<f64>,
     },
     /// Print a run's full state as JSON.
     Show {
         #[arg(long)]
         run: String,
+    },
+    /// Record completed runs' outcomes to fugu-router (the learning signal).
+    /// Deterministic, idempotent: only settled, not-yet-recorded runs are emitted,
+    /// and each run is marked so repeated firings (e.g. the Stop hook) never
+    /// double-record. Soft: a no-op when the fugu-router binary is not on PATH.
+    RecordRun {
+        /// Record one specific run. Omit with --all to sweep every settled run.
+        #[arg(long)]
+        run: Option<String>,
+        /// Record every settled, not-yet-recorded run for this project.
+        #[arg(long)]
+        all: bool,
     },
     /// Exit 0 if the run is complete, else print reasons and exit 1.
     Gate {
@@ -408,9 +427,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .map(|t| state::TaskState {
                     id: t.id.clone(),
                     status: state::Status::Pending,
-                    worktree: None,
-                    branch: None,
-                    updated_at: None,
+                    ..Default::default()
                 })
                 .collect();
             let rs = state::RunState {
@@ -419,6 +436,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 tasks,
                 paused: false,
                 terminal_label: resolved_label,
+                recorded_at: None,
             };
             let path = rs.save(cfg, cwd)?;
             // Persist the decomposition so `state resume-context` can reconstruct tasks.
@@ -448,6 +466,8 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             branch,
             clear_worktree,
             clear_branch,
+            model,
+            cost,
         } => {
             let mut rs = state::RunState::load(cfg, cwd, &run)?;
             let st: state::Status = status.parse()?;
@@ -458,6 +478,14 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
             t.status = st;
             t.updated_at = Some(state::now_secs());
+            // Record the model/cost used so the fugu-router outcome reflects the
+            // truth (incl. escalation), not just the originally suggested model.
+            if model.is_some() {
+                t.model = model;
+            }
+            if cost.is_some() {
+                t.cost_usd = cost;
+            }
             // None 上書き保護: --worktree/--branch が省略された場合は既存値を保持する。
             // 明示的にクリアしたい場合は --clear-worktree / --clear-branch を使う。
             if clear_worktree {
@@ -477,6 +505,9 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
         StateAction::Show { run } => {
             let rs = state::RunState::load(cfg, cwd, &run)?;
             println!("{}", serde_json::to_string_pretty(&rs)?);
+        }
+        StateAction::RecordRun { run, all } => {
+            record_runs(cfg, cwd, run, all)?;
         }
         StateAction::Gate { run } => {
             let rs = state::RunState::load(cfg, cwd, &run)?;
@@ -710,6 +741,94 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
     Ok(())
 }
 
+/// Probe whether the `fugu-router` binary is on PATH and, if so, return its
+/// skill fingerprint (stdout of `fugu-router fingerprint`, trimmed). `None`
+/// means fugu-router is absent → recording is a soft no-op.
+fn fugu_fingerprint() -> Option<String> {
+    let out = std::process::Command::new("fugu-router")
+        .arg("fingerprint")
+        .output()
+        .ok()?; // spawn failed (not on PATH) → soft-skip
+    let fp = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Some(fp)
+}
+
+/// Record completed runs' outcomes to fugu-router. Deterministic and idempotent:
+/// only settled, not-yet-recorded runs emit episodes, and each is stamped with
+/// `recorded_at` so repeated firings (the Stop hook) never double-record.
+///
+/// Soft dependency: when fugu-router is not on PATH this is a clean no-op and
+/// does NOT mark runs recorded, so a later invocation (once fugu-router exists)
+/// still captures the signal.
+fn record_runs(cfg: &Config, cwd: &Path, run: Option<String>, all: bool) -> Result<()> {
+    let run_ids: Vec<String> = match (run, all) {
+        (Some(r), _) => vec![r],
+        (None, true) => state::all_runs(cfg, cwd)
+            .into_iter()
+            .map(|rs| rs.run_id)
+            .collect(),
+        (None, false) => bail!("record-run requires --run <id> or --all"),
+    };
+
+    // Probe fugu-router once. Absent → soft no-op (leave runs unrecorded).
+    let fingerprint = match fugu_fingerprint() {
+        Some(fp) => fp,
+        None => return Ok(()),
+    };
+
+    let mut emitted = 0usize;
+    let mut recorded_runs = 0usize;
+    for rid in run_ids {
+        let mut rs = match state::RunState::load(cfg, cwd, &rid) {
+            Ok(rs) => rs,
+            Err(_) => continue, // run vanished between listing and load
+        };
+        // Need the decomposition to recover title/files/class/suggested_model.
+        let dec = match state::load_decomposition(cfg, cwd, &rid) {
+            Ok(raw) => match serde_json::from_str::<model::Decomposition>(&raw) {
+                Ok(d) => d,
+                Err(_) => continue, // corrupt sidecar → skip (leave unrecorded)
+            },
+            Err(_) => continue, // pre-feature run without a sidecar → skip
+        };
+        let Some(specs) = state::records_for_run(&rs, &dec) else {
+            continue; // not settled, or already recorded
+        };
+        for s in &specs {
+            let mut cmd = std::process::Command::new("fugu-router");
+            cmd.arg("record")
+                .args(["--title", &s.title])
+                .args(["--files", &s.files.join(",")])
+                .args(["--class", &s.class])
+                .args(["--model", &s.model])
+                .args(["--status", &s.status])
+                .args(["--cost", &s.cost_usd.to_string()]);
+            if let Some(dc) = &s.done_criteria {
+                cmd.args(["--done-criteria", dc]);
+            }
+            if !fingerprint.is_empty() {
+                cmd.args(["--skill-fingerprint", &fingerprint]);
+            }
+            // Best-effort: a single failed record must not abort the sweep.
+            if let Err(e) = cmd.status() {
+                eprintln!("condukt: fugu-router record failed for '{}': {e}", s.title);
+            } else {
+                emitted += 1;
+            }
+        }
+        rs.recorded_at = Some(state::now_secs());
+        rs.save(cfg, cwd)?;
+        recorded_runs += 1;
+    }
+
+    if emitted > 0 {
+        eprintln!(
+            "condukt: recorded {emitted} outcome(s) from {recorded_runs} run(s) to fugu-router"
+        );
+    }
+    Ok(())
+}
+
 fn init(cfg: &Config) -> Result<()> {
     let base = config::base_dir();
     // Loud-fail: a swallowed mkdir here (e.g. a read-only or non-writable parent)
@@ -819,9 +938,12 @@ mod state_set_tests {
                 worktree: worktree.map(str::to_string),
                 branch: branch.map(str::to_string),
                 updated_at: None,
+                model: None,
+                cost_usd: None,
             }],
             paused: false,
             terminal_label: None,
+            recorded_at: None,
         }
     }
 

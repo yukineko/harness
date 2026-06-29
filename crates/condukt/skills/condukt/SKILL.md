@@ -322,6 +322,9 @@ BASELINE_EXIT=$?
 1. `WP=$(condukt worktree create --topic <t.id> --branch condukt/<t.id>)`
 2. `condukt state set --run $RID --task <t.id> --status running --worktree "$WP" --branch condukt/<t.id>`
 3. `Task` で `condukt-worker` 相当を起動 (model=`t.suggested_model`)。下表のフィールドを渡す。
+   **Task の `description` は必ず `"<t.id>: <task.title>"` 形式にする** (例 `"t1: add --cost flag"`)。
+   これがサブエージェントの `.meta.json` に記録され、Phase 6 が `gauge subagents` で per-task コストを
+   description マッチで引く鍵になる (escalation 再実行も同じ `<t.id>:` 前置で合算される)。
 4. worker の返却 status を確認する:
    - `done`: `condukt state set --run $RID --task <t.id> --status done` し、**他の worker の完了を待たずにその場で Phase 6 の verifier を起動する**（パイプライン化）。
    - `needs-serial`: 分類ミス。worktree を破棄し、タスクを serial として main で直接実装して commit する。
@@ -414,25 +417,48 @@ verifier が fail したら、**同じターン内で**以下を実行して Pha
 リトライ上限: **ティア数 = 最大 3 回** (haiku 初回 → sonnet 1回目 → opus 2回目)。
 opus で失敗した場合、または初回から opus を使っていた場合は即ユーザーエスカレーション (それ以上上げられない)。
 
-検証後、**結果を fugu-router に記録**して次回のルーティングを賢くする (soft 依存):
-```
-GAUGE_COST=$(gauge session --json --session "${CLAUDE_SESSION_ID:-}" 2>/dev/null | jq -r '.cost_usd // empty' 2>/dev/null || true)
-fugu-router record --title "<task.title>" --files "<task.touched_files をカンマ区切り>" \
-  --class <task.class> --model <worker に使ったモデル> \
-  --status verified|failed --cost "${GAUGE_COST:-0}" \
-  --done-criteria "<task.done_criteria>" \
-  --skill-fingerprint "$(fugu-router fingerprint 2>/dev/null || true)" \
-  --notes "<worker サマリの要点 (任意)>"
-```
-`--done-criteria` を渡すと、verified タスクの手順が `~/.fugu-router/playbooks.jsonl` に蓄積され
-次回 Phase 1 の playbook 検索に現れる (Devin Playbooks 相当)。failed の場合は無視される。
+検証後、**結果を fugu-router に記録**して次回のルーティングを賢くする。記録は LLM が手で
+snippet を打つのではなく **condukt バイナリが決定論的に発火する** (発火漏れを物理的に無くす):
 
-`--skill-fingerprint` を渡すと、その outcome が **どの SKILL.md 版で出たか** で層別化できる
-(SKILL 改変による静かな挙動ドリフトを outcome から帰属可能にする)。`fugu-router fingerprint` は
-SKILL.md 群を hash した短い hex を返す決定論ヘルパで、古い fugu-router バイナリには無いため
-`2>/dev/null || true` で soft に握り潰す (記録自体は壊さない)。版間の pass率/コスト差は
-`evalkit canary --baseline <旧> --current <新>` が golden replay の delta として出す
-(promptfoo side-by-side 相当)。
+1. **タスクの status を set するとき、実際に使ったモデルとコストも一緒に書く** (escalation 後の
+   真値を残す)。`state set` が `--model` / `--cost` を受け付ける:
+   ```bash
+   # 現在セッションの id はリポジトリ標準の CLAUDE_CODE_SESSION_ID で取る (CLAUDE_SESSION_ID は存在しない)。
+   # コストは **worker サブエージェント単位** で取る (セッション累積ではない — それだと同一 run の
+   # haiku/opus タスクが同じ値になり fugu-router の cost-per-pass ルーティングが壊れる)。worker は
+   # Phase 5 で Task description を "<t.id>: <title>" にして起動してあるので、gauge subagents の
+   # description でそのタスクの sub-agent を引ける (並列バッチでも description ごとに分離。escalation
+   # で再実行した分も同じ id で合算される = そのタスクに費やした総コスト)。
+   SID="${CLAUDE_CODE_SESSION_ID:-}"
+   GAUGE_COST=$(gauge subagents --json ${SID:+--session "$SID"} 2>/dev/null \
+     | jq -r --arg t "<t.id>" '[.[] | select(.description != null and (.description | startswith($t + ":")))] | (map(.cost_usd) | add) // empty' 2>/dev/null || true)
+   # subagents が取れない場合 (古い gauge / inline-sidechain レイアウト / main で直接実装した
+   # fast-path タスク) はセッション累積にフォールバックする。
+   if [ -z "$GAUGE_COST" ]; then
+     GAUGE_COST=$(gauge session --json ${SID:+--session "$SID"} 2>/dev/null | jq -r '.cost_usd // empty' 2>/dev/null || true)
+   fi
+   condukt state set --run "$RID" --task "<t.id>" --status verified \
+     --model <worker に使ったモデル> --cost "${GAUGE_COST:-0}"
+   # fail 時も同様に --status failed --model <試したモデル> を残す (失敗も学習信号)
+   ```
+   `--model` を省略すると decomposition の `suggested_model` に、`--cost` 省略は 0.0 にフォールバック
+   する (後方互換)。**per-sub-agent コストには gauge >= 0.3.0 (`gauge subagents`) が必要**、
+   `gauge session --json` フォールバックには gauge >= 0.2.0 が必要 (それ未満は `--json` を知らずエラー→0)。
+   per-sub-agent は新レイアウト (`<session>/subagents/agent-<id>.jsonl`) を live で読むので、Stop を
+   待たずタスク完了直後の正確なコストが取れる。
+
+2. **記録の発火は自動**。run の全タスクが settled (verified/failed/cancelled) になると、
+   condukt の **Stop hook** が `condukt state record-run --all` を呼び、各タスクを 1 件ずつ
+   `fugu-router record` に流す。これは **冪等** (`recorded_at` を run に刻むので二重記録しない)
+   で、`fugu-router` が PATH に無ければ **soft no-op** (記録未了のまま残し、次に fugu があれば回収)。
+   手で発火させたい場合は `condukt state record-run --run "$RID"` を呼んでもよい。
+   - `done_criteria` を持つ verified タスクは手順が `~/.fugu-router/playbooks.jsonl` に蓄積され、
+     次回 Phase 1 の playbook 検索に現れる (Devin Playbooks 相当)。failed では無視される。
+   - `cancelled` タスクは学習信号を持たないので記録対象外。
+   - record-run は可能なら `fugu-router fingerprint` を `--skill-fingerprint` に添え、outcome を
+     **どの SKILL.md 版で出たか** で層別化する (古い fugu-router で fingerprint が無ければ省略)。
+     版間の pass率/コスト差は `evalkit canary --baseline <旧> --current <新>` が golden replay の
+     delta として出す (promptfoo side-by-side 相当)。
 
 **trace span の記録 (soft 依存)**: fugu-router record と同じ位置で、この task の **worker span と
 verifier span を `tracekit` に追記**する (phase/model/status を span 木として残す)。worker span は
