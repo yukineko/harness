@@ -68,6 +68,22 @@ fn session_models(ctx: &RecordCtx) -> Option<BTreeMap<String, ModelUsage>> {
     usage::aggregate(ctx.transcript_path).map(|agg| agg.models)
 }
 
+/// Resolve per-agent (main / sub-agent) token usage. Prefer gauge's canonical
+/// [`SessionRecord`] when it has agent data; fall back to a fresh transcript
+/// aggregate. This fallback makes session-insights robust against hook-ordering
+/// races where gauge may not have written its record yet when we run.
+fn session_agents(
+    ctx: &RecordCtx,
+) -> Option<BTreeMap<String, harness_core::usage::AgentUsage>> {
+    let rec = session::load_one(&session::default_state_dir(), ctx.session_id);
+    if let Some(rec) = rec {
+        if !rec.agents.is_empty() {
+            return Some(rec.agents);
+        }
+    }
+    usage::aggregate(ctx.transcript_path).map(|agg| agg.agents).filter(|a| !a.is_empty())
+}
+
 /// Build the auto `## コスト` block body (between markers, exclusive).
 fn cost_body(ctx: &RecordCtx) -> String {
     let Some(models) = session_models(ctx) else {
@@ -86,14 +102,32 @@ fn cost_body(ctx: &RecordCtx) -> String {
         cache_read += u.cache_read;
         total_tokens += u.total_tokens();
     }
-    let models: Vec<String> = models.keys().cloned().collect();
-    let models_line = if models.is_empty() {
+    let model_names: Vec<String> = models.keys().cloned().collect();
+    let models_line = if model_names.is_empty() {
         "(none)".to_string()
     } else {
-        models.join(", ")
+        model_names.join(", ")
     };
+
+    // Per-agent breakdown (main / sub-agent). Falls back to transcript aggregate
+    // so hook-ordering races with gauge don't silently drop the attribution.
+    let agent_lines = match session_agents(ctx) {
+        Some(agents) if !agents.is_empty() => {
+            let mut lines = String::new();
+            let mut sorted: Vec<_> = agents.iter().collect();
+            sorted.sort_by_key(|(k, _)| k.as_str());
+            for (name, au) in &sorted {
+                let cost = pricing::session_cost(au.models.iter(), ctx.overrides);
+                lines.push_str(&format!("  - {name}: ${cost:.4} USD ({} turns)\n", au.turns));
+            }
+            format!("- by agent:\n{lines}")
+        }
+        _ => String::new(),
+    };
+
     format!(
         "- total: ${total_usd:.2} USD\n\
+         {agent_lines}\
          - total tokens: {total_tokens}\n\
          - input: {input}   output: {output}\n\
          - cache write: {cache_write}   cache read: {cache_read}\n\
