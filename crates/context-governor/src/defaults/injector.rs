@@ -176,7 +176,10 @@ mod tests {
     // is shared state — without a lock, `inject_without_env_var_returns_empty_object`
     // (which removes the var) and `inject_emits_ledger_row_on_injection` (which sets
     // it) would race and flake each other.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Env mutation is serialised via the crate-shared `acquire_env_lock()` (in
+    // defaults::guard) so injector's env tests cannot race groomer / snapshot /
+    // backing, all of which mutate the same process-global vars.
+    use crate::defaults::guard::acquire_env_lock as ENV_MUTEX_LOCK;
 
     /// Spec doc with one normative section (API Contracts), two reference
     /// sections (Endpoints, Glossary) and one example section.
@@ -264,7 +267,7 @@ Token: an opaque string identifying a session.
 
     #[test]
     fn inject_without_env_var_returns_empty_object() {
-        let _g = ENV_MUTEX.lock().unwrap();
+        let _g = ENV_MUTEX_LOCK();
         // Guard: ensure the env var is not set for this test.
         std::env::remove_var("CONTEXT_GOVERNOR_REFERENCE_DOC");
         let input = make_input("show me the endpoints");
@@ -297,7 +300,7 @@ Token: an opaque string identifying a session.
     #[test]
     fn inject_emits_ledger_row_on_injection() {
         use std::io::Write as _;
-        let _g = ENV_MUTEX.lock().unwrap();
+        let _g = ENV_MUTEX_LOCK();
 
         // Write a small reference doc to a named temp file.
         let mut doc_file = tempfile::NamedTempFile::new().expect("temp doc file");

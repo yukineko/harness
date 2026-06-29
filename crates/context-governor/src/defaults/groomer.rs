@@ -277,6 +277,12 @@ mod tests {
     fn to_output_emits_ledger_row_when_groomed_and_none_when_not() {
         use crate::ledger::rollup;
 
+        // Crate-shared lock: serialise against every other test that mutates the
+        // process-global CONTEXT_GOVERNOR_STATE_DIR / CLAUDE_CODE_SESSION_ID
+        // (injector, snapshot guard/checkpointer, backing) so a concurrent set_var
+        // cannot redirect this test's ledger path mid-run.
+        let _env = crate::defaults::guard::acquire_env_lock();
+
         // Unique per-process tmpdir and cwd so parallel test runs don't collide.
         let tmp = tempfile::tempdir().expect("tempdir");
         let state_dir = tmp.path().to_str().expect("utf-8 state dir").to_string();

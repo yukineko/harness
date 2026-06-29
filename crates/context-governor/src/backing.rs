@@ -229,6 +229,9 @@ mod tests {
 
     #[test]
     fn open_is_ok_and_creates_state_dir_for_any_cwd() {
+        // Serialise against the defaults tests that also mutate these process-global
+        // env vars (groomer / injector / snapshot), via the crate-shared lock.
+        let _env = crate::defaults::guard::acquire_env_lock();
         // Isolate the base so the test never touches a real $HOME/.context-governor.
         let base = std::env::temp_dir().join(format!("cg-open-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

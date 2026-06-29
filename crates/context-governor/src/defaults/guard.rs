@@ -46,8 +46,7 @@ impl CompactionGuard for DefaultGuard {
 /// Exposed at module level (not inside `mod tests`) so the checkpointer module's
 /// tests can call `crate::defaults::guard::acquire_env_lock`.
 #[cfg(test)]
-pub(crate) static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
-    std::sync::OnceLock::new();
+pub(crate) static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 #[cfg(test)]
 pub(crate) fn acquire_env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -170,7 +169,8 @@ mod tests {
         // ── Scenario A: real (non-empty) snapshot → exactly one row ──────────
         {
             let cwd = td.path().join("guard-real").to_str().unwrap().to_string();
-            let mut store = MockStore::with_snapshot("hello world from user\n\nhello back from assistant");
+            let mut store =
+                MockStore::with_snapshot("hello world from user\n\nhello back from assistant");
 
             let input = HookInput {
                 transcript_path: "/unused-by-mock".to_string(),
