@@ -416,9 +416,10 @@ opus で失敗した場合、または初回から opus を使っていた場合
 
 検証後、**結果を fugu-router に記録**して次回のルーティングを賢くする (soft 依存):
 ```
+GAUGE_COST=$(gauge session --json --session "${CLAUDE_SESSION_ID:-}" 2>/dev/null | jq -r '.cost_usd // empty' 2>/dev/null || true)
 fugu-router record --title "<task.title>" --files "<task.touched_files をカンマ区切り>" \
   --class <task.class> --model <worker に使ったモデル> \
-  --status verified|failed --cost <gauge から取れれば> \
+  --status verified|failed --cost "${GAUGE_COST:-0}" \
   --done-criteria "<task.done_criteria>" \
   --skill-fingerprint "$(fugu-router fingerprint 2>/dev/null || true)" \
   --notes "<worker サマリの要点 (任意)>"
@@ -443,7 +444,7 @@ if command -v tracekit >/dev/null 2>&1; then
   # worker span (実装フェーズ。status は worker の done/needs-serial 等を ok|error に丸める)
   tracekit record --run "$RID" --span "<t.id>" --parent interpret --name "<task.title>" \
     --phase worker --model <worker に使ったモデル> --task "<t.id>" \
-    --status <ok|error> --cost <gauge から取れれば> 2>/dev/null || true
+    --status <ok|error> --cost "${GAUGE_COST:-0}" 2>/dev/null || true
   # verifier span (検証フェーズ。status は verified|failed をそのまま)
   tracekit record --run "$RID" --span "<t.id>-v" --parent "<t.id>" --name "verify <task.title>" \
     --phase verifier --model <verifier_model> --task "<t.id>" \

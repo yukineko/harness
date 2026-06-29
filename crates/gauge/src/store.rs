@@ -5,4 +5,4 @@
 //! numbers can't drift). This module re-exports them so gauge's internal call
 //! sites are unchanged; gauge owns the *write* path via its Stop hook.
 
-pub use harness_core::session::{load_all, upsert, SessionRecord, Usage};
+pub use harness_core::session::{load_all, load_one, upsert, SessionRecord, Usage};

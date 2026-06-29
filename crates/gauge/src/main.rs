@@ -42,7 +42,7 @@ struct Cli {
 enum Command {
     /// Stop hook: aggregate the current session's transcript into the store.
     Record,
-    /// Print a usage + cost report across all recorded sessions.
+    /// Print a usage + cost report across all recorded sessions, or emit JSON
     Report {
         /// Only sessions whose project name contains this string.
         #[arg(long)]
@@ -51,8 +51,17 @@ enum Command {
         #[arg(long)]
         since: Option<String>,
     },
-    /// Show details for the most recent session.
-    Session,
+    /// Show details for the most recent session (human) or emit machine-readable
+    /// JSON (`--json`). With `--session <ID>` selects a specific session by id
+    /// rather than the most-recently-updated one.
+    Session {
+        /// Emit JSON: `{session_id, cost_usd, models, agents}` instead of human text.
+        #[arg(long)]
+        json: bool,
+        /// Session id to look up. Defaults to the most recently updated session.
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
+    },
     /// Merge the gauge Stop hook into ~/.claude/settings.json.
     Install {
         #[arg(long)]
@@ -77,7 +86,7 @@ fn main() {
     match cli.command {
         Command::Record => run_hook(record_hook),
         Command::Report { project, since } => report_cmd(project, since),
-        Command::Session => session_cmd(),
+        Command::Session { json, session } => session_cmd(json, session.as_deref()),
         Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init { force } => exit_on_err(init(force)),
@@ -134,17 +143,53 @@ fn report_cmd(project: Option<String>, since: Option<String>) {
     println!("{}", report::render(&records, &cfg.pricing));
 }
 
-fn session_cmd() {
+fn session_cmd(json: bool, session_id: Option<&str>) {
     let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let cfg = Config::load(&root);
-    let records = store::load_all(&cfg.state_dir);
-    let Some(rec) = records
-        .into_iter()
-        .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
-    else {
-        println!("no sessions recorded yet.");
+
+    let rec = if let Some(id) = session_id {
+        store::load_one(cfg.state_dir.as_path(), id)
+    } else {
+        store::load_all(&cfg.state_dir)
+            .into_iter()
+            .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+    };
+
+    let Some(rec) = rec else {
+        if json {
+            println!("null");
+        } else {
+            println!("no sessions recorded yet.");
+        }
         return;
     };
+
+    if json {
+        let cost_usd: f64 = rec
+            .models
+            .iter()
+            .map(|(m, u)| pricing::cost(m, u, &cfg.pricing))
+            .sum();
+        let agent_costs: std::collections::BTreeMap<String, serde_json::Value> = rec
+            .agents
+            .iter()
+            .map(|(name, au)| {
+                let c: f64 = au.models.iter().map(|(m, u)| pricing::cost(m, u, &cfg.pricing)).sum();
+                (
+                    name.clone(),
+                    serde_json::json!({"cost_usd": c, "turns": au.turns}),
+                )
+            })
+            .collect();
+        let out = serde_json::json!({
+            "session_id": rec.session_id,
+            "cost_usd": cost_usd,
+            "models": rec.models,
+            "agents": agent_costs,
+        });
+        println!("{}", serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_string()));
+        return;
+    }
 
     let cost: f64 = rec
         .models
