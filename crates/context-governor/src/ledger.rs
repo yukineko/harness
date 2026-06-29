@@ -166,6 +166,40 @@ fn summarize_jsonl(sink: &Path) -> LedgerSummary {
     summary
 }
 
+/// Fail-soft seen-state query for the injector's dedup (I6 observe→act, read
+/// half): returns `true` iff this session's ledger already records an `injected`
+/// row whose `item` equals `item_id`. A missing/corrupt file or absent match
+/// yields `false`, so the caller treats "unknown" as "not yet injected" and
+/// proceeds — the ledger becomes the control input without ever breaking a turn.
+pub fn was_injected(cwd: &str, item_id: u64) -> bool {
+    let (state_dir, _session) = resolve_state(cwd);
+    seen_injected_in(&state_dir.join("ledger.jsonl"), item_id)
+}
+
+/// Path-pinned core of [`was_injected`]: pure function of `sink` (no env), so it
+/// is deterministic and unit-testable the same way [`summarize_jsonl`] is.
+/// Fail-soft: a missing/corrupt file or absent match yields `false`.
+fn seen_injected_in(sink: &Path, item_id: u64) -> bool {
+    let Ok(contents) = std::fs::read_to_string(sink) else {
+        return false;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let is_injected = value.get("event").and_then(|v| v.as_str()) == Some("injected");
+        let item_matches = value.get("item").and_then(|v| v.as_u64()) == Some(item_id);
+        if is_injected && item_matches {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +272,58 @@ mod tests {
         // (never mutate it) and must never panic, even on a never-written cwd.
         let _ = Ledger::open("/tmp/ledger-sink-smoke-cwd");
         let _ = rollup("/tmp/ledger-sink-smoke-cwd");
+    }
+
+    /// `seen_injected_in` (the env-free core of `was_injected`) detects a prior
+    /// `injected` row by its `item` id, ignores non-injected rows with the same
+    /// id, and fail-softs on an absent file / no match.
+    #[test]
+    fn seen_injected_in_matches_injected_row_by_item() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sink = tmp.path().join("ledger.jsonl");
+
+        // Missing file → false (fail-soft).
+        assert!(!seen_injected_in(&sink, 42));
+
+        let ledger = Ledger {
+            sink: sink.clone(),
+            session: "S1".to_string(),
+        };
+
+        // A groomed row carrying item=42 must NOT match (event != injected).
+        ledger.append(
+            &LedgerNode {
+                session: "S1".to_string(),
+                hook: "PostToolUse".to_string(),
+                item: Some(ItemId(42)),
+                action: Action::Groomed { saved_tokens: 10 },
+                reason: "oversized-tool-result",
+            },
+            100,
+        );
+        assert!(
+            !seen_injected_in(&sink, 42),
+            "a groomed row must not count as injected"
+        );
+
+        // An injected row with item=42 → matches; a different id does not.
+        ledger.append(
+            &LedgerNode {
+                session: "S1".to_string(),
+                hook: "UserPromptSubmit".to_string(),
+                item: Some(ItemId(42)),
+                action: Action::Injected,
+                reason: "reference-injection",
+            },
+            80,
+        );
+        assert!(
+            seen_injected_in(&sink, 42),
+            "injected row with matching item must be seen"
+        );
+        assert!(
+            !seen_injected_in(&sink, 7),
+            "a different item id must not match"
+        );
     }
 }

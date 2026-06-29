@@ -11,12 +11,15 @@
 //! the tested logic; the public trait method resolves the reference doc from
 //! `CONTEXT_GOVERNOR_REFERENCE_DOC` and delegates.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use super::classifier::{split_sections, Section};
 use crate::handlers::ContextInjector;
 use crate::io::HookOutput;
-use crate::ledger::{Action, Ledger, LedgerNode};
+use crate::ledger::{was_injected, Action, Ledger, LedgerNode};
+use crate::types::ItemId;
 use harness_core::hook::HookInput;
 
 // ── tokenizer ─────────────────────────────────────────────────────────────────
@@ -115,6 +118,16 @@ impl DefaultInjector {
     }
 }
 
+/// Stable, cross-process content id for an injected text — the key for the
+/// ledger seen-state used to dedup repeated reference injection. `DefaultHasher`
+/// uses fixed keys (not the randomized `RandomState`), so identical text hashes
+/// to the same id across separate hook invocations within a session.
+fn injection_id(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 impl ContextInjector for DefaultInjector {
     /// Resolve the reference doc from `CONTEXT_GOVERNOR_REFERENCE_DOC` (a file
     /// path). If unset or unreadable, returns `{}` — never break a turn (hook
@@ -149,11 +162,19 @@ impl ContextInjector for DefaultInjector {
             .and_then(|s| s.additional_context.as_deref())
             .filter(|t| !t.is_empty())
         {
+            // Dedup (I6 observe→act): if this exact text was already injected in
+            // this session — observed via the ledger seen-state — skip the
+            // re-injection entirely and write no new row, so the model never pays
+            // for the same reference body twice.
+            let id = injection_id(text);
+            if was_injected(&input.cwd, id) {
+                return HookOutput::default();
+            }
             let resident = (text.chars().count().div_ceil(4)).max(1) as u32;
             let node = LedgerNode {
                 session: input.session_id.clone(),
                 hook: "UserPromptSubmit".to_string(),
-                item: None,
+                item: Some(ItemId(id)),
                 action: Action::Injected,
                 reason: "reference-injection",
             };
@@ -374,6 +395,87 @@ Token: an opaque string identifying a session.
 
         // Clean up env.
         std::env::remove_var("CONTEXT_GOVERNOR_STATE_DIR");
+    }
+
+    /// Dedup (I6 observe→act): repeating the *same* injection within a session is
+    /// skipped to a no-op with no new ledger row, while a *distinct* section
+    /// still injects. The ledger is the seen-state.
+    #[test]
+    fn inject_dedups_repeated_identical_injection() {
+        use std::io::Write as _;
+        let _g = ENV_MUTEX_LOCK();
+
+        // Two distinct headings so we can hit different sections (different text).
+        let mut doc_file = tempfile::NamedTempFile::new().expect("temp doc file");
+        doc_file
+            .write_all(
+                b"# Endpoints\nGET /users - list all users\n\n# Auth\nUse a bearer token in the Authorization header\n",
+            )
+            .expect("write doc");
+        doc_file.flush().expect("flush");
+
+        let state_dir = tempfile::tempdir().expect("temp state dir");
+        let cwd = format!("/nonexistent/inject-dedup-{}", std::process::id());
+
+        std::env::set_var("CONTEXT_GOVERNOR_REFERENCE_DOC", doc_file.path());
+        std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", state_dir.path());
+        std::env::set_var("CLAUDE_CODE_SESSION_ID", "dedup-test-session");
+
+        let mk = |prompt: &str| -> HookInput {
+            serde_json::from_value(serde_json::json!({
+                "session_id": "dedup-test-session",
+                "transcript_path": "",
+                "cwd": cwd,
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": prompt,
+            }))
+            .expect("build HookInput")
+        };
+
+        let injected_rows = || {
+            crate::ledger::rollup(&cwd)
+                .per_event
+                .get("injected")
+                .copied()
+        };
+
+        // 1st injection (Endpoints): injects + exactly one row.
+        let out1 = DefaultInjector.inject(&mk("show me the endpoints"));
+        assert!(
+            out1.to_json().contains("additionalContext"),
+            "first injection must produce additionalContext"
+        );
+        assert_eq!(injected_rows(), Some(1));
+
+        // 2nd identical injection (same section text): deduped → {} and no new row.
+        let out2 = DefaultInjector.inject(&mk("show me the endpoints"));
+        assert_eq!(
+            out2.to_json(),
+            "{}",
+            "a repeated identical injection must dedup to a no-op"
+        );
+        assert_eq!(
+            injected_rows(),
+            Some(1),
+            "dedup must not append a second injected row"
+        );
+
+        // A different prompt hitting a DIFFERENT section (Auth) → distinct text →
+        // still injects (the dedup is content-keyed, not blanket suppression).
+        let out3 = DefaultInjector.inject(&mk("how does auth and the bearer token work"));
+        assert!(
+            out3.to_json().contains("additionalContext"),
+            "a distinct section must still inject"
+        );
+        assert_eq!(
+            injected_rows(),
+            Some(2),
+            "a new distinct injection must append a row"
+        );
+
+        std::env::remove_var("CONTEXT_GOVERNOR_REFERENCE_DOC");
+        std::env::remove_var("CONTEXT_GOVERNOR_STATE_DIR");
+        std::env::remove_var("CLAUDE_CODE_SESSION_ID");
     }
 
     // ── proptest invariant ────────────────────────────────────────────────────
