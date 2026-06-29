@@ -314,6 +314,24 @@ fn check_context_budget(input: &HookInput, cfg: &Config) -> Option<(usize, Strin
         }
     }
 
+    // Proactive auto-distill (feature ⑤): on the FIRST crossing into the top
+    // (danger) band — the ≈200k line — fire the high-quality background distill
+    // NOW instead of waiting for a `/compact`. Hooks can't trigger compaction, so
+    // this is how "auto-distill at 200k" is realized: the heavy history is
+    // externalized to a `distill-*` note and the next guard re-injects the summary
+    // (main trends toward 要約＋リンク). Real token release still needs `/compact`.
+    // The escalate-only band gate above means this fires at most once per upward
+    // crossing; `spawn_for_band` is a no-op when `auto_distill_on_band` is off.
+    if band >= cfg.bands.len() {
+        crate::hooks::distill::spawn_for_band(input, cfg);
+        if cfg.auto_distill_on_band {
+            body.push_str(
+                "\n高品質 distill をバックグラウンド起動しました（重い履歴を外部ノートへ退避。\
+                 次ターンで要約を再注入）。実トークン解放には /compact が必要です。",
+            );
+        }
+    }
+
     Some((band, format!("[context-rot guard] {body}")))
 }
 
@@ -553,6 +571,9 @@ mod tests {
         let cfg = Config {
             state_dir: base.join("state"),
             store_dir: base.join("store"),
+            // Keep this test about the deterministic rescue note: don't fire the
+            // proactive band-3 distill (it would shell out to `claude distill-bg`).
+            auto_distill_on_band: false,
             ..Config::default()
         };
         let input = HookInput {
@@ -570,6 +591,11 @@ mod tests {
         assert!(
             out.contains("先行退避ノート"),
             "should confirm preemptive rescue: {out}"
+        );
+        // auto_distill disabled → no background-distill confirmation line.
+        assert!(
+            !out.contains("バックグラウンド起動"),
+            "distill line must be absent when auto_distill_on_band is off: {out}"
         );
 
         let store = harness_core::store::Store::new(cfg.store_dir.clone());

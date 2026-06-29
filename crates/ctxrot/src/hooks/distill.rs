@@ -60,6 +60,28 @@ pub fn spawn_detached(input: &HookInput, cfg: &Config) {
     if !cfg.distill_on_compact {
         return;
     }
+    fire(input);
+}
+
+/// From the guard's danger-band crossing (UserPromptSubmit, feature ⑤): fire the
+/// SAME detached distill *proactively* at ≈200k, before any `/compact`. This is
+/// how "auto-distill at 200k" is realized — hooks can't trigger compaction, so we
+/// externalize the heavy history to a `distill-*` note now and let the next guard
+/// re-inject the summary. Gated on `auto_distill_on_band` (independent of the
+/// on-compact path). The guard's escalate-only band gate already limits this to
+/// once per upward crossing, so it spends a bounded number of model calls.
+pub fn spawn_for_band(input: &HookInput, cfg: &Config) {
+    if !cfg.auto_distill_on_band {
+        return;
+    }
+    fire(input);
+}
+
+/// Shared spawn core: fire-and-forget a detached `ctxrot distill-bg` for this
+/// session's transcript. No-op inside a distill child (never recurse) or with no
+/// transcript. Never blocks, never fails the caller — any error just means no
+/// high-quality note this time (the deterministic rescue note is the safety net).
+fn fire(input: &HookInput) {
     if std::env::var(CHILD_ENV).is_ok() {
         return; // defensive: never recurse
     }

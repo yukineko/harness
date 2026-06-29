@@ -948,6 +948,14 @@ distill_cmd = "claude -p"
 # note stands. The detached worker bears this wait, not the 10s hook.
 # env: CTXROT_DISTILL_TIMEOUT_SECS
 distill_timeout_secs = 180
+# Proactively run the same background distill when usage first crosses into the
+# top (danger) band — the ≈200k line — WITHOUT waiting for a /compact. Hooks
+# can't trigger compaction, so this is how "auto-distill at 200k" works: heavy
+# history is externalized to a distill-* note now and the next guard re-injects
+# the summary (main trends toward 要約＋リンク). Real token release still needs
+# /compact. Fires at most once per upward crossing. Spends one model call per
+# crossing. Set false (or CTXROT_AUTO_DISTILL_ON_BAND=0) to disable.
+auto_distill_on_band = true
 "#;
 
 fn init() -> anyhow::Result<()> {
