@@ -21,11 +21,14 @@ pub fn run(input: &HookInput) -> Option<String> {
     let cwd_str = cwd.to_string_lossy().to_string();
     let root = repo_root(&cwd_str);
 
-    // 期限切れ deferred タスクをキューに戻す
+    // 期限切れ deferred タスクをキューに戻す。
+    // クロックが epoch 以前だと duration_since が失敗するが、SessionStart hook を
+    // panic させない（never break a turn）。失敗時は t=0 とみなす＝requeue 0 件
+    // （どの defer_until も <= 0 にはならない）。
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     if let Ok(count) = store::requeue_expired(&cfg.tasks_path(), now) {
         if count >= 1 {
             eprintln!("{} 件の保留タスクが再キューされました", count);

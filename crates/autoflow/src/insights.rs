@@ -10,9 +10,10 @@ pub struct SessionMetrics {
 }
 
 pub fn load_metrics(session_id: &str) -> SessionMetrics {
-    let path = home()
-        .join(".session-insights")
-        .join("state")
-        .join(format!("{session_id}.json"));
+    // Sanitise the hook-supplied id so it can't traverse out of the state dir.
+    let path = home().join(".session-insights").join("state").join(format!(
+        "{}.json",
+        harness_core::store::safe_session(session_id)
+    ));
     harness_core::store::load_json(&path)
 }

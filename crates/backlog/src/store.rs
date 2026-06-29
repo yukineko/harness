@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::task::{new_id, Task};
+use crate::task::{new_id, Task, STATUS_DONE, STATUS_FAILED, STATUS_PENDING};
 
 /// TOML ファイル全体のラッパー。[[task]] 配列を保持する。
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -85,7 +85,7 @@ pub fn add_with_weight(
         title: title.to_string(),
         project: project.to_string(),
         tags,
-        status: "pending".to_string(),
+        status: STATUS_PENDING.to_string(),
         notes: notes.to_string(),
         created_at: now,
         updated_at: now,
@@ -150,7 +150,7 @@ pub fn requeue_expired(path: &Path, now: i64) -> Result<usize> {
         if let Some(defer_until) = task.defer_until {
             if defer_until <= now {
                 task.defer_until = None;
-                task.status = "pending".to_string();
+                task.status = STATUS_PENDING.to_string();
                 task.updated_at = now;
                 count += 1;
             }
@@ -169,7 +169,7 @@ pub fn mark_done(path: &Path, id: &str) -> Result<()> {
         .iter_mut()
         .find(|t| t.id == id)
         .ok_or_else(|| anyhow!("task not found: {}", id))?;
-    task.status = "done".to_string();
+    task.status = STATUS_DONE.to_string();
     // updated_at はシステム時刻で更新（呼び出し元が now を持たないため現在時刻を使う）
     task.updated_at = now_unix();
     save(path, &tasks)
@@ -183,7 +183,7 @@ pub fn mark_failed(path: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         .iter_mut()
         .find(|t| t.id == id)
         .ok_or_else(|| anyhow!("task not found: {}", id))?;
-    task.status = "failed".to_string();
+    task.status = STATUS_FAILED.to_string();
     if let Some(r) = reason {
         if task.notes.is_empty() {
             task.notes = r.to_string();

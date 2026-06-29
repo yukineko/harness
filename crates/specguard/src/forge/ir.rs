@@ -138,13 +138,8 @@ impl Spec {
     /// Content fingerprint over the requirements (FNV-1a). Re-ratification is
     /// forced when this changes vs the pinned value. Mirrors `ratify::hash`.
     pub fn fingerprint(&self) -> String {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut feed = |s: &str| {
-            for &b in s.as_bytes() {
-                h ^= b as u64;
-                h = h.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        };
+        let mut h = harness_core::hash::Fnv1a64::new();
+        let mut feed = |s: &str| h.update(s.as_bytes());
         for r in &self.requirements {
             feed(&r.id);
             feed(&r.statement);
@@ -156,7 +151,7 @@ impl Spec {
             }
             feed(if r.falsifiable { "T" } else { "F" });
         }
-        format!("{h:016x}")
+        format!("{:016x}", h.finish())
     }
 
     /// Machine contract check (the rigor floor the harness can verify without an

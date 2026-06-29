@@ -183,6 +183,21 @@ fn run_model(cmdline: &str, prompt: &str, timeout_secs: u64) -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
+    // Strip secret-bearing vars so the headless child can't inherit an API key
+    // from the parent session. The distill child authenticates via the user's
+    // Claude subscription, not an API key, so these are never needed — removing
+    // them (rather than a full env_clear, which would also drop PATH/HOME the
+    // child relies on) avoids leaking a key into the spawned process.
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ] {
+        cmd.env_remove(key);
+    }
+
     let mut child = cmd.spawn().ok()?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(prompt.as_bytes());

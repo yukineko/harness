@@ -5,8 +5,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use anyhow::Result;
+use serde_json::json;
+#[cfg(test)]
+use serde_json::Value;
 
 const MATCHER: &str = "Bash|Edit|MultiEdit|Write|Read|Grep|Glob|WebFetch|WebSearch|NotebookEdit";
 const TIMEOUT_SECS: u64 = 10;
@@ -38,19 +40,9 @@ fn is_ours(group: &Value) -> bool {
 }
 
 /// Strip all session-insights groups from an event array; returns the cleaned array.
+#[cfg(test)]
 fn strip_ours(arr: &[Value]) -> Vec<Value> {
     harness_core::install::strip_matching(arr, MARKERS)
-}
-
-fn upsert(hooks: &mut serde_json::Map<String, Value>, event: &str, group: Value) {
-    let existing = hooks
-        .get(event)
-        .and_then(Value::as_array)
-        .map(|a| strip_ours(a))
-        .unwrap_or_default();
-    let mut arr = existing;
-    arr.push(group);
-    hooks.insert(event.to_string(), Value::Array(arr));
 }
 
 pub fn install(dry_run: bool) -> Result<()> {
@@ -59,35 +51,27 @@ pub fn install(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("hooks is not an object")?;
-
-    upsert(
-        hooks,
+    harness_core::install::push_group(
+        &mut settings,
+        MARKERS,
         "PostToolUse",
         json!({
             "matcher": MATCHER,
             "hooks": [ { "type": "command", "command": format!("{bin} record"), "timeout": TIMEOUT_SECS } ]
         }),
-    );
-    upsert(
-        hooks,
+    )?;
+    harness_core::install::push_group(
+        &mut settings,
+        MARKERS,
         "Stop",
-        json!({
-            "hooks": [ { "type": "command", "command": format!("{bin} stop"), "timeout": TIMEOUT_SECS } ]
-        }),
-    );
-    upsert(
-        hooks,
+        harness_core::install::command_group(&format!("{bin} stop"), TIMEOUT_SECS),
+    )?;
+    harness_core::install::push_group(
+        &mut settings,
+        MARKERS,
         "SessionEnd",
-        json!({
-            "hooks": [ { "type": "command", "command": format!("{bin} sessionend"), "timeout": TIMEOUT_SECS } ]
-        }),
-    );
+        harness_core::install::command_group(&format!("{bin} sessionend"), TIMEOUT_SECS),
+    )?;
 
     if dry_run {
         println!("--- dry run (settings.json would become) ---");
@@ -106,22 +90,11 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let mut removed = 0;
-    if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
-        for event in ["PostToolUse", "Stop", "SessionEnd"] {
-            if let Some(arr) = hooks.get(event).and_then(Value::as_array) {
-                let before = arr.len();
-                let cleaned = strip_ours(arr);
-                removed += before - cleaned.len();
-                if cleaned.is_empty() {
-                    hooks.remove(event);
-                } else {
-                    hooks.insert(event.to_string(), Value::Array(cleaned));
-                }
-            }
-        }
-    }
+    let removed = harness_core::install::remove_hooks_from_settings(
+        &mut settings,
+        MARKERS,
+        &["PostToolUse", "Stop", "SessionEnd"],
+    );
 
     if dry_run {
         println!("--- dry run (would remove {removed} session-insights group(s)) ---");

@@ -109,12 +109,19 @@ impl HookInput {
     }
 }
 
-/// Read all of stdin into a String. Errors are swallowed (returns what was read,
-/// possibly empty) so a hook never aborts on a read hiccup.
+/// Upper bound on how much stdin a hook will read (10 MiB). Hook payloads are
+/// small JSON; anything larger is treated as hostile or garbage. Bounding the
+/// read stops an oversized or endless stdin from exhausting memory (DoS guard).
+pub const MAX_STDIN_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Read stdin into a String, capped at [`MAX_STDIN_BYTES`]. Errors are swallowed
+/// (returns what was read, possibly empty) so a hook never aborts on a read
+/// hiccup; input past the cap is truncated rather than read unbounded. Reads as
+/// bytes and lossily decodes so a multi-byte char split at the cap can't error.
 pub fn read_stdin() -> String {
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
-    buf
+    let mut buf = Vec::new();
+    let _ = std::io::stdin().take(MAX_STDIN_BYTES).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// Run `f`, swallowing any panic. Returns `true` if `f` completed without

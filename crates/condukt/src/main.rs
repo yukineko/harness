@@ -333,7 +333,12 @@ fn run_user(cmd: Command) -> Result<()> {
             }
         }
         Command::Status { all } => status::render(&cfg, &cwd, all),
-        Command::Restore | Command::Statusline => unreachable!("handled in main"),
+        // These are dispatched as hooks in main() (via run_hook, which exits and
+        // never returns here). Reaching this arm would be an internal dispatch
+        // bug; return a clean error instead of panicking the process.
+        Command::Restore | Command::Statusline => {
+            bail!("internal: Restore/Statusline must be dispatched in main(), not run_user()")
+        }
     }
     Ok(())
 }
@@ -645,7 +650,11 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 eprintln!("nothing to abandon");
             } else {
                 for id in &ids {
-                    let t = rs.tasks.iter_mut().find(|t| t.id == *id).unwrap();
+                    let t = rs
+                        .tasks
+                        .iter_mut()
+                        .find(|t| t.id == *id)
+                        .ok_or_else(|| anyhow!("task '{id}' not found in run '{run}'"))?;
                     t.status = state::Status::Pending;
                     t.worktree = None;
                     t.branch = None;

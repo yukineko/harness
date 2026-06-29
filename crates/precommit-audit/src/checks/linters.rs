@@ -138,15 +138,12 @@ pub fn run(ctx: &Ctx, out: &mut Vec<Issue>) {
                     }
                 }
             }
-            Some(".sh") => {
-                if cfg.bash_n && has_bash {
-                    let mut c = Command::new("bash");
-                    c.arg("-n").arg(&abs).current_dir(ctx.root);
-                    let (ok, o) = run_bounded(c, timeout);
-                    if !ok {
-                        syntax_fails
-                            .push(format!("  {file} (bash -n):\n    {}", first_lines(&o, 3)));
-                    }
+            Some(".sh") if cfg.bash_n && has_bash => {
+                let mut c = Command::new("bash");
+                c.arg("-n").arg(&abs).current_dir(ctx.root);
+                let (ok, o) = run_bounded(c, timeout);
+                if !ok {
+                    syntax_fails.push(format!("  {file} (bash -n):\n    {}", first_lines(&o, 3)));
                 }
             }
             Some(".ts") | Some(".tsx") | Some(".js") | Some(".jsx") if cfg.eslint => {

@@ -3,7 +3,7 @@ name = "harness-core"
 version = "0.1.0"
 edition = "2021"
 # MSRV: `is_none_or` (store.rs) was stabilized in Rust 1.82.
-rust-version = "1.82"
+rust-version.workspace = true
 description = "Shared build-time infrastructure for the yukineko Claude Code harness plugins: hook I/O, transcript streaming, the note store (parallel-session-safe), config primitives, the metrics sink, and settings.json wiring."
 license = "MIT"
 

@@ -5,10 +5,13 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(test)]
 use serde_json::{json, Value};
 
-use harness_core::install::{load_settings, strip_matching, write_settings};
+use harness_core::install::{
+    command_group, load_settings, push_group, remove_hooks_from_settings, write_settings,
+};
 
 const EVENTS: [(&str, &str); 2] = [("Stop", "notify"), ("Notification", "notify")];
 const TIMEOUT_SECS: u64 = 10;
@@ -30,8 +33,9 @@ fn binary_path() -> String {
         .unwrap_or_else(|| "beacon".to_string())
 }
 
+#[cfg(test)]
 fn strip_ours(arr: &[Value]) -> Vec<Value> {
-    strip_matching(arr, &MARKERS)
+    harness_core::install::strip_matching(arr, &MARKERS)
 }
 
 pub fn install(dry_run: bool) -> Result<()> {
@@ -40,24 +44,13 @@ pub fn install(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("hooks is not an object")?;
-
     for (event, sub) in EVENTS {
-        let existing = hooks
-            .get(event)
-            .and_then(Value::as_array)
-            .map(|a| strip_ours(a))
-            .unwrap_or_default();
-        let mut arr = existing;
-        arr.push(json!({
-            "hooks": [ { "type": "command", "command": format!("{bin} {sub}"), "timeout": TIMEOUT_SECS } ]
-        }));
-        hooks.insert(event.to_string(), Value::Array(arr));
+        push_group(
+            &mut settings,
+            &MARKERS,
+            event,
+            command_group(&format!("{bin} {sub}"), TIMEOUT_SECS),
+        )?;
     }
 
     if dry_run {
@@ -75,22 +68,8 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let mut removed = 0;
-    if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
-        for (event, _) in EVENTS {
-            if let Some(arr) = hooks.get(event).and_then(Value::as_array) {
-                let before = arr.len();
-                let cleaned = strip_ours(arr);
-                removed += before - cleaned.len();
-                if cleaned.is_empty() {
-                    hooks.remove(event);
-                } else {
-                    hooks.insert(event.to_string(), Value::Array(cleaned));
-                }
-            }
-        }
-    }
+    let events: Vec<&str> = EVENTS.iter().map(|(e, _)| *e).collect();
+    let removed = remove_hooks_from_settings(&mut settings, &MARKERS, &events);
 
     if dry_run {
         println!("--- dry run (would remove {removed} beacon group(s)) ---");

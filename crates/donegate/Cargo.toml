@@ -1,4 +1,5 @@
 [package]
+rust-version.workspace = true
 name = "donegate"
 version = "0.1.3"
 edition = "2021"

@@ -72,16 +72,16 @@ fn session_models(ctx: &RecordCtx) -> Option<BTreeMap<String, ModelUsage>> {
 /// [`SessionRecord`] when it has agent data; fall back to a fresh transcript
 /// aggregate. This fallback makes session-insights robust against hook-ordering
 /// races where gauge may not have written its record yet when we run.
-fn session_agents(
-    ctx: &RecordCtx,
-) -> Option<BTreeMap<String, harness_core::usage::AgentUsage>> {
+fn session_agents(ctx: &RecordCtx) -> Option<BTreeMap<String, harness_core::usage::AgentUsage>> {
     let rec = session::load_one(&session::default_state_dir(), ctx.session_id);
     if let Some(rec) = rec {
         if !rec.agents.is_empty() {
             return Some(rec.agents);
         }
     }
-    usage::aggregate(ctx.transcript_path).map(|agg| agg.agents).filter(|a| !a.is_empty())
+    usage::aggregate(ctx.transcript_path)
+        .map(|agg| agg.agents)
+        .filter(|a| !a.is_empty())
 }
 
 /// Build the auto `## コスト` block body (between markers, exclusive).
@@ -118,7 +118,10 @@ fn cost_body(ctx: &RecordCtx) -> String {
             sorted.sort_by_key(|(k, _)| k.as_str());
             for (name, au) in &sorted {
                 let cost = pricing::session_cost(au.models.iter(), ctx.overrides);
-                lines.push_str(&format!("  - {name}: ${cost:.4} USD ({} turns)\n", au.turns));
+                lines.push_str(&format!(
+                    "  - {name}: ${cost:.4} USD ({} turns)\n",
+                    au.turns
+                ));
             }
             format!("- by agent:\n{lines}")
         }
@@ -452,8 +455,14 @@ mod tests {
         };
         let body = cost_body(&ctx);
         // opus 1M in + 1M out = $5 + $25 = $30.00, computed from transcript fallback.
-        assert!(body.contains("- total: $30.00 USD"), "fallback cost: {body}");
-        assert!(!body.contains("(コストデータなし)"), "should not fall through to no-data: {body}");
+        assert!(
+            body.contains("- total: $30.00 USD"),
+            "fallback cost: {body}"
+        );
+        assert!(
+            !body.contains("(コストデータなし)"),
+            "should not fall through to no-data: {body}"
+        );
         let _ = std::fs::remove_file(&tp);
     }
 
@@ -486,7 +495,10 @@ mod tests {
         assert!(cb.contains("- total: $15.00 USD"), "{cb}");
         // Agent block present when transcript aggregate has agents.
         // (single-turn transcript with no explicit sub-agent markers → main bucket only)
-        assert!(cb.contains("- by agent:") || !cb.contains("sub-agent"), "{cb}");
+        assert!(
+            cb.contains("- by agent:") || !cb.contains("sub-agent"),
+            "{cb}"
+        );
         let _ = std::fs::remove_file(&p);
     }
 }

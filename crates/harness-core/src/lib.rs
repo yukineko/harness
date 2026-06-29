@@ -13,6 +13,7 @@
 pub mod config;
 pub mod daily;
 pub mod gate;
+pub mod hash;
 pub mod hook;
 pub mod inject;
 pub mod install;

@@ -59,9 +59,15 @@ enum Command {
         #[arg(long)]
         project: Option<String>,
 
-        /// Filter by status
+        /// Filter by status: pending | done | failed (NB: not "open" — that is
+        /// hypothesis's vocabulary, a different binary)
         #[arg(long)]
         status: Option<String>,
+
+        /// Emit the matching tasks as a JSON array (for machine consumers like
+        /// autoflow) instead of the human table.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show the next highest-priority pending task
@@ -146,6 +152,11 @@ enum LockAction {
         /// Project path
         #[arg(long)]
         project: String,
+
+        /// Steal the lock even from a live holder (強制奪取). Without this, a
+        /// dead holder's lock is reaped automatically but a live one errors.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Release the lock (no-op if none)
@@ -192,7 +203,19 @@ fn run(cli: Cli) -> Result<()> {
             tag,
             project,
             status,
+            json: as_json,
         } => {
+            // A typo'd status used to silently match nothing ("no tasks"),
+            // indistinguishable from a genuinely empty queue. Warn loudly so an
+            // unknown filter value (e.g. the wrong `open`) is obvious.
+            if let Some(s) = status.as_deref() {
+                if !task::STATUSES.contains(&s) {
+                    eprintln!(
+                        "warning: unknown status '{s}'; valid values are {}",
+                        task::STATUSES.join(" | ")
+                    );
+                }
+            }
             let tasks = store::list(
                 &tasks_path,
                 tag.as_deref(),
@@ -200,7 +223,12 @@ fn run(cli: Cli) -> Result<()> {
                 status.as_deref(),
             )?;
 
-            if tasks.is_empty() {
+            if as_json {
+                // Machine-readable array (consumed by autoflow). Each task keeps
+                // its real field names (notably `title` and `status`), so callers
+                // deserialize a subset and ignore the rest.
+                println!("{}", serde_json::to_string(&tasks)?);
+            } else if tasks.is_empty() {
                 println!("no tasks");
             } else {
                 let now = now_unix();
@@ -284,7 +312,14 @@ fn run(cli: Cli) -> Result<()> {
         Command::SessionStart => {
             run_hook(|| {
                 let raw = read_stdin();
-                let input = HookInput::parse(&raw).unwrap_or_default();
+                // Don't silently coerce malformed stdin to an empty default —
+                // that would run session-start against a blank input and could
+                // mis-key the project. Surface it on stderr and skip (the hook
+                // still exits 0, never breaking the turn).
+                let Some(input) = HookInput::parse(&raw) else {
+                    eprintln!("backlog session-start: malformed hook input on stdin; skipping");
+                    return;
+                };
                 if let Some(ctx) = hooks::session_start::run(&input) {
                     println!("{}", json!({ "additionalContext": ctx }));
                 }
@@ -303,10 +338,16 @@ fn run(cli: Cli) -> Result<()> {
             LockAction::Acquire {
                 session_id,
                 project,
+                force,
             } => {
                 let pid = std::process::id();
-                lock::acquire(&session_id, pid, &project)?;
-                println!("lock acquired");
+                if force {
+                    lock::acquire_forced(&session_id, pid, &project)?;
+                    println!("lock acquired (forced)");
+                } else {
+                    lock::acquire(&session_id, pid, &project)?;
+                    println!("lock acquired");
+                }
             }
             LockAction::Release => {
                 lock::release()?;
@@ -319,11 +360,14 @@ fn run(cli: Cli) -> Result<()> {
                         println!("{}", serde_json::to_string_pretty(&info)?);
                     }
                     lock::LockStatus::Stale(info) => {
-                        // Print the info with an extra stale field
+                        // Print the info with an extra stale field. `info`
+                        // serializes to a JSON object, but stay fail-soft: if it
+                        // ever isn't one, print it as-is rather than panicking
+                        // (a `Stop`/CLI path must never abort on an unwrap).
                         let mut v = serde_json::to_value(&info)?;
-                        v.as_object_mut()
-                            .unwrap()
-                            .insert("stale".to_string(), serde_json::Value::Bool(true));
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("stale".to_string(), serde_json::Value::Bool(true));
+                        }
                         println!("{}", serde_json::to_string_pretty(&v)?);
                     }
                 }

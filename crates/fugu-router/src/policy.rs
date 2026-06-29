@@ -208,7 +208,10 @@ pub fn decide(
                         f64::INFINITY
                     };
                     // Replace if this tier has a lower cost/pass (or first qualifying).
-                    if chosen.as_ref().map_or(true, |(_, _, prev_cpp)| cpp < *prev_cpp) {
+                    if chosen
+                        .as_ref()
+                        .is_none_or(|(_, _, prev_cpp)| cpp < *prev_cpp)
+                    {
                         chosen = Some((tier.to_string(), rate, cpp));
                     }
                 }
@@ -344,7 +347,10 @@ pub fn decide_bandit(
             } else {
                 sample
             };
-            if chosen.as_ref().map_or(true, |(_, _, _, best_eff)| efficiency > *best_eff) {
+            if chosen
+                .as_ref()
+                .is_none_or(|(_, _, _, best_eff)| efficiency > *best_eff)
+            {
                 chosen = Some((tier.to_string(), mean, count, efficiency));
             }
         } else {
@@ -684,7 +690,10 @@ mod tests {
             nb_cost("sonnet", true, 1.00),
         ];
         let d = decide("test task", &[], "parallel", &neighbors, 0.7, 3);
-        assert_eq!(d.worker_model, "haiku", "haiku costs less per pass — should be chosen: {d:?}");
+        assert_eq!(
+            d.worker_model, "haiku",
+            "haiku costs less per pass — should be chosen: {d:?}"
+        );
         assert!(d.rationale.contains("cost/pass="), "{}", d.rationale);
     }
 

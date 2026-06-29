@@ -365,13 +365,17 @@ fn main() {
             let store = Store::new(cfg.store_dir.clone());
             match action {
                 NoteAction::List { cwd } => {
-                    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+                    let cwd = cwd.unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
                     for p in store.list_notes(&cwd) {
                         println!("{}", p.display());
                     }
                 }
                 NoteAction::Latest { cwd } => {
-                    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+                    let cwd = cwd.unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
                     match store.latest_note(&cwd) {
                         Some(p) => println!("{}", p.display()),
                         None => {
@@ -381,7 +385,9 @@ fn main() {
                     }
                 }
                 NoteAction::Dir { cwd } => {
-                    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+                    let cwd = cwd.unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
                     let dir = store.project_dir(&cwd);
                     if let Err(e) = std::fs::create_dir_all(&dir) {
                         eprintln!("could not create {}: {e}", dir.display());
@@ -395,7 +401,9 @@ fn main() {
                     session,
                     require_sections,
                 } => {
-                    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+                    let cwd = cwd.unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
                     let body = read_stdin();
                     if require_sections {
                         let missing = hooks::restore::missing_sections(&body);
@@ -445,7 +453,9 @@ fn main() {
                     }
                 }
                 NoteAction::Prune { cwd, dry_run } => {
-                    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+                    let cwd = cwd.unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
                     let res = store.prune(
                         &cwd,
                         cfg.keep_notes_per_project,
@@ -668,8 +678,11 @@ fn main() {
         }
         Command::Ctx { action } => {
             let cfg = Config::load();
-            let resolve =
-                |c: Option<PathBuf>| c.unwrap_or_else(|| std::env::current_dir().unwrap());
+            let resolve = |c: Option<PathBuf>| {
+                c.unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                })
+            };
             match action {
                 CtxAction::Pin { item, cwd } => {
                     ctx_mutate(&cfg, resolve(cwd), "pinned", &item, |ls| ls.pin(&item))

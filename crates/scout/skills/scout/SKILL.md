@@ -91,7 +91,7 @@ git log --oneline -15                       # 直近の流れ
 git status --short                           # 未コミット
 cargo test --workspace 2>&1 | tail -15       # テスト健全性（Rust repo の場合）
 compass gap 2>/dev/null | head -40           # 北極星ゴールとの gap・DoD・measuring stick
-backlog list --status open --project "$PWD"  # 既存の施策（重複回避の素）
+backlog list --status pending --project "$PWD"  # 既存の施策（重複回避の素。backlog の status は pending|done|failed）
 specguard prompt --json 2>/dev/null | head   # spec-drift の有無（あれば）
 cargo deny check advisories 2>&1 | tail -20  # 依存の既知脆弱性（cargo-deny があれば）
 ls .deepwiki/*.md 2>/dev/null                # アーキテクチャ wiki（背景）

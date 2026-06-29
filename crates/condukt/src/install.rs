@@ -8,7 +8,7 @@
 //! `harness_core::install`.
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::PathBuf;
 
 /// (event, matcher, subcommand) — single SessionStart restore hook.
@@ -22,18 +22,6 @@ fn settings_path() -> PathBuf {
     harness_core::config::home()
         .join(".claude")
         .join("settings.json")
-}
-
-/// Remove every condukt-owned hook group from each event array.
-fn strip(settings: &mut Value) {
-    let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
-        return;
-    };
-    for (_event, groups) in hooks.iter_mut() {
-        if let Some(arr) = groups.as_array() {
-            *groups = Value::Array(harness_core::install::strip_matching(arr, MARKERS));
-        }
-    }
 }
 
 /// Print what install would do without writing.
@@ -50,32 +38,16 @@ pub fn install() -> Result<()> {
     let path = settings_path();
     let mut settings = harness_core::install::load_settings(&path)?;
 
-    strip(&mut settings);
-
     if !settings.is_object() {
         settings = json!({});
     }
-    let hooks = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("hooks")
-        .or_insert_with(|| json!({}));
 
     for (event, matcher, sub) in EVENTS {
-        let mut group = json!({
-            "hooks": [{ "type": "command", "command": format!("condukt {sub}"), "timeout": 10 }]
-        });
+        let mut group = harness_core::install::command_group(&format!("condukt {sub}"), 10);
         if let Some(m) = matcher {
             group["matcher"] = json!(m);
         }
-        let arr = hooks
-            .as_object_mut()
-            .unwrap()
-            .entry(*event)
-            .or_insert_with(|| json!([]));
-        if let Some(a) = arr.as_array_mut() {
-            a.push(group);
-        }
+        harness_core::install::push_group(&mut settings, MARKERS, event, group)?;
     }
 
     harness_core::install::write_settings(&path, &settings)
@@ -91,7 +63,8 @@ pub fn uninstall() -> Result<()> {
         return Ok(());
     }
     let mut settings = harness_core::install::load_settings(&path)?;
-    strip(&mut settings);
+    let events: Vec<&str> = EVENTS.iter().map(|(e, _, _)| *e).collect();
+    harness_core::install::remove_hooks_from_settings(&mut settings, MARKERS, &events);
     harness_core::install::write_settings(&path, &settings)
         .with_context(|| format!("writing {}", path.display()))?;
     eprintln!("removed condukt hooks from {}", path.display());

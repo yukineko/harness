@@ -54,7 +54,12 @@ pub fn find_pending(cwd: &Path) -> Vec<TaskState> {
         }
     }
     if modified {
-        save_run(&path, &run);
+        if let Err(e) = save_run(&path, &run) {
+            eprintln!(
+                "autoflow: failed to persist condukt run state to {}: {e}",
+                path.display()
+            );
+        }
     }
 
     run.tasks
@@ -82,7 +87,12 @@ pub fn mark_running(cwd: &Path, task_ids: &[&str]) {
         }
     }
     if modified {
-        save_run(&path, &run);
+        if let Err(e) = save_run(&path, &run) {
+            eprintln!(
+                "autoflow: failed to persist condukt run state to {}: {e}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -97,10 +107,18 @@ fn load_latest(cwd: &Path) -> Option<(PathBuf, RunState)> {
     Some((path, run))
 }
 
-fn save_run(path: &Path, run: &RunState) {
-    if let Ok(text) = serde_json::to_string_pretty(run) {
-        let _ = std::fs::write(path, text);
-    }
+/// Persist run-state. Returns the IO/serialize error instead of swallowing it,
+/// so a failed save can no longer leave callers acting on a stale on-disk state
+/// (which would re-mark or lose tasks). Writes atomically (tmp→rename) to match
+/// condukt's own `RunState::save` and avoid a torn file under a concurrent read.
+fn save_run(path: &Path, run: &RunState) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(run)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
 }
 
 fn now_secs() -> i64 {

@@ -86,7 +86,12 @@ fn project_dir(cfg: &Config, cwd: &Path) -> PathBuf {
 }
 
 fn run_path(cfg: &Config, cwd: &Path, run_id: &str) -> PathBuf {
-    project_dir(cfg, cwd).join(format!("{run_id}.json"))
+    // `run_id` can come from the CLI (e.g. `condukt status <run_id>`); sanitise
+    // it so a crafted id like `../../etc/x` cannot escape the project dir.
+    project_dir(cfg, cwd).join(format!(
+        "{}.json",
+        harness_core::store::safe_session(run_id)
+    ))
 }
 
 impl RunState {
@@ -185,7 +190,9 @@ pub fn decomposition_path(cfg: &Config, cwd: &Path, run_id: &str) -> PathBuf {
 /// Persist the raw decomposition JSON alongside the run state.
 pub fn save_decomposition(cfg: &Config, cwd: &Path, run_id: &str, json: &str) -> Result<()> {
     let path = decomposition_path(cfg, cwd, run_id);
-    let dir = path.parent().expect("decomposition path has no parent");
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("decomposition path {} has no parent", path.display()))?;
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating state dir {}", dir.display()))?;
     let tmp_path = dir.join(format!("{run_id}.decomposition.json.tmp"));

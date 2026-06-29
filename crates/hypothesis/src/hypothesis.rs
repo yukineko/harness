@@ -3,13 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// FNV-1a 64-bit hash, returning an 8-digit lowercase hex string.
+/// FNV-1a 64-bit hash (the shared `harness_core::hash` implementation),
+/// returning the low 32 bits as an 8-digit lowercase hex string.
 pub fn new_id(text: &str) -> String {
-    let mut fnv: u64 = 14695981039346656037;
-    for byte in text.as_bytes() {
-        fnv ^= *byte as u64;
-        fnv = fnv.wrapping_mul(1099511628211);
-    }
+    let fnv = harness_core::hash::fnv1a64(text.as_bytes());
     // Take lower 32 bits → 8 hex digits
     format!("{:08x}", fnv as u32)
 }
@@ -69,7 +66,7 @@ fn now_iso8601() -> String {
 }
 
 fn is_leap_year(year: u32) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -15,20 +15,20 @@
 
 use std::path::{Path, PathBuf};
 
-/// FNV-1a 32-bit hash. Small, dependency-free, stable across runs.
-pub fn fnv1a32(s: &str) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in s.bytes() {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h
-}
+/// FNV-1a 32-bit hash. Re-exported from `crate::hash` — the single FNV-1a
+/// implementation — and kept here as the historic public path used to derive
+/// project keys.
+pub use crate::hash::fnv1a32;
 
 /// Stable per-project key derived from the canonical repo root.
 pub fn project_key(root: &Path) -> String {
     let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let full = canon.to_string_lossy();
+    // `"root"` is only the human-readable *prefix* for a path with no basename
+    // (e.g. "/"). It is NOT a collision vector: the key's uniqueness comes
+    // entirely from the `fnv1a32(&full)` suffix below (the full canonical path),
+    // so two distinct rootless paths still get distinct keys. See the
+    // `rootless_paths_do_not_collide` test.
     let base = canon
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -80,6 +80,19 @@ mod tests {
         let a = project_key(&PathBuf::from("/tmp/proj"));
         let b = project_key(&PathBuf::from("/var/proj"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn rootless_paths_do_not_collide() {
+        // Paths whose last component is `..` have no basename (file_name() ==
+        // None) and so both take the "root" readable prefix. Using non-existent
+        // paths makes canonicalize fall back to the raw path, so the full-path
+        // hash differs — proving the fallback prefix is never a collision vector.
+        let a = project_key(Path::new("/no-such-aaa/.."));
+        let b = project_key(Path::new("/no-such-bbb/.."));
+        assert!(a.starts_with("root-"), "got {a}");
+        assert!(b.starts_with("root-"), "got {b}");
+        assert_ne!(a, b, "distinct rootless paths must get distinct keys");
     }
 
     #[test]

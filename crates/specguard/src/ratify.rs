@@ -10,21 +10,11 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// Non-cryptographic content fingerprint (FNV-1a, 64-bit). We only need to
-/// detect that a template changed since ratification — not resist adversarial
-/// collisions — so a fast, dependency-free hash suffices.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
-
-/// Hex fingerprint of a template's bytes.
+/// Hex fingerprint of a template's bytes. Non-cryptographic (FNV-1a, 64-bit via
+/// the shared `harness_core::hash`): we only need to detect that a template
+/// changed since ratification, not resist adversarial collisions.
 pub fn hash(s: &str) -> String {
-    format!("{:016x}", fnv1a(s.as_bytes()))
+    format!("{:016x}", harness_core::hash::fnv1a64(s.as_bytes()))
 }
 
 /// The ratification lock lives at the repo root and SHOULD be committed: it is

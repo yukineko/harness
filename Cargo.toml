@@ -1,12 +1,19 @@
 [workspace]
-resolver = "2"
+# resolver "3" enables Cargo's MSRV-aware dependency resolution (and itself
+# requires Rust >= 1.84, which our MSRV satisfies): with
+# `incompatible-rust-versions = "fallback"` (its default), `cargo update` prefers
+# dependency versions compatible with `workspace.package.rust-version` when a
+# newer one would raise the floor. The MSRV is 1.85 because the current
+# dependency surface (clap 4.6, indexmap 2.14, globset 0.4.18, proptest, …)
+# requires `edition2024`, stabilized in Rust 1.85. The msrv.yml CI enforces this.
+resolver = "3"
 members  = ["crates/*"]
 # Skill-only plugins (no Rust binary) live under crates/ as Claude Code plugins
 # but are NOT Cargo crates, so the `crates/*` glob must skip them.
 exclude  = ["crates/scout"]
 
 [workspace.package]
-rust-version = "1.82"     # is_none_or 使用のため（既存クレート）
+rust-version = "1.85"     # 依存 (clap 4.6 / indexmap 2.14 / globset 0.4.18 等) が edition2024 を要求するため。資格的下限は msrv.yml が保証。
 edition      = "2021"
 license      = "MIT"
 

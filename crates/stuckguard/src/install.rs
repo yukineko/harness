@@ -4,8 +4,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use anyhow::Result;
+use serde_json::json;
+#[cfg(test)]
+use serde_json::Value;
 
 const EVENT: &str = "PostToolUse";
 const SUB: &str = "watch";
@@ -38,6 +40,7 @@ fn is_ours(group: &Value) -> bool {
 }
 
 /// Strip all stuckguard groups from an event array; returns the cleaned array.
+#[cfg(test)]
 fn strip_ours(arr: &[Value]) -> Vec<Value> {
     harness_core::install::strip_matching(arr, MARKERS)
 }
@@ -48,24 +51,15 @@ pub fn install(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("hooks is not an object")?;
-
-    let existing = hooks
-        .get(EVENT)
-        .and_then(Value::as_array)
-        .map(|a| strip_ours(a))
-        .unwrap_or_default();
-    let mut arr = existing;
-    arr.push(json!({
-        "matcher": MATCHER,
-        "hooks": [ { "type": "command", "command": format!("{bin} {SUB}"), "timeout": TIMEOUT_SECS } ]
-    }));
-    hooks.insert(EVENT.to_string(), Value::Array(arr));
+    harness_core::install::push_group(
+        &mut settings,
+        MARKERS,
+        EVENT,
+        json!({
+            "matcher": MATCHER,
+            "hooks": [ { "type": "command", "command": format!("{bin} {SUB}"), "timeout": TIMEOUT_SECS } ]
+        }),
+    )?;
 
     if dry_run {
         println!("--- dry run (settings.json would become) ---");
@@ -82,20 +76,8 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let mut removed = 0;
-    if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
-        if let Some(arr) = hooks.get(EVENT).and_then(Value::as_array) {
-            let before = arr.len();
-            let cleaned = strip_ours(arr);
-            removed += before - cleaned.len();
-            if cleaned.is_empty() {
-                hooks.remove(EVENT);
-            } else {
-                hooks.insert(EVENT.to_string(), Value::Array(cleaned));
-            }
-        }
-    }
+    let removed =
+        harness_core::install::remove_hooks_from_settings(&mut settings, MARKERS, &[EVENT]);
 
     if dry_run {
         println!("--- dry run (would remove {removed} stuckguard group(s)) ---");

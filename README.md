@@ -62,3 +62,21 @@ claude plugin validate crates/<plugin>
 
 git-subdir 配布では `version` 省略時に「コミット SHA = バージョン」となり、モノレポでは無関係なコミットで全プラグインが新バージョン扱いになりうる。
 **各 `crates/<plugin>/.claude-plugin/plugin.json` に明示 `version` を置き、そのプラグインが変わった時だけ bump する。**
+
+## 供給網の来歴 (SLSA build provenance)
+
+各プラグインが同梱する配布バイナリ (`crates/<plugin>/bin/<name>-<os>-<arch>`) は、
+`build-binaries.yml` の `commit` ジョブが [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance)
+で **SLSA build provenance** を生成してからコミットする。来歴は各バイナリの sha256 ダイジェストを
+このリポジトリのワークフロー実行 (ビルダー) に結び付けるので、利用者は配布物の出所を検証できる:
+
+```sh
+# GitHub CLI で来歴を検証
+gh attestation verify crates/<plugin>/bin/<name>-linux-x86_64 --repo <owner>/<repo>
+
+# もしくは slsa-verifier で
+slsa-verifier verify-artifact crates/<plugin>/bin/<name>-linux-x86_64 \
+  --source-uri github.com/<owner>/<repo>
+```
+
+来歴の生成は `main` への push 時 (= 実際に landing したバイナリ) のみで、PR では走らない。

@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use anyhow::Result;
+use serde_json::Value;
 
 const EVENTS: [(&str, &str); 1] = [("Stop", "record")];
 const TIMEOUT_SECS: u64 = 10;
@@ -41,6 +41,7 @@ fn write_settings(value: &Value) -> Result<()> {
     harness_core::install::write_settings(&settings_path(), value)
 }
 
+#[cfg(test)]
 fn strip_ours(arr: &[Value]) -> Vec<Value> {
     harness_core::install::strip_matching(arr, MARKERS)
 }
@@ -51,24 +52,13 @@ pub fn install(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("hooks is not an object")?;
-
     for (event, sub) in EVENTS {
-        let existing = hooks
-            .get(event)
-            .and_then(Value::as_array)
-            .map(|a| strip_ours(a))
-            .unwrap_or_default();
-        let mut arr = existing;
-        arr.push(json!({
-            "hooks": [ { "type": "command", "command": format!("{bin} {sub}"), "timeout": TIMEOUT_SECS } ]
-        }));
-        hooks.insert(event.to_string(), Value::Array(arr));
+        harness_core::install::push_group(
+            &mut settings,
+            MARKERS,
+            event,
+            harness_core::install::command_group(&format!("{bin} {sub}"), TIMEOUT_SECS),
+        )?;
     }
 
     if dry_run {
@@ -86,22 +76,9 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let mut removed = 0;
-    if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
-        for (event, _) in EVENTS {
-            if let Some(arr) = hooks.get(event).and_then(Value::as_array) {
-                let before = arr.len();
-                let cleaned = strip_ours(arr);
-                removed += before - cleaned.len();
-                if cleaned.is_empty() {
-                    hooks.remove(event);
-                } else {
-                    hooks.insert(event.to_string(), Value::Array(cleaned));
-                }
-            }
-        }
-    }
+    let events: Vec<&str> = EVENTS.iter().map(|(e, _)| *e).collect();
+    let removed =
+        harness_core::install::remove_hooks_from_settings(&mut settings, MARKERS, &events);
 
     if dry_run {
         println!("--- dry run (would remove {removed} gauge group(s)) ---");
@@ -116,6 +93,7 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn detects_ours() {

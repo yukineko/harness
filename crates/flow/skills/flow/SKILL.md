@@ -74,7 +74,8 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
 ```
 
 - 別セッションがアクティブにロック保持中 → `AskUserQuestion`（待機 / 強制奪取 `--force` / 中止）。
-- stale なら Step で `--force` 取得。
+  `--force` は **生きている保有者からも奪取**する（`backlog lock acquire --force ...`）。
+- stale（保有 pid が死亡）なら `acquire` が**自動で reap** するため `--force` は不要。
 - 取得失敗時は理由を報告して終了。
 
 ### Step 3 — 実行ループ（繰り返し）

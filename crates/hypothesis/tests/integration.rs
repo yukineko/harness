@@ -1,0 +1,118 @@
+//! End-to-end tests: run the real built `hypothesis` binary. Most commands are
+//! subcommand-CLI; `session-start` is a SessionStart hook that must always exit
+//! 0 (the harness invariant: never break a turn). Everything runs against an
+//! isolated temp HOME so the real `~/.hypothesis` store is never touched.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+/// A unique throwaway directory used as HOME for one test.
+fn temp_home(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "hypothesis-{tag}-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Run the binary with `args` in an isolated HOME. Returns (exit_code, stdout, home).
+fn run(args: &[&str], tag: &str) -> (i32, String, PathBuf) {
+    let bin = env!("CARGO_BIN_EXE_hypothesis");
+    let home = temp_home(tag);
+    let out = Command::new(bin)
+        .args(args)
+        .env("HOME", &home)
+        .output()
+        .expect("binary runs");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        home,
+    )
+}
+
+/// Feed `payload` on stdin to `args` in an isolated HOME. Returns (exit_code, stdout).
+fn run_with_stdin(args: &[&str], payload: &str, tag: &str) -> (i32, String) {
+    let bin = env!("CARGO_BIN_EXE_hypothesis");
+    let home = temp_home(tag);
+    let mut child = Command::new(bin)
+        .args(args)
+        .env("HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("binary spawns");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("binary runs");
+    std::fs::remove_dir_all(&home).ok();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn help_describes_lifecycle() {
+    let (code, stdout, home) = run(&["--help"], "help");
+    std::fs::remove_dir_all(&home).ok();
+    assert_eq!(code, 0, "--help must exit 0");
+    assert!(
+        stdout.contains("PDO hypothesis lifecycle management"),
+        "expected the about string, got: {stdout}"
+    );
+}
+
+#[test]
+fn add_then_list_round_trips() {
+    // `add` prints the new id; reusing the SAME home, `list` echoes it back.
+    let bin = env!("CARGO_BIN_EXE_hypothesis");
+    let home = temp_home("roundtrip");
+
+    let add = Command::new(bin)
+        .args(["add", "memory pressure crashes Colab"])
+        .env("HOME", &home)
+        .output()
+        .expect("add runs");
+    assert_eq!(add.status.code().unwrap_or(-1), 0, "add must exit 0");
+    let id = String::from_utf8_lossy(&add.stdout).trim().to_string();
+    assert!(!id.is_empty(), "add must print a non-empty id");
+
+    let list = Command::new(bin)
+        .args(["list"])
+        .env("HOME", &home)
+        .output()
+        .expect("list runs");
+    let list_out = String::from_utf8_lossy(&list.stdout).into_owned();
+    std::fs::remove_dir_all(&home).ok();
+    assert_eq!(list.status.code().unwrap_or(-1), 0, "list must exit 0");
+    assert!(
+        list_out.contains(&id) && list_out.contains("memory pressure crashes Colab"),
+        "list must echo the added hypothesis, got: {list_out}"
+    );
+}
+
+#[test]
+fn session_start_hook_survives_empty_stdin() {
+    // SessionStart runs under run_hook: malformed/empty stdin must never break a
+    // turn, so the exit code is always 0.
+    let (code, _stdout) = run_with_stdin(&["session-start"], "", "hook-empty");
+    assert_eq!(code, 0, "session-start hook must exit 0 on empty stdin");
+}
+
+#[test]
+fn session_start_hook_survives_garbage_stdin() {
+    let (code, _stdout) = run_with_stdin(&["session-start"], "not json", "hook-garbage");
+    assert_eq!(code, 0, "session-start hook must exit 0 on garbage stdin");
+}

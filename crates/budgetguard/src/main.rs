@@ -87,6 +87,13 @@ fn gate_command() {
     if input.transcript_path.is_empty() || input.session_id.is_empty() {
         return;
     }
+    // Recursion guard: when this Stop fires because a previous Stop hook already
+    // blocked (`stop_hook_active`), do not block again. An over-budget session
+    // would otherwise re-block on every re-entry and trap the turn — the user
+    // could never end it. They have already been warned once; allow them to stop.
+    if input.stop_hook_active {
+        return;
+    }
 
     let cwd = input.cwd_or_current();
     let cfg = Config::load(&cwd);

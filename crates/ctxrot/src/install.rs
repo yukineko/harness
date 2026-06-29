@@ -50,6 +50,7 @@ fn is_ours(group: &Value) -> bool {
 }
 
 /// Strip all ctxrot/legacy groups from an event array; returns the cleaned array.
+#[cfg(test)]
 fn strip_ours(arr: &[Value]) -> Vec<Value> {
     harness_core::install::strip_matching(arr, MARKERS)
 }
@@ -61,31 +62,18 @@ pub fn install(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("hooks is not an object")?;
 
     for (event, sub, matcher) in EVENTS {
-        let existing = hooks
-            .get(*event)
-            .and_then(Value::as_array)
-            .map(|a| strip_ours(a))
-            .unwrap_or_default();
-
-        let mut arr = existing;
-        let mut group = json!({
-            "hooks": [ { "type": "command", "command": format!("{bin} {sub}"), "timeout": 10 } ]
-        });
+        let mut group = harness_core::install::command_group(&format!("{bin} {sub}"), 10);
         if let Some(m) = matcher {
             group["matcher"] = json!(m);
         }
-        arr.push(group);
-        hooks.insert((*event).to_string(), Value::Array(arr));
+        harness_core::install::push_group(&mut settings, MARKERS, event, group)?;
     }
 
+    let root = settings
+        .as_object_mut()
+        .context("settings.json is not a JSON object")?;
     // statusLine: a live context-usage meter. Set it only when there is no
     // status line yet or the existing one is ours — never clobber a custom bar.
     if is_our_statusline(root.get("statusLine")) {
@@ -126,22 +114,12 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     if !settings.is_object() {
         anyhow::bail!("settings.json is not a JSON object");
     }
-    let root = settings.as_object_mut().unwrap();
-    let mut removed = 0;
-    if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
-        for (event, _, _) in EVENTS {
-            if let Some(arr) = hooks.get(*event).and_then(Value::as_array) {
-                let before = arr.len();
-                let cleaned = strip_ours(arr);
-                removed += before - cleaned.len();
-                if cleaned.is_empty() {
-                    hooks.remove(*event);
-                } else {
-                    hooks.insert((*event).to_string(), Value::Array(cleaned));
-                }
-            }
-        }
-    }
+    let events: Vec<&str> = EVENTS.iter().map(|(e, _, _)| *e).collect();
+    let mut removed =
+        harness_core::install::remove_hooks_from_settings(&mut settings, MARKERS, &events);
+    let root = settings
+        .as_object_mut()
+        .context("settings.json is not a JSON object")?;
     // Drop our statusLine too (but leave a user's custom one untouched).
     if root.get("statusLine").is_some() && is_our_statusline(root.get("statusLine")) {
         root.remove("statusLine");

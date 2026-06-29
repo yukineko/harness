@@ -28,7 +28,12 @@ pub struct SessionState {
 }
 
 fn state_path(state_dir: &Path, session_id: &str) -> PathBuf {
-    state_dir.join(format!("{session_id}.json"))
+    // `session_id` originates from hook input; sanitise it so it stays a single
+    // component under `state_dir` and cannot traverse out via `../`.
+    state_dir.join(format!(
+        "{}.json",
+        harness_core::store::safe_session(session_id)
+    ))
 }
 
 pub fn load(state_dir: &Path, session_id: &str) -> SessionState {

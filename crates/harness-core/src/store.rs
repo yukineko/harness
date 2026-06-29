@@ -27,14 +27,35 @@ pub fn project_key(cwd: &Path) -> String {
 }
 
 /// FNV-1a 32-bit, hex. Small, dependency-free, stable across runs. Shared so
-/// every plugin derives the same project keys and session tags.
+/// every plugin derives the same project keys and session tags. Thin wrapper
+/// over `crate::hash::fnv1a32_hex` — the one FNV-1a implementation.
 pub fn short_hash(s: &str) -> String {
-    let mut hash: u32 = 0x811c9dc5;
-    for b in s.bytes() {
-        hash ^= b as u32;
-        hash = hash.wrapping_mul(0x0100_0193);
+    crate::hash::fnv1a32_hex(s)
+}
+
+/// Filesystem-safe form of an externally-supplied id (session id, run id) for
+/// use as a single path component like `<state_dir>/<safe>.json`. Every char
+/// outside `[A-Za-z0-9_.-]` becomes `_`, so the result can never contain a path
+/// separator or a `..` traversal that escapes the state dir. Mirrors ctxrot's
+/// `safe_session`, hoisted here so condukt/autoflow/ctxrot share one rule.
+pub fn safe_session(id: &str) -> String {
+    let s: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // A component of only dots (".", "..") is still a traversal/no-op name even
+    // though every char is individually allowed — neutralise it.
+    if s.chars().all(|c| c == '.') {
+        "_".repeat(s.len().max(1))
+    } else {
+        s
     }
-    format!("{hash:08x}")
 }
 
 /// Short, stable tag for a session id, embedded in note filenames so a session
@@ -305,12 +326,51 @@ pub fn load_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
 /// The compact counterpart of `load_json`; routes the
 /// `create_dir_all`→`to_string`→`write` idiom through one place. Pretty-printed
 /// or `Result`-returning save sites deliberately keep their own bodies.
+///
+/// The write is **atomic**: the payload is streamed to a sibling temp file
+/// (unique per process + call so parallel sessions never share one), flushed to
+/// disk, then `rename`d over the target. A crash or a concurrent writer can
+/// therefore never observe a half-written store — readers see either the old
+/// file or the complete new one, never a truncated middle (the failure mode of
+/// the previous `fs::write`, which truncated in place before writing).
 pub fn save_json<T: serde::Serialize>(path: &Path, val: &T) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(s) = serde_json::to_string(val) {
-        let _ = std::fs::write(path, s);
+    let Ok(s) = serde_json::to_string(val) else {
+        return;
+    };
+
+    // Sibling temp name, unique across processes (pid) and across concurrent
+    // calls in this process (monotonic counter) so two writers can't clobber a
+    // shared temp. Same dir as `path` so the final `rename` stays on one
+    // filesystem (cross-device rename would fail).
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let fname = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("store.json");
+    let tmp = path.with_file_name(format!(".{fname}.tmp.{}.{seq}", std::process::id()));
+
+    // Write fully + fsync the temp before renaming, so the rename can only ever
+    // expose complete data even across a power loss / process kill.
+    let wrote = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(s.as_bytes())?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if wrote.is_ok() {
+        if std::fs::rename(&tmp, path).is_err() {
+            // Rename failed (e.g. target dir vanished); don't leave the temp behind.
+            let _ = std::fs::remove_file(&tmp);
+        }
+    } else {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -355,6 +415,86 @@ mod tests {
         assert_eq!(load_json::<Demo>(&path), Demo::default());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_json_is_atomic_under_concurrency() {
+        // Many threads hammer the same path. With a non-atomic in-place write,
+        // an interleaved read could see a truncated/partial file and fail to
+        // parse. With the temp-file + rename scheme, every read must yield a
+        // fully-valid `Demo` (either the old or a new complete value).
+        use std::sync::Arc;
+        let root = std::env::temp_dir().join(format!("harness-json-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = Arc::new(root.join("nested").join("demo.json"));
+        // Seed a valid file so readers never hit the missing-file path.
+        save_json(
+            &path,
+            &Demo {
+                a: 0,
+                b: "seed".into(),
+            },
+        );
+
+        let mut handles = Vec::new();
+        for t in 0..8u32 {
+            let p = Arc::clone(&path);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..50u32 {
+                    save_json(
+                        &p,
+                        &Demo {
+                            a: t * 1000 + i,
+                            b: format!("writer-{t}-{i}"),
+                        },
+                    );
+                    // Interleave reads: each must parse to a complete value.
+                    let got = load_json::<Demo>(&p);
+                    assert!(
+                        !got.b.is_empty(),
+                        "load_json saw a partial/empty store: {got:?}"
+                    );
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Final state is some complete, valid value and no temp files leaked.
+        let final_val = load_json::<Demo>(&path);
+        assert!(final_val.b.starts_with("writer-") || final_val.b == "seed");
+        let leftover: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftover.is_empty(), "temp files leaked: {leftover:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn safe_session_blocks_traversal() {
+        // A crafted id must never yield a component with a separator or `..`.
+        for evil in ["../../etc/passwd", "..", "a/b", "a\\b", "...", "."] {
+            let s = safe_session(evil);
+            assert!(!s.contains('/'), "safe_session leaked '/': {s}");
+            assert!(!s.contains('\\'), "safe_session leaked '\\': {s}");
+            assert_ne!(s, "..", "safe_session left a traversal: {s}");
+            assert_ne!(s, ".", "safe_session left a no-op component: {s}");
+            // The result is always a single path component.
+            assert_eq!(
+                Path::new(&s).components().count(),
+                1,
+                "safe_session must be one component: {s}"
+            );
+            // Joining onto a base dir cannot escape it.
+            let joined = Path::new("/state").join(format!("{s}.json"));
+            assert!(joined.starts_with("/state"), "escaped base: {joined:?}");
+        }
+        // Ordinary ids pass through unchanged.
+        assert_eq!(safe_session("sess-A_1.2"), "sess-A_1.2");
     }
 
     #[test]

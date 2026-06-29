@@ -80,6 +80,40 @@ pub fn acquire_at(
     project: &str,
     lock_dir: Option<&Path>,
 ) -> Result<()> {
+    acquire_inner(session_id, pid, project, lock_dir, false)
+}
+
+/// Force-acquire the lock, displacing even a *live* holder. This is the
+/// documented `--force` ("強制奪取") escape hatch: a human has decided the
+/// current holder — e.g. an abandoned session whose process is still alive —
+/// should be taken over. Unlike [`acquire_at`], which only reaps locks whose
+/// owner pid is gone, this reaps the existing lock regardless of liveness.
+/// The publish step is still atomic, and the steal happens *inside* the bounded
+/// retry loop, so a competitor that re-grabs the lock in the race window is
+/// itself displaced (up to the attempt cap).
+pub fn acquire_forced_at(
+    session_id: &str,
+    pid: u32,
+    project: &str,
+    lock_dir: Option<&Path>,
+) -> Result<()> {
+    acquire_inner(session_id, pid, project, lock_dir, true)
+}
+
+/// Force-acquire using the default lock path. See [`acquire_forced_at`].
+pub fn acquire_forced(session_id: &str, pid: u32, project: &str) -> Result<()> {
+    acquire_forced_at(session_id, pid, project, None)
+}
+
+/// Shared acquire implementation. `force = true` steals a live holder's lock
+/// (the `--force` path); `force = false` only reaps confirmed-stale locks.
+fn acquire_inner(
+    session_id: &str,
+    pid: u32,
+    project: &str,
+    lock_dir: Option<&Path>,
+    force: bool,
+) -> Result<()> {
     let path = match lock_dir {
         Some(d) => lock_path_for(d),
         None => lock_path(),
@@ -135,6 +169,12 @@ pub fn acquire_at(
                 // (active) so we never delete a live holder's lock.
                 match read_lock(&path) {
                     Some(existing) if pid_alive(existing.pid) => {
+                        if force {
+                            // --force: displace even a live holder, then retry
+                            // the atomic publish.
+                            let _ = std::fs::remove_file(&path);
+                            continue;
+                        }
                         anyhow::bail!(
                             "lock already held by session {} (pid {}, project {})",
                             existing.session_id,
@@ -158,8 +198,7 @@ pub fn acquire_at(
                 }
             }
             Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("publish lock file {}", path.display()));
+                return Err(e).with_context(|| format!("publish lock file {}", path.display()));
             }
         }
     }
@@ -393,8 +432,7 @@ mod tests {
         std::fs::write(lock_path_for(d), serde_json::to_string(&info).unwrap()).unwrap();
 
         let pid = std::process::id();
-        acquire_at("live", pid, "live-proj", Some(d))
-            .expect("acquire must steal a stale lock");
+        acquire_at("live", pid, "live-proj", Some(d)).expect("acquire must steal a stale lock");
 
         match status_at(Some(d)) {
             LockStatus::Active(i) => {
@@ -402,6 +440,50 @@ mod tests {
                 assert_eq!(i.pid, pid);
             }
             other => panic!("expected Active held by 'live', got {other:?}"),
+        }
+    }
+
+    // --force steals a lock held by a *live* process, where a plain acquire
+    // would (correctly) fail. This is the documented 強制奪取 escape hatch.
+    #[test]
+    fn force_acquire_steals_a_live_lock() {
+        let dir = tmp();
+        let d = dir.path();
+        let live_pid = std::process::id(); // alive holder
+
+        acquire_at("incumbent", live_pid, "their-proj", Some(d)).expect("incumbent acquires");
+
+        // Plain acquire must refuse a live holder.
+        assert!(
+            acquire_at("usurper", live_pid, "our-proj", Some(d)).is_err(),
+            "plain acquire must not steal a live lock"
+        );
+
+        // Forced acquire takes it over.
+        acquire_forced_at("usurper", live_pid, "our-proj", Some(d))
+            .expect("--force must steal a live lock");
+
+        match status_at(Some(d)) {
+            LockStatus::Active(i) => {
+                assert_eq!(i.session_id, "usurper");
+                assert_eq!(i.project, "our-proj");
+            }
+            other => panic!("expected the usurper's lock active, got {other:?}"),
+        }
+    }
+
+    // --force on an *unheld* lock behaves like a normal acquire (no existing
+    // file to displace), so the escape hatch is always safe to pass.
+    #[test]
+    fn force_acquire_on_free_lock_just_acquires() {
+        let dir = tmp();
+        let d = dir.path();
+        let pid = std::process::id();
+        assert!(matches!(status_at(Some(d)), LockStatus::None));
+        acquire_forced_at("solo", pid, "proj", Some(d)).expect("force on free lock acquires");
+        match status_at(Some(d)) {
+            LockStatus::Active(i) => assert_eq!(i.session_id, "solo"),
+            other => panic!("expected Active, got {other:?}"),
         }
     }
 

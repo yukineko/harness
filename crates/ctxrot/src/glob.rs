@@ -55,14 +55,39 @@ fn glob_to_regex(glob: &str) -> String {
     re
 }
 
+/// Hard caps on a single user-supplied glob from `.ctxrot.yaml`. The `regex`
+/// crate matches in guaranteed linear time (no catastrophic backtracking), so a
+/// glob can't cause classic ReDoS; the real exposure is a pathological pattern
+/// forcing an oversized compiled program (memory) or slow compile. These length
+/// and wildcard caps, plus an explicit `size_limit`, bound both. A pattern that
+/// exceeds them is rejected (treated as non-matching) rather than compiled.
+const MAX_PATTERN_LEN: usize = 1024;
+const MAX_WILDCARDS: usize = 64;
+const REGEX_SIZE_LIMIT: usize = 1 << 20; // 1 MiB compiled program
+
+/// Compile a glob to a size-bounded regex, or `None` if it is malformed or
+/// exceeds the complexity caps.
+fn compile(pattern: &str) -> Option<Regex> {
+    if pattern.len() > MAX_PATTERN_LEN {
+        return None;
+    }
+    if pattern.bytes().filter(|&b| b == b'*' || b == b'?').count() > MAX_WILDCARDS {
+        return None;
+    }
+    regex::RegexBuilder::new(&glob_to_regex(pattern))
+        .size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .ok()
+}
+
 /// True if `pattern` matches `raw` (the model's spelling), `resolved` (the
 /// absolute path we sized), or — when `pattern` has no `/` — the bare file name.
 /// When `project_root` is a prefix of `resolved`, the project-relative path is
 /// also tried, so `secrets/**` matches `/abs/proj/secrets/x`.
 pub fn matches(pattern: &str, raw: &str, resolved: &Path, project_root: Option<&Path>) -> bool {
-    let re = match Regex::new(&glob_to_regex(pattern)) {
-        Ok(re) => re,
-        Err(_) => return false, // a malformed pattern never matches (fail-open)
+    let re = match compile(pattern) {
+        Some(re) => re,
+        None => return false, // malformed or over-complex pattern never matches
     };
 
     let norm = |s: &str| s.replace('\\', "/");
@@ -216,6 +241,31 @@ mod tests {
             "/p/src/main.rs",
             &p("/p/src/main.rs"),
             Some(&p("/p"))
+        ));
+    }
+
+    #[test]
+    fn pathological_pattern_is_rejected_fast() {
+        use std::time::Instant;
+        // A pattern far over the wildcard cap must be rejected (non-matching)
+        // rather than compiled, and must return promptly.
+        let evil = "*".repeat(5000);
+        let start = Instant::now();
+        assert!(!matches(&evil, "a/b/c.txt", &p("/x/a/b/c.txt"), None));
+        assert!(
+            start.elapsed().as_millis() < 200,
+            "rejection should be fast, took {:?}",
+            start.elapsed()
+        );
+        // An over-long pattern (within wildcard count) is also rejected.
+        let long = format!("{}.txt", "a".repeat(2000));
+        assert!(!matches(&long, "a.txt", &p("/x/a.txt"), None));
+        // A normal pattern just under the caps still works.
+        assert!(matches(
+            "**/*.log",
+            "a/b.log",
+            &p("/x/a/b.log"),
+            Some(&p("/x"))
         ));
     }
 

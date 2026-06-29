@@ -119,6 +119,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # SLSA build provenance: id-token mints the OIDC token Sigstore signs with;
+      # attestations writes the attestation to the repo's attestation store.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -129,6 +133,20 @@ jobs:
           set -euo pipefail
           tar xzf artifacts/darwin-bins/darwin-bins.tar.gz
           tar xzf artifacts/linux-bins/linux-bins.tar.gz
+      # Generate SLSA build provenance for the exact binaries we are about to
+      # commit (and that `/plugin install` ships). The attestation binds each
+      # binary's sha256 digest to this workflow run as the builder, so a consumer
+      # can verify supply-chain origin with:
+      #   gh attestation verify <binary> --repo <owner>/<repo>
+      #   slsa-verifier verify-artifact <binary> --source-uri github.com/<owner>/<repo>
+      # First-party action (actions/ org), consistent with the no-third-party
+      # rule. Gated to main (the job's `if`), so only landed binaries are attested.
+      - name: Attest build provenance for committed binaries
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            crates/*/bin/*-darwin-*
+            crates/*/bin/*-linux-*
       - name: Commit if changed
         run: |
           set -euo pipefail

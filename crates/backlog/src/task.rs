@@ -1,5 +1,21 @@
 use serde::{Deserialize, Serialize};
 
+/// The task status vocabulary — the single source of truth shared by the store
+/// (which sets these on add/done/fail/restore), the `--status` filter help, and
+/// the CLI's validation of a user-supplied filter. A task moves
+/// `pending → done` (done) or `pending → failed` (fail); a deferred task is
+/// restored to `pending` once its `defer_until` elapses. NB: `backlog` has no
+/// `open` status — that vocabulary belongs to `hypothesis` (open/validated/
+/// rejected), a different binary.
+pub const STATUS_PENDING: &str = "pending";
+pub const STATUS_DONE: &str = "done";
+pub const STATUS_FAILED: &str = "failed";
+
+/// All recognised status values, in lifecycle order. Used to enumerate the
+/// valid `--status` arguments in help/validation so an unknown value is a loud
+/// error instead of a silently-empty result.
+pub const STATUSES: [&str; 3] = [STATUS_PENDING, STATUS_DONE, STATUS_FAILED];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -52,7 +68,7 @@ impl Task {
     /// Note: does NOT consider defer_until. Callers combine with is_deferred()
     /// to decide whether to surface a task.
     pub fn is_pending(&self) -> bool {
-        matches!(self.status.as_str(), "pending" | "failed")
+        matches!(self.status.as_str(), STATUS_PENDING | STATUS_FAILED)
     }
 
     /// Returns true when the task is deferred past the given unix timestamp.
@@ -62,20 +78,11 @@ impl Task {
     }
 }
 
-/// Generate an 8-char hex ID from title and unix timestamp using FNV-1a 32-bit.
+/// Generate an 8-char hex ID from title and unix timestamp using FNV-1a 32-bit
+/// (the shared `harness_core::hash` implementation).
 pub fn new_id(title: &str, now: i64) -> String {
     let input = format!("{}\x00{}", title, now);
-    let hash = fnv1a32(&input);
-    format!("{:08x}", hash)
-}
-
-fn fnv1a32(s: &str) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in s.bytes() {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h
+    harness_core::hash::fnv1a32_hex(&input)
 }
 
 #[cfg(test)]
@@ -95,6 +102,21 @@ mod tests {
             defer_until: None,
             weight: 0.0,
         }
+    }
+
+    #[test]
+    fn status_vocabulary_is_consistent() {
+        // The set, lifecycle order, and the values the store actually writes
+        // (add → pending, done → done, fail → failed) must agree, since
+        // STATUSES drives both the `--status` help/validation and `is_pending`.
+        assert_eq!(STATUSES, [STATUS_PENDING, STATUS_DONE, STATUS_FAILED]);
+        assert_eq!(STATUSES, ["pending", "done", "failed"]);
+        // `open` is hypothesis's vocabulary, never backlog's.
+        assert!(!STATUSES.contains(&"open"));
+        // is_pending agrees with the vocabulary it filters on.
+        assert!(make_task(vec![], STATUS_PENDING).is_pending());
+        assert!(make_task(vec![], STATUS_FAILED).is_pending());
+        assert!(!make_task(vec![], STATUS_DONE).is_pending());
     }
 
     #[test]

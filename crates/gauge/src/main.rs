@@ -174,7 +174,11 @@ fn session_cmd(json: bool, session_id: Option<&str>) {
             .agents
             .iter()
             .map(|(name, au)| {
-                let c: f64 = au.models.iter().map(|(m, u)| pricing::cost(m, u, &cfg.pricing)).sum();
+                let c: f64 = au
+                    .models
+                    .iter()
+                    .map(|(m, u)| pricing::cost(m, u, &cfg.pricing))
+                    .sum();
                 (
                     name.clone(),
                     serde_json::json!({"cost_usd": c, "turns": au.turns}),
@@ -187,7 +191,10 @@ fn session_cmd(json: bool, session_id: Option<&str>) {
             "models": rec.models,
             "agents": agent_costs,
         });
-        println!("{}", serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_string()));
+        println!(
+            "{}",
+            serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_string())
+        );
         return;
     }
 
