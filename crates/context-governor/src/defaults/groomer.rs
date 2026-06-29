@@ -32,12 +32,40 @@ fn est_tokens(s: &str) -> u32 {
     }
 }
 
-/// Resolve the active grooming budget (env override → default).
+/// Resolve the active grooming budget (env override → default). This is the
+/// *default* budget at zero window pressure; [`budget_for`] shrinks it as the
+/// conversation fills up.
 fn groom_budget() -> u32 {
     std::env::var("CONTEXT_GOVERNOR_GROOM_BUDGET")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_GROOM_BUDGET_TOKENS)
+}
+
+/// Conversation token occupancy at or above which the groom budget is pinned to
+/// its floor. Below it, the budget scales linearly from the default (at zero
+/// pressure) down to the floor. ~80% of a 200k window — the band where shedding
+/// tool-result bulk matters most.
+const PRESSURE_FULL_SCALE_TOKENS: u64 = 160_000;
+
+/// Window-pressure-aware budget (I6 observe→act): a pure, deterministic,
+/// monotonically non-increasing function of observed `pressure` (conversation
+/// token occupancy). At `pressure == 0` it returns `default_budget` unchanged
+/// (backward compatible); as pressure rises it shrinks linearly toward a floor
+/// of a quarter of the default (never zero for a sane default), saturating at
+/// [`PRESSURE_FULL_SCALE_TOKENS`]. Higher pressure ⇒ a tighter budget ⇒ groom
+/// harder. All arithmetic is saturating, so no input can panic or underflow.
+fn budget_for(pressure: u64, default_budget: u32) -> u32 {
+    if pressure == 0 {
+        return default_budget;
+    }
+    // Floor: a quarter of the default, clamped into `[1, default_budget]` so a
+    // tiny configured budget never floors above itself or at zero.
+    let floor = (default_budget / 4).max(1).min(default_budget);
+    let span = default_budget - floor; // headroom that pressure can reclaim
+    let p = pressure.min(PRESSURE_FULL_SCALE_TOKENS);
+    let reduction = u32::try_from(span as u64 * p / PRESSURE_FULL_SCALE_TOKENS).unwrap_or(span);
+    default_budget - reduction
 }
 
 /// Keep the head and tail of `body`, eliding the middle, so the result fits
@@ -91,7 +119,13 @@ impl DefaultGroomer {
     /// This is the ONLY place that writes to the ledger — unit tests that call
     /// `groom` or `to_output_with_budget` remain side-effect-free.
     pub fn to_output(&self, input: &HookInput) -> HookOutput {
-        match self.groom_with_sizes(input, groom_budget()) {
+        // Observe the live window pressure (conversation token occupancy) and let
+        // it drive how hard we groom. A missing/empty transcript reads as zero
+        // pressure, so the budget is the plain default and behavior is unchanged.
+        let pressure =
+            harness_core::transcript::last_usage_tokens(&input.transcript_path).unwrap_or(0);
+        let budget = budget_for(pressure, groom_budget());
+        match self.groom_with_sizes(input, budget) {
             Some((groomed, saved_tokens, resident_tokens)) => {
                 let node = LedgerNode {
                     session: input.session_id.clone(),
@@ -167,6 +201,62 @@ mod tests {
             tokens: est_tokens(body),
             body: ItemBody::Inline(body.to_string()),
         }
+    }
+
+    // ── budget_for: window-pressure-aware budget (I6 observe→act) ─────────────
+
+    /// Zero pressure must return the default budget byte-for-byte (backward
+    /// compatible — a missing transcript reads as zero pressure).
+    #[test]
+    fn budget_for_zero_pressure_is_default() {
+        assert_eq!(budget_for(0, 2048), 2048);
+        assert_eq!(budget_for(0, 777), 777);
+    }
+
+    /// High pressure must shrink the budget strictly below the default and pin it
+    /// to the floor (a quarter of the default) once pressure saturates the scale.
+    #[test]
+    fn budget_for_high_pressure_shrinks_to_floor() {
+        let floor = 2048 / 4;
+        assert!(
+            budget_for(PRESSURE_FULL_SCALE_TOKENS, 2048) < 2048,
+            "high pressure must produce a smaller budget than the default"
+        );
+        assert_eq!(
+            budget_for(PRESSURE_FULL_SCALE_TOKENS, 2048),
+            floor,
+            "budget at full-scale pressure must equal the floor"
+        );
+        // Beyond full scale it saturates: no further shrink below the floor.
+        assert_eq!(budget_for(PRESSURE_FULL_SCALE_TOKENS * 100, 2048), floor);
+    }
+
+    /// The mapping must be monotonically non-increasing in pressure: more window
+    /// occupancy never *raises* the budget.
+    #[test]
+    fn budget_for_is_monotonic_non_increasing() {
+        let mut prev = budget_for(0, 2048);
+        for step in 0..=40 {
+            let pressure = step * 5_000; // 0 .. 200_000, crossing the full scale
+            let b = budget_for(pressure, 2048);
+            assert!(
+                b <= prev,
+                "budget must not rise as pressure grows: at {pressure} got {b} > prev {prev}"
+            );
+            prev = b;
+        }
+        // And the endpoint is the floor (saturated past full scale).
+        assert_eq!(prev, 2048 / 4);
+    }
+
+    /// The floor must never be zero for a sane default, so grooming stays
+    /// meaningful even under maximal pressure.
+    #[test]
+    fn budget_for_floor_is_never_zero() {
+        assert!(budget_for(u64::MAX, 2048) > 0);
+        assert!(budget_for(u64::MAX, 8) > 0);
+        // A degenerate tiny default never floors above itself.
+        assert!(budget_for(u64::MAX, 1) <= 1);
     }
 
     #[test]
