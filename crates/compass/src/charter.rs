@@ -194,8 +194,9 @@ mod tests {
 
     #[test]
     fn save_load_round_trips_structured_fields() {
-        let dir = std::env::temp_dir().join(format!("compass-charter-test-{}", std::process::id()));
-        let path = dir.join(".compass").join("charter.md");
+        // Auto-cleaned unique temp dir (atomic mkdtemp, no pid-collision TOCTOU).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(".compass").join("charter.md");
         let original = sample();
 
         original.save(&path).expect("save");
@@ -206,8 +207,6 @@ mod tests {
         // Double round-trip is stable (normalized form is a fixed point).
         let reparsed = Charter::parse(&loaded.to_markdown());
         assert_eq!(loaded, reparsed);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

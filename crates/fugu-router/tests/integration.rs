@@ -34,12 +34,9 @@ fn run_in(home: &PathBuf, args: &[&str], payload: &str) -> (i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("binary spawns");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.as_bytes())
-        .unwrap();
+    if let Some(mut child_stdin) = child.stdin.take() {
+        let _ = child_stdin.write_all(payload.as_bytes());
+    }
     let out = child.wait_with_output().expect("binary runs");
     (
         out.status.code().unwrap_or(-1),

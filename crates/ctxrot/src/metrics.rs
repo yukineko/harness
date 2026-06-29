@@ -213,9 +213,12 @@ mod tests {
     use serde_json::json;
 
     fn temp_cfg(name: &str) -> Config {
-        let dir =
-            std::env::temp_dir().join(format!("ctxrot-metrics-{}-{}", name, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        // Unique state dir via atomic `mkdtemp` (no pid-collision TOCTOU).
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ctxrot-metrics-{name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         Config {
             state_dir: dir,
             ..Config::default()

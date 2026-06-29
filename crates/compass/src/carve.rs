@@ -91,16 +91,17 @@ mod tests {
     use super::*;
     use harness_core::interrogate::{Authority, Bundle, Fragment};
 
-    fn temp_root(name: &str) -> PathBuf {
-        let root =
-            std::env::temp_dir().join(format!("compass-carve-{}-{}", name, std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        root
+    /// A unique auto-cleaned temp dir. `tempfile` creates it with O_EXCL-style
+    /// uniqueness (no pid-collision TOCTOU) and removes it on drop, so tests
+    /// never share a path or leak dirs into /tmp.
+    fn temp_root() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
     }
 
     #[test]
     fn save_load_round_trips() {
-        let root = temp_root("rt");
+        let tmp = temp_root();
+        let root = tmp.path();
         let mut state = CarveState::new(Bundle::default(), 4);
         state.round = 2;
         state.bundle.fragments.push(Fragment {
@@ -111,29 +112,26 @@ mod tests {
             anchor: None,
         });
 
-        save(&root, &state).expect("save");
-        let loaded = load(&root).expect("load");
+        save(root, &state).expect("save");
+        let loaded = load(root).expect("load");
         assert_eq!(loaded.round, 2);
         assert_eq!(loaded.bundle.fragments.len(), 1);
         assert_eq!(loaded.max_rounds, 4);
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn load_missing_is_none_and_reset_is_idempotent() {
-        let root = temp_root("missing");
-        assert!(load(&root).is_none());
+        let tmp = temp_root();
+        let root = tmp.path();
+        assert!(load(root).is_none());
         // reset on a missing file is a no-op, not an error.
-        reset(&root).expect("reset missing");
+        reset(root).expect("reset missing");
 
         let state = CarveState::new(Bundle::default(), 1);
-        save(&root, &state).expect("save");
-        assert!(load(&root).is_some());
-        reset(&root).expect("reset present");
-        assert!(load(&root).is_none());
-
-        let _ = std::fs::remove_dir_all(&root);
+        save(root, &state).expect("save");
+        assert!(load(root).is_some());
+        reset(root).expect("reset present");
+        assert!(load(root).is_none());
     }
 
     #[test]

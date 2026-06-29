@@ -49,12 +49,9 @@ fn run_with_stdin(args: &[&str], payload: &str, tag: &str) -> (i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("binary spawns");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.as_bytes())
-        .unwrap();
+    if let Some(mut child_stdin) = child.stdin.take() {
+        let _ = child_stdin.write_all(payload.as_bytes());
+    }
     let out = child.wait_with_output().expect("binary runs");
     std::fs::remove_dir_all(&home).ok();
     (

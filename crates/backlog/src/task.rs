@@ -78,6 +78,21 @@ impl Task {
     }
 }
 
+/// Returns a warning message when `status` is `Some` but not a recognised value,
+/// else `None`. Centralised here (next to `STATUSES`) so the `--status` filter in
+/// `main` can warn loudly — a typo'd status silently matched nothing ("no
+/// tasks"), indistinguishable from a genuinely empty queue. The message names the
+/// offending value and lists the valid ones.
+pub fn status_warning(status: Option<&str>) -> Option<String> {
+    match status {
+        Some(s) if !STATUSES.contains(&s) => Some(format!(
+            "warning: unknown status '{s}'; valid values are {}",
+            STATUSES.join(" | ")
+        )),
+        _ => None,
+    }
+}
+
 /// Generate an 8-char hex ID from title and unix timestamp using FNV-1a 32-bit
 /// (the shared `harness_core::hash` implementation).
 pub fn new_id(title: &str, now: i64) -> String {
@@ -117,6 +132,27 @@ mod tests {
         assert!(make_task(vec![], STATUS_PENDING).is_pending());
         assert!(make_task(vec![], STATUS_FAILED).is_pending());
         assert!(!make_task(vec![], STATUS_DONE).is_pending());
+    }
+
+    #[test]
+    fn status_warning_flags_unknown_and_suggests_valid() {
+        // An invalid filter (the classic typo: hypothesis's `open`) must warn and
+        // enumerate the valid values so the empty result isn't mistaken for an
+        // empty queue.
+        let w = status_warning(Some("open")).expect("unknown status warns");
+        assert!(w.contains("unknown status 'open'"), "got: {w}");
+        assert!(w.contains("pending"), "must suggest valid values: {w}");
+        assert!(w.contains("done"), "must suggest valid values: {w}");
+        assert!(w.contains("failed"), "must suggest valid values: {w}");
+    }
+
+    #[test]
+    fn status_warning_silent_for_valid_or_absent() {
+        assert!(status_warning(Some("pending")).is_none());
+        assert!(status_warning(Some("done")).is_none());
+        assert!(status_warning(Some("failed")).is_none());
+        // No filter at all → no warning (listing everything is legitimate).
+        assert!(status_warning(None).is_none());
     }
 
     #[test]

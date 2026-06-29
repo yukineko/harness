@@ -100,7 +100,9 @@ enum Command {
     Confidence { id: String, value: f64 },
     /// List hypotheses
     List {
-        #[arg(long)]
+        /// Filter by lifecycle status: open | awaiting-measurement | validated |
+        /// rejected. Omit to list all. An unrecognised value matches nothing.
+        #[arg(long, value_name = "open|awaiting-measurement|validated|rejected")]
         status: Option<String>,
     },
     /// Install SessionStart hook

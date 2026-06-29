@@ -1265,12 +1265,9 @@ fn run_specguard_stdin(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("specguard spawns");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin_data.as_bytes())
-        .unwrap();
+    if let Some(mut child_stdin) = child.stdin.take() {
+        let _ = child_stdin.write_all(stdin_data.as_bytes());
+    }
     child.wait_with_output().expect("specguard runs")
 }
 

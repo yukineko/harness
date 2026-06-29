@@ -34,12 +34,14 @@ fn run(args: &[&str], payload: &str) -> (i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("binary spawns");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.as_bytes())
-        .unwrap();
+    // Best-effort stdin write: a subcommand that exits early (an unknown schema
+    // returns exit 2 before reading stdin) closes the read end of the pipe, so
+    // `write_all` can return BrokenPipe. That is not a failure — the assertions
+    // are on the child's exit code and stdout — so ignore a write error. Dropping
+    // the handle at the end of the block closes stdin, giving the child EOF.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(payload.as_bytes());
+    }
     let out = child.wait_with_output().expect("binary runs");
     (
         out.status.code().unwrap_or(-1),

@@ -260,8 +260,9 @@ mod tests {
 
     #[test]
     fn preemptive_coalesces_precompact_does_not() {
-        let base = std::env::temp_dir().join(format!("ctxrot-coalesce-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        // Auto-cleaned unique temp dir (atomic mkdtemp, no pid-collision TOCTOU).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
         let cfg = Config {
@@ -295,7 +296,5 @@ mod tests {
         assert!(std::fs::read_to_string(&p3)
             .unwrap()
             .contains("trigger: precompact"));
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

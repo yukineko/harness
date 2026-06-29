@@ -240,8 +240,14 @@ mod tests {
     use std::io::Write;
 
     fn big_temp_file(name: &str, bytes: usize) -> std::path::PathBuf {
-        let p =
-            std::env::temp_dir().join(format!("ctxrot-preguard-{}-{}", std::process::id(), name));
+        // Place the file in a unique dir created via atomic `mkdtemp` (no
+        // pid-collision TOCTOU); `.keep()` returns the dir path.
+        let dir = tempfile::Builder::new()
+            .prefix("ctxrot-preguard-")
+            .tempdir()
+            .expect("tempdir")
+            .keep();
+        let p = dir.join(name);
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(&vec![b'x'; bytes]).unwrap();
         p

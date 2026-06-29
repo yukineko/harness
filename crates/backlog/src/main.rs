@@ -207,14 +207,10 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             // A typo'd status used to silently match nothing ("no tasks"),
             // indistinguishable from a genuinely empty queue. Warn loudly so an
-            // unknown filter value (e.g. the wrong `open`) is obvious.
-            if let Some(s) = status.as_deref() {
-                if !task::STATUSES.contains(&s) {
-                    eprintln!(
-                        "warning: unknown status '{s}'; valid values are {}",
-                        task::STATUSES.join(" | ")
-                    );
-                }
+            // unknown filter value (e.g. the wrong `open`) is obvious. The check
+            // lives in `task::status_warning` so it is unit-tested.
+            if let Some(w) = task::status_warning(status.as_deref()) {
+                eprintln!("{w}");
             }
             let tasks = store::list(
                 &tasks_path,

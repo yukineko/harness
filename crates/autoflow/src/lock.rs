@@ -54,7 +54,6 @@ fn pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     // Both tests mutate the process-global HOME env var; cargo runs tests in a
@@ -67,32 +66,31 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    // `_guard` is held only for its RAII Drop (releases the HOME mutex at the
-    // end of the test); it is never read, hence the underscore.
+    // `_dir` is a `tempfile::TempDir`: a unique, collision-free temp dir that
+    // removes itself on drop (no pid-based path, no manual cleanup). `_guard`
+    // is held only for its RAII Drop (releases the HOME mutex at the end of the
+    // test); neither field is read, hence the underscores. Field order matters:
+    // `_dir` drops (cleanup) before `_guard` releases the HOME mutex.
     struct TmpHome {
+        _dir: tempfile::TempDir,
         path: std::path::PathBuf,
         _guard: MutexGuard<'static, ()>,
     }
     impl TmpHome {
         fn new() -> Self {
             let guard = home_guard();
-            static N: AtomicU32 = AtomicU32::new(0);
-            let n = N.fetch_add(1, Ordering::Relaxed);
-            let p = std::env::temp_dir().join(format!("autoflow-lock-{}-{n}", std::process::id()));
-            std::fs::create_dir_all(p.join(".backlog")).unwrap();
-            std::env::set_var("HOME", &p);
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().to_path_buf();
+            std::fs::create_dir_all(path.join(".backlog")).unwrap();
+            std::env::set_var("HOME", &path);
             TmpHome {
-                path: p,
+                _dir: dir,
+                path,
                 _guard: guard,
             }
         }
         fn lock_path(&self) -> std::path::PathBuf {
             self.path.join(".backlog").join("run.lock")
-        }
-    }
-    impl Drop for TmpHome {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 

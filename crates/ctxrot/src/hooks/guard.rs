@@ -544,8 +544,9 @@ mod tests {
 
     #[test]
     fn band_crossing_writes_preemptive_rescue() {
-        let base = std::env::temp_dir().join(format!("ctxrot-guard-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        // Auto-cleaned unique temp dir (atomic mkdtemp, no pid-collision TOCTOU).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
 
@@ -583,8 +584,6 @@ mod tests {
 
         // Escalate-only: the same band does not re-fire (so it won't re-rescue every turn).
         assert!(check_context_budget(&input, &cfg).is_none());
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Build a temp cfg + cwd and a session note carrying the given Decisions /
@@ -595,9 +594,12 @@ mod tests {
         decisions: &str,
         todos: &str,
     ) -> (Config, std::path::PathBuf, HookInput) {
-        let base =
-            std::env::temp_dir().join(format!("ctxrot-anchor-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        // Unique base dir via atomic `mkdtemp` (no pid-collision TOCTOU).
+        let base = tempfile::Builder::new()
+            .prefix(&format!("ctxrot-anchor-{name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
         let cfg = Config {
@@ -666,9 +668,9 @@ mod tests {
     fn note_freshness_falls_back_to_mtime() {
         // No frontmatter `created:` → use the file mtime (here: just written, so a
         // current local timestamp). We only assert a plausible timestamp is found.
-        let base = std::env::temp_dir().join(format!("ctxrot-fresh-mtime-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        // Auto-cleaned unique temp dir (atomic mkdtemp, no pid-collision TOCTOU).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
         let note = base.join("note.md");
         std::fs::write(&note, "## 決定事項\n\n- A\n").unwrap();
         let ts = note_freshness(&note, "## 決定事項\n\n- A\n").expect("mtime available");
@@ -676,7 +678,6 @@ mod tests {
             ts.starts_with("20"),
             "expected an ISO-ish local timestamp, got {ts}"
         );
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -714,8 +715,12 @@ mod tests {
     /// rescue note is fresh, so the preemptive band rescue coalesces onto it and
     /// `latest_note_for_session` routes the anchor at it.
     fn cap_fixture(name: &str, cap: usize) -> (Config, std::path::PathBuf, HookInput) {
-        let base = std::env::temp_dir().join(format!("ctxrot-cap-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        // Unique base dir via atomic `mkdtemp` (no pid-collision TOCTOU).
+        let base = tempfile::Builder::new()
+            .prefix(&format!("ctxrot-cap-{name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
         let cfg = Config {
@@ -770,8 +775,9 @@ mod tests {
 
     #[test]
     fn distilled_marker_reinjects_once_then_consumed() {
-        let base = std::env::temp_dir().join(format!("ctxrot-distinj-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        // Auto-cleaned unique temp dir (atomic mkdtemp, no pid-collision TOCTOU).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
         let cfg = Config {
@@ -810,8 +816,6 @@ mod tests {
         // Consumed: the marker is gone and a second prompt injects nothing.
         assert!(!crate::hooks::distill::marker_path(&cfg, session).exists());
         assert!(run(&input, &cfg).is_none(), "must fire exactly once");
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

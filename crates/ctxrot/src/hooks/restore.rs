@@ -342,9 +342,12 @@ mod tests {
     }
 
     fn restore_fixture(name: &str, slug_prefix: &str) -> (Config, std::path::PathBuf, HookInput) {
-        let base =
-            std::env::temp_dir().join(format!("ctxrot-restore-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        // Unique base dir via atomic `mkdtemp` (no pid-collision TOCTOU).
+        let base = tempfile::Builder::new()
+            .prefix(&format!("ctxrot-restore-{name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         let cwd = base.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
         let cfg = Config {

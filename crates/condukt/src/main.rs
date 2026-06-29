@@ -712,8 +712,17 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
 
 fn init(cfg: &Config) -> Result<()> {
     let base = config::base_dir();
-    std::fs::create_dir_all(&cfg.state_dir).ok();
-    std::fs::create_dir_all(&cfg.worktree_base).ok();
+    // Loud-fail: a swallowed mkdir here (e.g. a read-only or non-writable parent)
+    // used to surface much later as a cryptic I/O error when run-state or a
+    // worktree was first written. Name the dir so the root cause is obvious.
+    std::fs::create_dir_all(&cfg.state_dir)
+        .with_context(|| format!("could not create state dir {}", cfg.state_dir.display()))?;
+    std::fs::create_dir_all(&cfg.worktree_base).with_context(|| {
+        format!(
+            "could not create worktree base {}",
+            cfg.worktree_base.display()
+        )
+    })?;
     let cfg_path = base.join("config.toml");
     if cfg_path.exists() {
         eprintln!("config already exists: {}", cfg_path.display());

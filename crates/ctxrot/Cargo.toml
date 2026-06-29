@@ -22,3 +22,6 @@ chrono = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 wait-timeout = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

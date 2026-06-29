@@ -880,9 +880,13 @@ mod tests {
     }
 
     fn make_tmp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("condukt-test-{name}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        // Unique dir via atomic `mkdtemp` (no fixed-name parallel-test collision
+        // or pid-reuse TOCTOU); `.keep()` returns the path. Callers clean up.
+        tempfile::Builder::new()
+            .prefix(&format!("condukt-test-{name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep()
     }
 
     #[test]

@@ -122,10 +122,14 @@ fn remove_item(v: &mut Vec<String>, item: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// A unique temp dir via atomic `mkdtemp` (no pid-collision TOCTOU).
+    /// `.keep()` returns the path; the small dir lives under the OS temp dir.
     fn tmp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ctxrot-loadset-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+        tempfile::Builder::new()
+            .prefix("ctxrot-loadset-")
+            .tempdir()
+            .expect("tempdir")
+            .keep()
     }
 
     #[test]

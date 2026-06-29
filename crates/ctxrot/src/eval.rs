@@ -402,9 +402,10 @@ mod tests {
 
     #[test]
     fn gen_writes_files_and_parseable_manifest() {
-        let dir = std::env::temp_dir().join(format!("ctxrot-eval-gen-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let n = run_gen(&dir, 3, 100).unwrap();
+        // Auto-cleaned unique temp dir (atomic mkdtemp, no pid-collision TOCTOU).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let n = run_gen(dir, 3, 100).unwrap();
         assert_eq!(n, 3);
         assert!(dir.join("case-00.on.txt").exists());
         assert!(dir.join("case-00.off.txt").exists());
@@ -413,6 +414,5 @@ mod tests {
                 .unwrap();
         assert_eq!(m.cases.len(), 3);
         assert!(m.cases[0].anchor_bytes > 0);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

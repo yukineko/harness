@@ -90,6 +90,7 @@ dependencies = [
  "harness-core",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
 ]
 
@@ -314,6 +315,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
  "wait-timeout",
 ]

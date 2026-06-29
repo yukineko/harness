@@ -6,7 +6,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Run `git` with args in `dir`, returning trimmed stdout. Errors include stderr.
+/// Run `git` with args in `dir`, returning trimmed stdout. On failure the error
+/// preserves git's exit status and BOTH output streams: git writes diagnostics
+/// to stderr but also to stdout (merge CONFLICT lines, `branch -d` refusals), so
+/// dropping either can hide the root cause. Callers add `.with_context()` to name
+/// the lifecycle op (create/merge/remove); the chain then reads
+/// "<op> failed: git [..] exited <code>: <stderr>/<stdout>".
 pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .current_dir(dir)
@@ -14,10 +19,31 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
         .output()
         .with_context(|| format!("failed to spawn git {:?}", args))?;
     if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut detail = stderr.trim().to_string();
+        let so = stdout.trim();
+        if !so.is_empty() {
+            // Keep stdout too — some git errors only surface there.
+            if detail.is_empty() {
+                detail = so.to_string();
+            } else {
+                detail.push_str("\n--- git stdout ---\n");
+                detail.push_str(so);
+            }
+        }
+        if detail.is_empty() {
+            detail = "(git produced no output)".to_string();
+        }
         bail!(
-            "git {:?} failed: {}",
+            "git {:?} in {} exited {}: {}",
             args,
-            String::from_utf8_lossy(&out.stderr).trim()
+            dir.display(),
+            out.status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            detail
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -111,12 +137,18 @@ pub fn create(repo: &Path, worktree_base: &Path, topic: &str, branch: &str) -> R
     }
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        // Loud-fail: if the worktree's parent can't be created, `git worktree add`
+        // below would otherwise fail with a confusing path error. Name the dir.
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("could not create worktree parent dir {}", parent.display())
+        })?;
     }
     let path_str = path.to_string_lossy().to_string();
     // `--` ends option parsing so a path/branch can never be read as a flag
     // (defense in depth on top of validate_topic/validate_branch above).
-    git(repo, &["worktree", "add", "-b", branch, "--", &path_str])?;
+    git(repo, &["worktree", "add", "-b", branch, "--", &path_str]).with_context(|| {
+        format!("could not create worktree for branch '{branch}' at {path_str}")
+    })?;
     Ok(path)
 }
 
@@ -324,6 +356,10 @@ pub fn remove(repo: &Path, path: &Path, branch: Option<&str>) -> Result<Option<S
 /// (path, branch) pairs for every registered worktree except the primary.
 pub fn list(repo: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
     let listing = git(repo, &["worktree", "list", "--porcelain"])?;
+    // `.ok()` is intentional here and below: a worktree dir that was already
+    // removed (the common cleanup case) cannot be canonicalized, and `None` is a
+    // valid "not the primary" outcome for the equality check. This is NOT a
+    // swallowed error to loud-fail — unlike the mkdir paths in create()/init().
     let primary = toplevel(repo)?.canonicalize().ok();
     let mut out = Vec::new();
     let mut cur_path: Option<PathBuf> = None;
@@ -425,6 +461,28 @@ mod tests {
     }
 
     #[test]
+    fn git_error_preserves_git_diagnostic() {
+        // A non-repo dir makes git fail with a recognisable diagnostic on stderr.
+        // The error must surface git's own message (root cause) plus the dir, not
+        // a bare "git failed", so create/merge/remove failures are debuggable.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = git(tmp.path(), &["rev-parse", "--show-toplevel"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a git repository") || msg.contains("fatal"),
+            "must carry git's own diagnostic, got: {msg}"
+        );
+        assert!(
+            msg.contains(&tmp.path().display().to_string()),
+            "must name the dir git ran in, got: {msg}"
+        );
+        assert!(
+            !msg.contains("(git produced no output)"),
+            "git emitted to stderr; detail must not be the empty-output placeholder"
+        );
+    }
+
+    #[test]
     fn validate_branch_allows_slashes_but_blocks_injection() {
         // Real branch names used by condukt.
         assert!(validate_branch("condukt/t2").is_ok());
@@ -445,15 +503,36 @@ mod tests {
     /// create() rejects an unsafe topic before invoking git.
     #[test]
     fn create_rejects_traversal_topic() {
-        let tmp = std::env::temp_dir().join(format!("condukt-wt-{}", std::process::id()));
-        let _ = fs::create_dir_all(&tmp);
-        let repo = tmp.join("repo");
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
         fs::create_dir_all(&repo).unwrap();
         init_repo(&repo);
-        let base = tmp.join("wt");
+        let base = tmp.path().join("wt");
         let err = create(&repo, &base, "../escape", "condukt/x").unwrap_err();
         assert!(err.to_string().contains("topic"));
-        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// create() loud-fails (does not silently swallow) when the worktree parent
+    /// dir cannot be created. A regular file standing where a dir must be makes
+    /// `create_dir_all` fail deterministically — uid-independent, unlike a chmod
+    /// read-only trick that root would bypass in CI.
+    #[test]
+    fn create_loud_fails_when_parent_dir_uncreatable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        // `blocker` is a FILE; using it as a path component forces mkdir to fail.
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, b"not a dir").unwrap();
+        let worktree_base = blocker.join("sub"); // parent (a file) can't be mkdir'd
+        let err = create(&repo, &worktree_base, "topic", "condukt/x").unwrap_err();
+        // The {:#} alt form walks the anyhow chain so our .context() is visible.
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("worktree parent dir"),
+            "must surface the loud parent-dir context, got: {chain}"
+        );
     }
 
     /// remove() returns Ok(None) when the branch was merged and deletes cleanly.

@@ -93,12 +93,9 @@ fn run_stop_event(dir: &Path, event: &str) -> (i32, String) {
         .spawn()
         .expect("binary spawns");
     let payload = format!("{{\"hook_event_name\":\"{event}\"}}");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.as_bytes())
-        .unwrap();
+    if let Some(mut child_stdin) = child.stdin.take() {
+        let _ = child_stdin.write_all(payload.as_bytes());
+    }
     let out = child.wait_with_output().expect("binary runs");
     (
         out.status.code().unwrap_or(-1),
