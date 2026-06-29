@@ -47,7 +47,7 @@ pub use handlers::{
     SpecClassifier, StateRehydrator, ToolResultGroomer,
 };
 pub use io::{HookOutput, HookSpecific};
-pub use ledger::{Action, LedgerNode};
+pub use ledger::{rollup, Action, Ledger, LedgerNode, LedgerSummary};
 pub use types::{
     ContextItem, Evictable, ItemBody, ItemId, Lane, Overrun, SpecClass, StandingBudget, StoreKey,
 };
