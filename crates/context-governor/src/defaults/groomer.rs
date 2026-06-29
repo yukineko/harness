@@ -12,6 +12,7 @@
 
 use crate::handlers::ToolResultGroomer;
 use crate::io::HookOutput;
+use crate::ledger::{Action, Ledger, LedgerNode};
 use crate::types::{ContextItem, Evictable, ItemBody, ItemId, Lane};
 use harness_core::hook::HookInput;
 
@@ -85,39 +86,72 @@ impl ToolResultGroomer for DefaultGroomer {
 
 impl DefaultGroomer {
     /// Bin entry point: read `input.tool_response`, wrap it as an `Evictable`,
-    /// groom under the active budget, and emit a PostToolUse `updatedToolOutput`
-    /// envelope (or `{}` when nothing is groomed).
+    /// groom under the active budget, emit a ledger row on a groom, and return a
+    /// PostToolUse `updatedToolOutput` envelope (or `{}` when nothing is groomed).
+    /// This is the ONLY place that writes to the ledger — unit tests that call
+    /// `groom` or `to_output_with_budget` remain side-effect-free.
     pub fn to_output(&self, input: &HookInput) -> HookOutput {
-        self.to_output_with_budget(input, groom_budget())
+        match self.groom_with_sizes(input, groom_budget()) {
+            Some((groomed, saved_tokens, resident_tokens)) => {
+                let node = LedgerNode {
+                    session: input.session_id.clone(),
+                    hook: "PostToolUse".to_string(),
+                    item: None,
+                    action: Action::Groomed { saved_tokens },
+                    reason: "oversized-tool-result",
+                };
+                Ledger::open(&input.cwd).append(&node, resident_tokens);
+                HookOutput::groomed(groomed)
+            }
+            None => HookOutput::default(),
+        }
     }
 
     /// Budget-injectable core of [`Self::to_output`] — lets tests pin a budget
-    /// without touching the process-global env var.
+    /// without touching the process-global env var. Pure: no ledger side effects.
+    #[cfg(test)]
     fn to_output_with_budget(&self, input: &HookInput, budget: u32) -> HookOutput {
-        let Some(resp) = &input.tool_response else {
-            return HookOutput::default();
-        };
+        match self.groom_with_sizes(input, budget) {
+            Some((groomed, _, _)) => HookOutput::groomed(groomed),
+            None => HookOutput::default(),
+        }
+    }
+
+    /// Groom `input.tool_response` under `budget` and report pre/post sizes.
+    /// Returns `Some((groomed_value, saved_tokens, resident_tokens))` when the
+    /// result was actually shrunk, `None` otherwise (under-budget, Ref body,
+    /// degenerate trim, or no `tool_response`).
+    ///
+    /// * `saved_tokens`   = est_tokens(pre_body) − est_tokens(post_str) (saturating)
+    /// * `resident_tokens`= est_tokens(post_str)  — post-groom window occupancy
+    fn groom_with_sizes(
+        &self,
+        input: &HookInput,
+        budget: u32,
+    ) -> Option<(serde_json::Value, u32, u32)> {
+        let resp = input.tool_response.as_ref()?;
         // The string that actually occupies the window: a JSON string result is
         // its own text; anything structured is rendered compactly.
         let body = match resp {
             serde_json::Value::String(s) => s.clone(),
             other => other.to_string(),
         };
+        let pre_tokens = est_tokens(&body);
         let item = ContextItem {
             id: ItemId(0),
             lane: Lane::Evictable,
-            tokens: est_tokens(&body),
+            tokens: pre_tokens,
             body: ItemBody::Inline(body),
         };
         // Infallible by construction (the item is `Lane::Evictable`), but we
         // honor the capability constructor rather than asserting.
-        let Some(ev) = Evictable::new(&item) else {
-            return HookOutput::default();
-        };
-        match self.groom(ev, budget) {
-            Some(groomed) => HookOutput::groomed(groomed),
-            None => HookOutput::default(),
-        }
+        let ev = Evictable::new(&item)?;
+        let groomed = self.groom(ev, budget)?;
+        let post_str = groomed.as_str().unwrap_or("");
+        let post_tokens = est_tokens(post_str);
+        let saved_tokens = pre_tokens.saturating_sub(post_tokens);
+        let resident_tokens = post_tokens;
+        Some((groomed, saved_tokens, resident_tokens))
     }
 }
 
@@ -226,5 +260,94 @@ mod tests {
                 prop_assert!(s.chars().count() < body.chars().count());
             }
         }
+    }
+
+    /// Verify that `to_output` (the real bin entry) emits exactly ONE ledger row
+    /// with event="groomed" and saved_tokens>0 when it grooms an over-budget
+    /// result, and NO row when the input is under-budget.
+    ///
+    /// NOTE: this test sets `CONTEXT_GOVERNOR_STATE_DIR` and
+    /// `CLAUDE_CODE_SESSION_ID` — process-global env vars. It is kept as a single
+    /// self-contained function and uses a process-id-scoped unique cwd to reduce
+    /// (but not eliminate) the race window with `backing::tests::open_is_ok…`,
+    /// which also touches those vars. The ledger side-effect is isolated to this
+    /// test; all other groomer tests call `groom` / `to_output_with_budget` and
+    /// are therefore side-effect-free.
+    #[test]
+    fn to_output_emits_ledger_row_when_groomed_and_none_when_not() {
+        use crate::ledger::rollup;
+
+        // Unique per-process tmpdir and cwd so parallel test runs don't collide.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state_dir = tmp.path().to_str().expect("utf-8 state dir").to_string();
+        let unique_cwd = format!("/tmp/cg-groomer-ledger-test-{}", std::process::id());
+        let session_id = format!("test-groomer-{}", std::process::id());
+
+        std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", &state_dir);
+        std::env::set_var("CLAUDE_CODE_SESSION_ID", &session_id);
+
+        // --- over-budget call: must emit exactly one groomed row ---
+        let big = "z".repeat(40_000); // ~10 000 tokens, well over the 2048 default
+        let input_over = {
+            let mut obj = serde_json::json!({
+                "session_id": &session_id,
+                "transcript_path": "",
+                "cwd": &unique_cwd,
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash"
+            });
+            obj["tool_response"] = serde_json::Value::String(big);
+            serde_json::from_value::<HookInput>(obj).unwrap()
+        };
+        let output_over = DefaultGroomer.to_output(&input_over);
+        assert!(
+            output_over.to_json().contains("updatedToolOutput"),
+            "over-budget to_output must return a groomed envelope"
+        );
+
+        let summary = rollup(&unique_cwd);
+        assert_eq!(
+            summary.rows, 1,
+            "exactly one ledger row after over-budget groom"
+        );
+        assert_eq!(
+            summary.per_event.get("groomed"),
+            Some(&1),
+            "ledger event must be 'groomed'"
+        );
+        assert!(
+            summary.total_saved_tokens > 0,
+            "saved_tokens must be > 0 (got {})",
+            summary.total_saved_tokens
+        );
+
+        // --- under-budget call: must NOT append any row ---
+        let input_under = {
+            let obj = serde_json::json!({
+                "session_id": &session_id,
+                "transcript_path": "",
+                "cwd": &unique_cwd,
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "tool_response": "tiny result"
+            });
+            serde_json::from_value::<HookInput>(obj).unwrap()
+        };
+        let output_under = DefaultGroomer.to_output(&input_under);
+        assert_eq!(
+            output_under.to_json(),
+            "{}",
+            "under-budget to_output must be empty (no-op)"
+        );
+
+        let summary2 = rollup(&unique_cwd);
+        assert_eq!(
+            summary2.rows, 1,
+            "under-budget call must NOT append a new row (still 1)"
+        );
+
+        // Clean up env vars regardless of test outcome.
+        std::env::remove_var("CONTEXT_GOVERNOR_STATE_DIR");
+        std::env::remove_var("CLAUDE_CODE_SESSION_ID");
     }
 }
