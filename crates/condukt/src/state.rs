@@ -12,9 +12,10 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
+    #[default]
     Pending,
     Running,
     Done,
@@ -43,7 +44,7 @@ impl std::str::FromStr for Status {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskState {
     pub id: String,
     pub status: Status,
@@ -55,6 +56,15 @@ pub struct TaskState {
     /// `None` for tasks loaded from older run-state files (backward-compatible).
     #[serde(default)]
     pub updated_at: Option<i64>,
+    /// The model actually used to execute this task (set by the skill, possibly
+    /// after escalation). `None` falls back to the decomposition's
+    /// `suggested_model` when recording the outcome to fugu-router.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Observed USD cost of executing this task (e.g. from `gauge`). `None`
+    /// records as 0.0. Used as the learning signal's cost dimension.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 pub fn now_secs() -> i64 {
@@ -78,6 +88,11 @@ pub struct RunState {
     /// and in cross-run conflict reports.
     #[serde(default)]
     pub terminal_label: Option<String>,
+    /// Unix timestamp (seconds) when this run's outcomes were recorded to
+    /// fugu-router. `None` = not yet recorded. Set once `record-run` emits the
+    /// episodes so repeated (idempotent) hook firings never double-record.
+    #[serde(default)]
+    pub recorded_at: Option<i64>,
 }
 
 fn project_dir(cfg: &Config, cwd: &Path) -> PathBuf {
@@ -389,6 +404,93 @@ pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     }
 
     reasons
+}
+
+// ── Outcome recording (fugu-router learning signal) ────────────────────────
+
+/// One outcome to record to fugu-router, derived by joining a run's task states
+/// with its decomposition. Pure data so the join logic is unit-testable without
+/// spawning the fugu-router binary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordSpec {
+    pub title: String,
+    pub files: Vec<String>,
+    pub class: String,
+    /// Model the task ran on: the task state's recorded model if present, else
+    /// the decomposition's `suggested_model`, else a conservative default.
+    pub model: String,
+    /// "verified" or "failed" — the fugu-router status vocabulary.
+    pub status: String,
+    pub cost_usd: f64,
+    pub done_criteria: Option<String>,
+}
+
+/// Build the outcomes to record for a run, or `None` when the run is not yet
+/// recordable. A run is recordable when:
+/// - it has not already been recorded (`recorded_at` is `None`), and
+/// - every task has reached a settled state (verified/failed/cancelled) — i.e.
+///   nothing is still pending/running and could yet change.
+///
+/// Only `verified` and `failed` tasks produce a record (a `cancelled` task was
+/// abandoned by the user and carries no learning signal). The returned vec may
+/// be empty (e.g. an all-cancelled run); the caller still marks it recorded so
+/// repeated hook firings converge.
+pub fn records_for_run(
+    run: &RunState,
+    dec: &crate::model::Decomposition,
+) -> Option<Vec<RecordSpec>> {
+    if run.recorded_at.is_some() || run.tasks.is_empty() {
+        return None;
+    }
+    let settled = run.tasks.iter().all(|t| {
+        matches!(
+            t.status,
+            Status::Verified | Status::Failed | Status::Cancelled
+        )
+    });
+    if !settled {
+        return None;
+    }
+
+    let by_id: std::collections::HashMap<&str, &crate::model::Task> =
+        dec.tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+
+    let specs = run
+        .tasks
+        .iter()
+        .filter_map(|ts| {
+            let status = match ts.status {
+                Status::Verified => "verified",
+                Status::Failed => "failed",
+                _ => return None, // cancelled / non-terminal: no learning signal
+            };
+            let task = by_id.get(ts.id.as_str());
+            let title = task
+                .map(|t| t.title.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| ts.id.clone());
+            let files = task.map(|t| t.touched_files.clone()).unwrap_or_default();
+            let class = task
+                .map(|t| format!("{:?}", t.class).to_lowercase())
+                .unwrap_or_else(|| "parallel".to_string());
+            let model = ts
+                .model
+                .clone()
+                .or_else(|| task.and_then(|t| t.suggested_model.clone()))
+                .unwrap_or_else(|| "sonnet".to_string());
+            let done_criteria = task.and_then(|t| t.done_criteria.clone());
+            Some(RecordSpec {
+                title,
+                files,
+                class,
+                model,
+                status: status.to_string(),
+                cost_usd: ts.cost_usd.unwrap_or(0.0),
+                done_criteria,
+            })
+        })
+        .collect();
+    Some(specs)
 }
 
 /// Run the project's test suite (from the repo root) and propagate its result.
@@ -830,6 +932,8 @@ mod tests {
                     worktree: None,
                     branch: None,
                     updated_at: None,
+                    model: None,
+                    cost_usd: None,
                 },
                 TaskState {
                     id: "b".into(),
@@ -837,10 +941,13 @@ mod tests {
                     worktree: None,
                     branch: None,
                     updated_at: None,
+                    model: None,
+                    cost_usd: None,
                 },
             ],
             paused: false,
             terminal_label: None,
+            recorded_at: None,
         };
         assert_eq!(rs.counts(), (1, 2));
     }
@@ -857,6 +964,8 @@ mod tests {
                     worktree: None,
                     branch: None,
                     updated_at: None,
+                    model: None,
+                    cost_usd: None,
                 },
                 TaskState {
                     id: "b".into(),
@@ -864,6 +973,8 @@ mod tests {
                     worktree: None,
                     branch: None,
                     updated_at: None,
+                    model: None,
+                    cost_usd: None,
                 },
                 TaskState {
                     id: "c".into(),
@@ -871,10 +982,13 @@ mod tests {
                     worktree: None,
                     branch: None,
                     updated_at: None,
+                    model: None,
+                    cost_usd: None,
                 },
             ],
             paused: false,
             terminal_label: None,
+            recorded_at: None,
         };
         assert_eq!(rs.counts(), (2, 3));
     }
@@ -947,6 +1061,7 @@ mod tests {
             tasks: vec![],
             paused: false,
             terminal_label: None,
+            recorded_at: None,
         };
         // save must succeed
         let saved_path = rs.save(&cfg, &tmp).unwrap();
@@ -982,9 +1097,12 @@ mod tests {
                 worktree: None,
                 branch: None,
                 updated_at: None,
+                model: None,
+                cost_usd: None,
             }],
             paused: false,
             terminal_label: None,
+            recorded_at: None,
         };
         rs.save(&cfg, &tmp).unwrap();
         let loaded = RunState::load(&cfg, &tmp, "run-rt").unwrap();
@@ -1060,9 +1178,12 @@ mod tests {
                 worktree: None,
                 branch: None,
                 updated_at: None,
+                model: None,
+                cost_usd: None,
             }],
             paused: false,
             terminal_label: None,
+            recorded_at: None,
         };
         rs.save(&cfg, &tmp).unwrap();
 
@@ -1093,6 +1214,7 @@ mod tests {
             tasks,
             paused: false,
             terminal_label: None,
+            recorded_at: None,
         }
     }
 
@@ -1108,6 +1230,8 @@ mod tests {
             worktree: None,
             branch: None,
             updated_at: Some(old_ts),
+            model: None,
+            cost_usd: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert_eq!(ids, vec!["stuck-task".to_string()]);
@@ -1125,6 +1249,8 @@ mod tests {
             worktree: None,
             branch: None,
             updated_at: Some(recent_ts),
+            model: None,
+            cost_usd: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert!(ids.is_empty(), "recent Running task must not be stuck");
@@ -1140,6 +1266,8 @@ mod tests {
             worktree: None,
             branch: None,
             updated_at: None,
+            model: None,
+            cost_usd: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert!(
@@ -1162,6 +1290,8 @@ mod tests {
             worktree: Some("/path/to/wt".into()),
             branch: Some("feature/t1".into()),
             updated_at: Some(now_secs()),
+            model: None,
+            cost_usd: None,
         }]);
         let t = run.tasks.iter_mut().find(|t| t.id == "t1").unwrap();
         t.status = Status::Pending;
@@ -1187,6 +1317,8 @@ mod tests {
             worktree: Some("/path/to/wt".into()),
             branch: Some("feature/fail".into()),
             updated_at: Some(now_secs() - 100),
+            model: None,
+            cost_usd: None,
         }]);
         let t = run.tasks.iter_mut().find(|t| t.id == "t-fail").unwrap();
         t.status = Status::Pending;
@@ -1211,6 +1343,8 @@ mod tests {
                 worktree: None,
                 branch: None,
                 updated_at: None,
+                model: None,
+                cost_usd: None,
             },
             TaskState {
                 id: "verified-task".into(),
@@ -1218,6 +1352,8 @@ mod tests {
                 worktree: None,
                 branch: None,
                 updated_at: None,
+                model: None,
+                cost_usd: None,
             },
         ]);
         for t in &run.tasks {
@@ -1243,6 +1379,8 @@ mod tests {
                 worktree: Some("/wt/stuck1".into()),
                 branch: Some("feat/stuck1".into()),
                 updated_at: Some(old_ts),
+                model: None,
+                cost_usd: None,
             },
             TaskState {
                 id: "stuck-2".into(),
@@ -1250,6 +1388,8 @@ mod tests {
                 worktree: Some("/wt/stuck2".into()),
                 branch: Some("feat/stuck2".into()),
                 updated_at: Some(old_ts),
+                model: None,
+                cost_usd: None,
             },
             TaskState {
                 id: "active".into(),
@@ -1257,6 +1397,8 @@ mod tests {
                 worktree: Some("/wt/active".into()),
                 branch: Some("feat/active".into()),
                 updated_at: Some(recent_ts),
+                model: None,
+                cost_usd: None,
             },
         ]);
 
@@ -1296,6 +1438,8 @@ mod tests {
             worktree: None,
             branch: None,
             updated_at: Some(now_secs()),
+            model: None,
+            cost_usd: None,
         }]);
         let found = run.tasks.iter().find(|t| t.id == "no-such-task");
         assert!(found.is_none(), "non-existent task id must not be found");
@@ -1371,6 +1515,8 @@ mod tests {
                 worktree: None,
                 branch: None,
                 updated_at: Some(ancient_ts),
+                model: None,
+                cost_usd: None,
             },
             TaskState {
                 id: "done-old".into(),
@@ -1378,6 +1524,8 @@ mod tests {
                 worktree: None,
                 branch: None,
                 updated_at: Some(ancient_ts),
+                model: None,
+                cost_usd: None,
             },
             TaskState {
                 id: "verified-old".into(),
@@ -1385,6 +1533,8 @@ mod tests {
                 worktree: None,
                 branch: None,
                 updated_at: Some(ancient_ts),
+                model: None,
+                cost_usd: None,
             },
         ]);
         let ids = stuck_task_ids(&run, ttl);
@@ -1450,5 +1600,130 @@ mod tests {
     fn count_failures_unknown_format_returns_one() {
         let output = "Something went wrong";
         assert_eq!(count_test_failures(output, false), 1);
+    }
+
+    // ── records_for_run tests ──────────────────────────────────────────────
+
+    use crate::model::{Class, Decomposition, Task};
+
+    fn task(id: &str, title: &str, model: Option<&str>) -> Task {
+        Task {
+            id: id.into(),
+            title: title.into(),
+            touched_files: vec![format!("src/{id}.rs")],
+            class: Class::Parallel,
+            suggested_model: model.map(str::to_string),
+            done_criteria: Some("cargo test".into()),
+            ..Default::default()
+        }
+    }
+
+    fn ts(id: &str, status: Status) -> TaskState {
+        TaskState {
+            id: id.into(),
+            status,
+            ..Default::default()
+        }
+    }
+
+    /// A settled, never-recorded run yields one record per verified/failed task,
+    /// joining title/files/class/done-criteria from the decomposition.
+    #[test]
+    fn records_for_run_emits_verified_and_failed() {
+        let dec = Decomposition {
+            goal: "g".into(),
+            tasks: vec![
+                task("a", "Task A", Some("haiku")),
+                task("b", "Task B", None),
+            ],
+        };
+        let run = make_run_with_tasks(vec![ts("a", Status::Verified), ts("b", Status::Failed)]);
+        let specs = records_for_run(&run, &dec).expect("settled run must yield records");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].title, "Task A");
+        assert_eq!(specs[0].status, "verified");
+        assert_eq!(specs[0].model, "haiku"); // from suggested_model
+        assert_eq!(specs[0].files, vec!["src/a.rs".to_string()]);
+        assert_eq!(specs[0].class, "parallel");
+        assert_eq!(specs[0].done_criteria.as_deref(), Some("cargo test"));
+        assert_eq!(specs[1].status, "failed");
+        assert_eq!(specs[1].model, "sonnet"); // no suggested_model → default
+    }
+
+    /// A task's recorded model/cost (set via `state set --model/--cost`, incl. the
+    /// escalation path) overrides the decomposition's suggested_model.
+    #[test]
+    fn records_for_run_prefers_task_state_model_and_cost() {
+        let dec = Decomposition {
+            goal: "g".into(),
+            tasks: vec![task("a", "Task A", Some("haiku"))],
+        };
+        let mut t = ts("a", Status::Verified);
+        t.model = Some("opus".into()); // escalated
+        t.cost_usd = Some(0.42);
+        let run = make_run_with_tasks(vec![t]);
+        let specs = records_for_run(&run, &dec).unwrap();
+        assert_eq!(specs[0].model, "opus");
+        assert_eq!(specs[0].cost_usd, 0.42);
+    }
+
+    /// Cancelled tasks carry no learning signal and are skipped.
+    #[test]
+    fn records_for_run_skips_cancelled() {
+        let dec = Decomposition {
+            goal: "g".into(),
+            tasks: vec![task("a", "A", None), task("b", "B", None)],
+        };
+        let run = make_run_with_tasks(vec![ts("a", Status::Verified), ts("b", Status::Cancelled)]);
+        let specs = records_for_run(&run, &dec).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].title, "A");
+    }
+
+    /// A run with any still-running/pending task is NOT recordable (could change).
+    #[test]
+    fn records_for_run_none_when_unsettled() {
+        let dec = Decomposition {
+            goal: "g".into(),
+            tasks: vec![task("a", "A", None), task("b", "B", None)],
+        };
+        let run = make_run_with_tasks(vec![ts("a", Status::Verified), ts("b", Status::Running)]);
+        assert!(records_for_run(&run, &dec).is_none());
+    }
+
+    /// An already-recorded run is never re-emitted (idempotency).
+    #[test]
+    fn records_for_run_none_when_already_recorded() {
+        let dec = Decomposition {
+            goal: "g".into(),
+            tasks: vec![task("a", "A", None)],
+        };
+        let mut run = make_run_with_tasks(vec![ts("a", Status::Verified)]);
+        run.recorded_at = Some(now_secs());
+        assert!(records_for_run(&run, &dec).is_none());
+    }
+
+    /// An empty run is not recordable (nothing to learn from).
+    #[test]
+    fn records_for_run_none_when_empty() {
+        let dec = Decomposition {
+            goal: "g".into(),
+            tasks: vec![],
+        };
+        let run = make_run_with_tasks(vec![]);
+        assert!(records_for_run(&run, &dec).is_none());
+    }
+
+    /// An all-cancelled settled run yields an empty (but Some) vec so the caller
+    /// can still stamp it recorded and stop re-checking.
+    #[test]
+    fn records_for_run_some_empty_when_all_cancelled() {
+        let dec = Decomposition {
+            goal: "g".into(),
+            tasks: vec![task("a", "A", None)],
+        };
+        let run = make_run_with_tasks(vec![ts("a", Status::Cancelled)]);
+        let specs = records_for_run(&run, &dec).expect("settled run must be Some");
+        assert!(specs.is_empty());
     }
 }

@@ -7,6 +7,13 @@
           { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/condukt restore", "timeout": 10 }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/condukt state record-run --all", "timeout": 15 }
+        ]
+      }
     ]
   }
 }

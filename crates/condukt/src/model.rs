@@ -20,7 +20,7 @@ pub enum Class {
 }
 
 /// One unit of work in a decomposition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     #[serde(default)]
