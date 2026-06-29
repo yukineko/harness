@@ -14,9 +14,7 @@
 use std::io::Write;
 
 use context_governor::backing::TranscriptBackingStore;
-use context_governor::defaults::{
-    checkpointer, groomer, guard, injector, rehydrator,
-};
+use context_governor::defaults::{checkpointer, groomer, guard, injector, rehydrator};
 use context_governor::handlers::{
     Checkpointer, CompactDecision, CompactionGuard, ContextInjector, StateRehydrator,
 };
