@@ -448,7 +448,7 @@ if command -v tracekit >/dev/null 2>&1; then
   # verifier span (検証フェーズ。status は verified|failed をそのまま)
   tracekit record --run "$RID" --span "<t.id>-v" --parent "<t.id>" --name "verify <task.title>" \
     --phase verifier --model <verifier_model> --task "<t.id>" \
-    --status <verified|failed> 2>/dev/null || true
+    --status <verified|failed> --cost "${GAUGE_COST:-0}" 2>/dev/null || true
 fi
 ```
 これにより run 完了後の `tracekit trace $RID` で段ごとの model/cost/status が見え、Phase 8 の
