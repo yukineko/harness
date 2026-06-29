@@ -56,9 +56,11 @@ mod tests {
     use crate::types::{ContextItem, ItemBody, ItemId, Lane, StoreKey};
     use harness_core::hook::HookInput;
     use harness_core::store::{project_key, safe_session};
+    use std::io::{Read, Seek, SeekFrom};
     use std::path::{Path, PathBuf};
 
-    /// In-memory [`BackingStore`] — mirrors the one in `guard::tests`.
+    // ── In-memory BackingStore mock ───────────────────────────────────────────
+
     struct MockStore {
         snapshot_text: Option<String>,
     }
@@ -96,6 +98,8 @@ mod tests {
         }
     }
 
+    // ── Ledger-path helpers ───────────────────────────────────────────────────
+
     fn current_ledger_path(cwd: &str) -> PathBuf {
         let base = std::env::var("CONTEXT_GOVERNOR_STATE_DIR")
             .ok()
@@ -118,28 +122,64 @@ mod tests {
             .join("ledger.jsonl")
     }
 
-    fn count_snapshotted(sink: &Path) -> usize {
-        std::fs::read_to_string(sink)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains("\"snapshotted\""))
-            .count()
+    fn count_snapshotted_in_str(s: &str) -> usize {
+        s.lines().filter(|l| l.contains("\"snapshotted\"")).count()
     }
 
-    /// Single test covering "above-threshold + real snapshot → one row" and
+    fn count_snapshotted(sink: &Path) -> usize {
+        count_snapshotted_in_str(&std::fs::read_to_string(sink).unwrap_or_default())
+    }
+
+    fn preopen_ledger(sink: &Path) -> Option<std::fs::File> {
+        if let Some(parent) = sink.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(sink)
+            .ok()
+    }
+
+    fn count_via_fd_or_path(
+        fd: &mut Option<std::fs::File>,
+        sink_preopen: &Path,
+        cwd: &str,
+    ) -> usize {
+        if let Some(ref mut f) = fd {
+            let _ = f.seek(SeekFrom::Start(0));
+            let mut content = String::new();
+            let _ = f.read_to_string(&mut content);
+            let n = count_snapshotted_in_str(&content);
+            if n > 0 {
+                return n;
+            }
+        }
+        let n = count_snapshotted(sink_preopen);
+        if n > 0 {
+            return n;
+        }
+        let sink_now = current_ledger_path(cwd);
+        if sink_now != sink_preopen {
+            return count_snapshotted(&sink_now);
+        }
+        0
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    /// Covers "above-threshold + real snapshot → one row" and
     /// "below-threshold (missing transcript) → no row, no panic".
     ///
-    /// Env-safety: this test NEVER sets `CONTEXT_GOVERNOR_STATE_DIR`, so it
-    /// cannot interfere with `backing::open_is_ok_and_creates_state_dir_for_any_cwd`.
+    /// # Env-safety
     ///
-    /// The `MockStore` holds the snapshot in memory, so no file is written to any
-    /// env-var-derived directory.  For Scenario A, a real transcript file with a
-    /// `message.usage.input_tokens` of 15 000 is written so `last_usage_tokens`
-    /// exceeds the default 10 000 threshold.  Scenario B uses a missing transcript
-    /// path so `last_usage_tokens` returns `None` → 0 < threshold → no snapshot.
-    ///
-    /// The shared `crate::defaults::guard::acquire_env_lock` serialises this test
-    /// with the guard's test so they do not run concurrently.
+    /// This test NEVER mutates `CONTEXT_GOVERNOR_STATE_DIR`.  The `MockStore`
+    /// holds the snapshot in memory.  For the ledger, a fd is pre-opened before
+    /// the handler is called; the handler appends to the same inode; if
+    /// `backing::open_is_ok_and_creates_state_dir_for_any_cwd` deletes the
+    /// parent directory between the handler write and our path-based read, the
+    /// fd persists (Unix inode refcount) and we read through it instead.
     #[test]
     fn checkpointer_emits_snapshotted_row_iff_real_snapshot() {
         let _lock = crate::defaults::guard::acquire_env_lock();
@@ -154,19 +194,22 @@ mod tests {
                 .unwrap()
                 .to_string();
 
-            // Transcript carries usage so last_usage_tokens returns 15 000 > threshold.
+            // Write a transcript file so last_usage_tokens returns 15 000 > 10 000.
             let tpath = td.path().join("cp-real-transcript.jsonl");
             std::fs::write(
                 &tpath,
                 concat!(
-                    "{\"message\":{\"role\":\"user\",\"content\":\"hello world please do the task\"}}\n",
-                    "{\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"task done\"}],",
-                    "\"usage\":{\"input_tokens\":15000,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n",
+                    "{\"message\":{\"role\":\"user\",\"content\":\"hello world\"}}\n",
+                    "{\"message\":{\"role\":\"assistant\",",
+                    "\"content\":[{\"type\":\"text\",\"text\":\"done\"}],",
+                    "\"usage\":{\"input_tokens\":15000,",
+                    "\"cache_read_input_tokens\":0,",
+                    "\"cache_creation_input_tokens\":0}}}\n",
                 ),
             )
             .expect("write transcript");
 
-            let mut store = MockStore::with_snapshot("hello world please do the task\n\ntask done");
+            let mut store = MockStore::with_snapshot("hello world\n\ndone");
             let input = HookInput {
                 transcript_path: tpath.to_str().unwrap().to_string(),
                 cwd: cwd.clone(),
@@ -176,12 +219,13 @@ mod tests {
             };
 
             let sink = current_ledger_path(&cwd);
+            let mut fd = preopen_ledger(&sink);
             let mut cp = DefaultCheckpointer;
             cp.checkpoint(&input, &mut store);
 
+            let count = count_via_fd_or_path(&mut fd, &sink, &cwd);
             assert_eq!(
-                count_snapshotted(&sink),
-                1,
+                count, 1,
                 "above-threshold + real snapshot must produce one snapshotted row; sink={sink:?}"
             );
         }
@@ -204,12 +248,13 @@ mod tests {
             };
 
             let sink = current_ledger_path(&cwd);
+            let mut fd = preopen_ledger(&sink);
             let mut cp = DefaultCheckpointer;
-            cp.checkpoint(&input, &mut store); // must not panic
+            cp.checkpoint(&input, &mut store);
 
+            let count = count_via_fd_or_path(&mut fd, &sink, &cwd);
             assert_eq!(
-                count_snapshotted(&sink),
-                0,
+                count, 0,
                 "missing transcript (below threshold) must produce no snapshotted row"
             );
         }

@@ -64,15 +64,15 @@ mod tests {
     use crate::types::{ContextItem, ItemBody, ItemId, Lane, StoreKey};
     use harness_core::hook::HookInput;
     use harness_core::store::{project_key, safe_session};
+    use std::io::{Read, Seek, SeekFrom};
     use std::path::{Path, PathBuf};
+
+    // ── In-memory BackingStore mock ───────────────────────────────────────────
 
     /// In-memory [`BackingStore`] for tests: avoids all env var / filesystem
     /// dependencies for the store itself, so the store never uses a directory
     /// owned by another test (e.g. `backing::open_is_ok_and_creates_state_dir`).
-    /// The recall response is pre-configured at construction time.
     struct MockStore {
-        /// The `Inline` body text returned for `SNAPSHOT_KEY`, or `None` to
-        /// simulate an empty/missing transcript (recall → `None`).
         snapshot_text: Option<String>,
     }
 
@@ -91,7 +91,7 @@ mod tests {
 
     impl BackingStore for MockStore {
         fn snapshot_transcript(&mut self, _transcript_path: &str) -> StoreKey {
-            SNAPSHOT_KEY // always return the fixed key; snapshot is in `snapshot_text`
+            SNAPSHOT_KEY
         }
         fn put(&mut self, item: &ContextItem) -> StoreKey {
             StoreKey(item.id.0)
@@ -109,10 +109,9 @@ mod tests {
         }
     }
 
-    /// Replicate `ledger::resolve_state` from the CURRENT env snapshot so the
-    /// path computed here and the path that `Ledger::open` computes inside the
-    /// handler are always identical (both happen in the same nanosecond window,
-    /// before any other thread can mutate the env vars).
+    // ── Ledger-path helpers ───────────────────────────────────────────────────
+
+    /// Replicate `ledger::resolve_state` from the current env snapshot.
     fn current_ledger_path(cwd: &str) -> PathBuf {
         let base = std::env::var("CONTEXT_GOVERNOR_STATE_DIR")
             .ok()
@@ -135,35 +134,92 @@ mod tests {
             .join("ledger.jsonl")
     }
 
-    fn count_snapshotted(sink: &Path) -> usize {
-        std::fs::read_to_string(sink)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains("\"snapshotted\""))
-            .count()
+    fn count_snapshotted_in_str(s: &str) -> usize {
+        s.lines().filter(|l| l.contains("\"snapshotted\"")).count()
     }
 
-    /// Single test covering "real snapshot → one row" and
-    /// "empty/missing → no row, no panic".
+    fn count_snapshotted(sink: &Path) -> usize {
+        count_snapshotted_in_str(&std::fs::read_to_string(sink).unwrap_or_default())
+    }
+
+    /// Pre-open the ledger file and return an owned fd.
     ///
-    /// Env-safety: this test NEVER sets `CONTEXT_GOVERNOR_STATE_DIR`, so it
-    /// cannot override the value that
-    /// `backing::open_is_ok_and_creates_state_dir_for_any_cwd` sets, keeping
-    /// the two tests safe to run in parallel.
+    /// On Unix, holding an open fd keeps the inode alive even after
+    /// `backing::open_is_ok_and_creates_state_dir_for_any_cwd` calls
+    /// `remove_dir_all` on its base directory (which happens to contain our
+    /// ledger when that test is running concurrently).  A subsequent seek+read
+    /// via the held fd still returns the content written by the handler.
+    fn preopen_ledger(sink: &Path) -> Option<std::fs::File> {
+        if let Some(parent) = sink.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(sink)
+            .ok()
+    }
+
+    /// Read snapshotted-row count via a held fd, with fallback to a fresh path
+    /// read.  The fd survives the inode being unlinked (Unix guarantee).  The
+    /// fallback covers the unlikely case where `CONTEXT_GOVERNOR_STATE_DIR`
+    /// changed between pre-open and the handler's `Ledger::open`, causing the
+    /// handler to write to a different path than the one the fd was opened on.
+    fn count_via_fd_or_path(
+        fd: &mut Option<std::fs::File>,
+        sink_preopen: &Path,
+        cwd: &str,
+    ) -> usize {
+        // Primary: read through the held fd (survives unlink).
+        if let Some(ref mut f) = fd {
+            let _ = f.seek(SeekFrom::Start(0));
+            let mut content = String::new();
+            let _ = f.read_to_string(&mut content);
+            let n = count_snapshotted_in_str(&content);
+            if n > 0 {
+                return n;
+            }
+        }
+        // Fallback A: re-read from the path the fd was opened on (fast path when
+        // the fd couldn't be opened at all).
+        let n = count_snapshotted(sink_preopen);
+        if n > 0 {
+            return n;
+        }
+        // Fallback B: STATE_DIR may have shifted between pre-open and handler
+        // (e.g. `backing::open_is_ok` removed it after my pre-open). Recompute
+        // the ledger path from the *current* env and check that too.
+        let sink_now = current_ledger_path(cwd);
+        if sink_now != sink_preopen {
+            return count_snapshotted(&sink_now);
+        }
+        0
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    /// Covers "real snapshot → exactly one snapshotted row" and
+    /// "missing/empty → no row, no panic".
     ///
-    /// Store isolation: a `MockStore` holds the snapshot entirely in memory, so
-    /// no snapshot file is written to any env-var-derived directory.  Only the
-    /// `Ledger::open` call (inside the handler) and `current_ledger_path` (called
-    /// immediately before) read the env — and they execute nanoseconds apart, so
-    /// they always agree on the path.  `project_key(unique_cwd)` isolates each
-    /// scenario's ledger file from every other run and scenario.
+    /// # Env-safety
+    ///
+    /// This test NEVER mutates `CONTEXT_GOVERNOR_STATE_DIR`, so it cannot
+    /// override the value that `backing::open_is_ok_and_creates_state_dir_for_any_cwd`
+    /// sets.  The `MockStore` keeps the snapshot entirely in memory, eliminating
+    /// env-var dependencies from the store layer.
+    ///
+    /// For the ledger layer, `Ledger::open` (inside the handler) and
+    /// `current_ledger_path` (in the test) both read `CONTEXT_GOVERNOR_STATE_DIR`.
+    /// If `backing::open_is_ok` is running concurrently and its `remove_dir_all`
+    /// runs between the handler's write and our path-based read, the fd trick
+    /// provides the safety net: we pre-open the ledger file before calling the
+    /// handler; the handler appends to the same inode; `unlink` removes the
+    /// directory entry but the inode persists while our fd is alive; we read
+    /// through the fd and find the row.
     #[test]
     fn guard_emits_snapshotted_row_iff_real_snapshot() {
         let _lock = acquire_env_lock();
-
-        // Use unique cwd values so project_key(cwd) gives a unique ledger path
-        // per scenario and per process invocation.  A tempdir path suffix
-        // guarantees uniqueness without touching STATE_DIR.
         let td = tempfile::tempdir().expect("tempdir");
 
         // ── Scenario A: real (non-empty) snapshot → exactly one row ──────────
@@ -171,7 +227,6 @@ mod tests {
             let cwd = td.path().join("guard-real").to_str().unwrap().to_string();
             let mut store =
                 MockStore::with_snapshot("hello world from user\n\nhello back from assistant");
-
             let input = HookInput {
                 transcript_path: "/unused-by-mock".to_string(),
                 cwd: cwd.clone(),
@@ -180,6 +235,7 @@ mod tests {
             };
 
             let sink = current_ledger_path(&cwd);
+            let mut fd = preopen_ledger(&sink);
             let mut guard = DefaultGuard;
             let decision = guard.on_pre_compact(&input, &mut store);
 
@@ -187,9 +243,9 @@ mod tests {
                 matches!(decision, CompactDecision::Proceed),
                 "guard must proceed after securing a snapshot"
             );
+            let count = count_via_fd_or_path(&mut fd, &sink, &cwd);
             assert_eq!(
-                count_snapshotted(&sink),
-                1,
+                count, 1,
                 "real snapshot must produce exactly one snapshotted row; sink={sink:?}"
             );
         }
@@ -203,7 +259,6 @@ mod tests {
                 .unwrap()
                 .to_string();
             let mut store = MockStore::without_snapshot();
-
             let input = HookInput {
                 transcript_path: "/no/such/transcript.jsonl".to_string(),
                 cwd: cwd.clone(),
@@ -212,6 +267,7 @@ mod tests {
             };
 
             let sink = current_ledger_path(&cwd);
+            let mut fd = preopen_ledger(&sink);
             let mut guard = DefaultGuard;
             let decision = guard.on_pre_compact(&input, &mut store);
 
@@ -219,9 +275,9 @@ mod tests {
                 matches!(decision, CompactDecision::Proceed),
                 "guard must proceed even when transcript is missing"
             );
+            let count = count_via_fd_or_path(&mut fd, &sink, &cwd);
             assert_eq!(
-                count_snapshotted(&sink),
-                0,
+                count, 0,
                 "missing/empty transcript must produce no snapshotted row"
             );
         }
