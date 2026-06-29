@@ -19,6 +19,7 @@ use context_governor::handlers::{
     Checkpointer, CompactDecision, CompactionGuard, ContextInjector, StateRehydrator,
 };
 use context_governor::io::HookOutput;
+use context_governor::LedgerSummary;
 use harness_core::hook::{read_stdin, run_hook, HookInput};
 
 /// What the dispatch decided to do, kept separate from doing it so `main` owns
@@ -30,7 +31,28 @@ enum Dispatch {
     Block(String),
 }
 
+/// Format a `LedgerSummary` into a human-readable, metrics-style string.
+fn render_rollup(s: &LedgerSummary) -> String {
+    let mut out = String::new();
+    out.push_str("context-governor ledger rollup\n");
+    out.push_str(&format!("  rows: {}\n", s.rows));
+    out.push_str(&format!("  total_saved_tokens: {}\n", s.total_saved_tokens));
+    out.push_str("  per_event:\n");
+    for (event, count) in &s.per_event {
+        out.push_str(&format!("    {event}: {count}\n"));
+    }
+    out
+}
+
 fn main() -> ! {
+    if std::env::args().nth(1).as_deref() == Some("rollup") {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| ".".to_string());
+        let summary = context_governor::rollup(&cwd);
+        print!("{}", render_rollup(&summary));
+        std::process::exit(0);
+    }
     run_hook(|| {
         let raw = read_stdin();
         let Some(input) = HookInput::parse(&raw) else {
@@ -110,5 +132,38 @@ mod tests {
             Dispatch::Emit(out) => assert_eq!(out.to_json(), "{}"),
             Dispatch::Block(_) => panic!("unknown event must never block"),
         }
+    }
+
+    /// Pure formatting test for `render_rollup` — does not spawn a process or
+    /// read the filesystem. Verifies the key fields appear in the output.
+    #[test]
+    fn render_rollup_formats_summary() {
+        use context_governor::LedgerSummary;
+        use std::collections::BTreeMap;
+
+        let mut per_event = BTreeMap::new();
+        per_event.insert("groomed".to_string(), 2u64);
+        per_event.insert("injected".to_string(), 1u64);
+
+        let summary = LedgerSummary {
+            total_saved_tokens: 150,
+            rows: 3,
+            per_event,
+        };
+
+        let rendered = render_rollup(&summary);
+        assert!(
+            rendered.contains("total_saved_tokens: 150"),
+            "missing total_saved_tokens in: {rendered}"
+        );
+        assert!(rendered.contains("rows: 3"), "missing rows in: {rendered}");
+        assert!(
+            rendered.contains("groomed: 2"),
+            "missing groomed count in: {rendered}"
+        );
+        assert!(
+            rendered.contains("injected: 1"),
+            "missing injected count in: {rendered}"
+        );
     }
 }
