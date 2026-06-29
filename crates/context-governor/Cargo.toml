@@ -1,0 +1,32 @@
+[package]
+name = "context-governor"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license = "MIT"
+description = "A thin control layer around Claude Code's built-in compaction: pin + lossless-recall + retrieval + tool-hygiene, wired as a single hook-dispatch binary. Separates the three axes it touches — size (window occupancy), cost (recompute/cache), correctness (norm preservation) — and never writes its own lossy summarizer (compression is delegated to built-in compaction). Subscription-native (hooks + binary, no API key)."
+repository = "https://github.com/yukineko/context-governor"
+
+# A library target so the acceptance/property tests in `tests/` can import the
+# frozen contract (Lane / Evictable / SpecClass / the trait set / invariants),
+# plus a thin bin that only reads stdin, dispatches on hook_event_name, and
+# writes the envelope. The contract lives in the lib; the bin is plumbing.
+[lib]
+name = "context_governor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "context-governor"
+path = "src/bin/context-governor.rs"
+
+[dependencies]
+harness-core = { path = "../harness-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Phase 2 proves invariants I1–I6 with `proptest`; Phase 1 ships the contract and
+# compile-level shape tests. Declared now so Phase 2 needs no Cargo edit.
+proptest = "1"
