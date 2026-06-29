@@ -358,7 +358,7 @@ fn subagents_cmd(json: bool, session_id: Option<&str>) {
         path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
     );
     let mut subs = subs;
-    subs.sort_by(|a, b| b.turns.cmp(&a.turns));
+    subs.sort_by_key(|s| std::cmp::Reverse(s.turns));
     for s in &subs {
         println!(
             "  {:<18} {:>9}  {} turns  {}",
