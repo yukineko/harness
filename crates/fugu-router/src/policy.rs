@@ -151,6 +151,7 @@ pub fn downgrade_for_budget(d: Decision) -> Decision {
 struct ModelStat {
     count: usize,
     passes: usize,
+    total_cost_usd: f64,
 }
 
 fn aggregate(neighbors: &[Neighbor]) -> BTreeMap<String, ModelStat> {
@@ -159,8 +160,10 @@ fn aggregate(neighbors: &[Neighbor]) -> BTreeMap<String, ModelStat> {
         let s = m.entry(n.ep.model.clone()).or_insert(ModelStat {
             count: 0,
             passes: 0,
+            total_cost_usd: 0.0,
         });
         s.count += 1;
+        s.total_cost_usd += n.ep.cost_usd;
         // Learn from the human label when present, else the verifier's self-pass.
         if n.ep.effective_pass() {
             s.passes += 1;
@@ -189,31 +192,41 @@ pub fn decide(
     }
 
     let stats = aggregate(neighbors);
-    // Cheapest tier that historically clears the pass threshold with enough samples.
-    let mut chosen: Option<(String, f64)> = None;
+    // Among tiers that clear the pass threshold with enough samples, prefer the
+    // one with the lowest cost-per-success (total_cost_usd / passes). When cost
+    // data is absent (all zeros) this degenerates to the original cheapest-first
+    // ordering (TIERS is haiku→sonnet→opus, so the first qualifying tier wins).
+    let mut chosen: Option<(String, f64, f64)> = None; // (model, pass_rate, cost_per_pass)
     for tier in TIERS {
         if let Some(s) = stats.get(*tier) {
             if s.count >= min_samples {
                 let rate = s.passes as f64 / s.count as f64;
                 if rate >= pass_threshold {
-                    chosen = Some((tier.to_string(), rate));
-                    break; // cheapest-first: stop at the first that qualifies
+                    let cpp = if s.passes > 0 {
+                        s.total_cost_usd / s.passes as f64
+                    } else {
+                        f64::INFINITY
+                    };
+                    // Replace if this tier has a lower cost/pass (or first qualifying).
+                    if chosen.as_ref().map_or(true, |(_, _, prev_cpp)| cpp < *prev_cpp) {
+                        chosen = Some((tier.to_string(), rate, cpp));
+                    }
                 }
             }
         }
     }
 
     let (worker, basis, confidence, rationale) = match chosen {
-        Some((m, rate)) => (
+        Some((m, rate, cpp)) => (
             m.clone(),
             "learned",
             "high",
             format!(
-                "{} similar task(s): {} passed {:.0}% → cheapest tier clearing {:.0}%",
+                "{} similar task(s): {} passed {:.0}% cost/pass=${:.4} → cheapest qualifying tier",
                 neighbors.len(),
                 m,
                 rate * 100.0,
-                pass_threshold * 100.0
+                cpp,
             ),
         ),
         None => {
@@ -602,5 +615,46 @@ mod tests {
         let mut rng = Rng::new(1);
         let d = decide_bandit("deploy to prod", &[], "gated", &[], 0.7, 2, &mut rng);
         assert_eq!(d.basis, "gated");
+    }
+
+    // Helper: build a Neighbor with explicit cost_usd.
+    fn nb_cost(model: &str, pass: bool, cost_usd: f64) -> Neighbor {
+        let mut n = nb(model, pass);
+        n.ep.cost_usd = cost_usd;
+        n
+    }
+
+    #[test]
+    fn cost_per_pass_prefers_cheaper_tier_over_equally_accurate_pricier_one() {
+        // haiku: 3/3 pass @ $0.10 each → cost/pass = $0.10
+        // sonnet: 3/3 pass @ $1.00 each → cost/pass = $1.00
+        // Both clear 70% threshold. haiku should win despite same pass rate.
+        let neighbors = vec![
+            nb_cost("haiku", true, 0.10),
+            nb_cost("haiku", true, 0.10),
+            nb_cost("haiku", true, 0.10),
+            nb_cost("sonnet", true, 1.00),
+            nb_cost("sonnet", true, 1.00),
+            nb_cost("sonnet", true, 1.00),
+        ];
+        let d = decide("test task", &[], "parallel", &neighbors, 0.7, 3);
+        assert_eq!(d.worker_model, "haiku", "haiku costs less per pass — should be chosen: {d:?}");
+        assert!(d.rationale.contains("cost/pass="), "{}", d.rationale);
+    }
+
+    #[test]
+    fn cost_per_pass_skips_tier_with_no_cost_data_gracefully() {
+        // All cost_usd = 0.0 → cost/pass = 0 for all tiers that pass.
+        // Should degrade to original cheapest-first (haiku wins).
+        let neighbors = vec![
+            nb("haiku", true),
+            nb("haiku", true),
+            nb("haiku", true),
+            nb("sonnet", true),
+            nb("sonnet", true),
+            nb("sonnet", true),
+        ];
+        let d = decide("test task", &[], "parallel", &neighbors, 0.7, 3);
+        assert_eq!(d.worker_model, "haiku", "zero-cost fallback: {d:?}");
     }
 }
