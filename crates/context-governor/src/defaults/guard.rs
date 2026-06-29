@@ -10,7 +10,11 @@ pub struct DefaultGuard;
 
 impl CompactionGuard for DefaultGuard {
     fn on_pre_compact(&mut self, i: &HookInput, s: &mut dyn BackingStore) -> CompactDecision {
-        let _ = (i, s);
-        todo!("Phase 2: snapshot transcript + verbatim to store, then Proceed (backstop)")
+        // Secure a transcript snapshot before built-in compaction runs (I1).
+        // snapshot_transcript is fail-soft (empty/missing transcript → no-op), so
+        // the backstop proceeds unconditionally; Block stays reserved for a future
+        // case where the snapshot genuinely could not be secured.
+        s.snapshot_transcript(&i.transcript_path);
+        CompactDecision::Proceed
     }
 }
