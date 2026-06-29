@@ -2,8 +2,9 @@
 //! (no embeddings, no API), then select the top notes under the char budget.
 //!
 //! Weighting, strongest first: explicit `triggers` > `tags` > title words >
-//! body words. `always` notes are injected unconditionally (they bypass the
-//! score threshold but still respect the budget).
+//! body words. `always` notes are injected unconditionally: they bypass both the
+//! score threshold and the char budget (a normative note is never truncated or
+//! dropped), and any overrun they create is shed from the scored notes instead.
 
 use std::collections::HashSet;
 
@@ -124,13 +125,14 @@ pub fn select<'a>(notes: &'a [Note], prompt: &str, cfg: &Config) -> Vec<&'a Note
     let mut budget = CharBudget::new(cfg.max_chars);
     let mut seen: HashSet<&str> = HashSet::new();
 
-    // 1) always-notes first
+    // 1) always-notes first — injected in full regardless of the char budget
+    //    (normative notes must not silently drop). They still charge the budget,
+    //    so any overrun they create is shed from the scored notes below.
     for n in notes.iter().filter(|n| n.meta.always) {
-        if push(&mut chosen, &mut budget, &mut seen, n) {
-            // budget exhausted
-        }
+        push(&mut chosen, &mut budget, &mut seen, n, true);
     }
-    // 2) then scored notes above threshold, up to top_k
+    // 2) then scored notes above threshold, up to top_k. These honor the budget,
+    //    so they are the only ones dropped once `always` notes exhaust it.
     for sc in &scored {
         if chosen.len() >= cfg.top_k + chosen.iter().filter(|n| n.meta.always).count() {
             break;
@@ -138,22 +140,27 @@ pub fn select<'a>(notes: &'a [Note], prompt: &str, cfg: &Config) -> Vec<&'a Note
         if sc.score < cfg.min_score || sc.note.meta.always {
             continue;
         }
-        push(&mut chosen, &mut budget, &mut seen, sc.note);
+        push(&mut chosen, &mut budget, &mut seen, sc.note, false);
     }
     chosen
 }
 
+/// Admit a note into the selection. With `force` (used for `always` notes), the
+/// budget is *charged* but never allowed to reject — a normative note is injected
+/// in full even past `max_chars`, and the overrun it creates falls on the scored
+/// (non-`always`) notes admitted afterward, which still honor `would_overflow`.
 fn push<'a>(
     chosen: &mut Vec<&'a Note>,
     budget: &mut CharBudget,
     seen: &mut HashSet<&'a str>,
     n: &'a Note,
+    force: bool,
 ) -> bool {
     if seen.contains(n.slug.as_str()) {
         return false;
     }
     let len = n.injected_len();
-    if budget.would_overflow(len) {
+    if !force && budget.would_overflow(len) {
         return true; // would overflow budget
     }
     seen.insert(n.slug.as_str());
@@ -272,7 +279,9 @@ mod tests {
     }
 
     #[test]
-    fn budget_caps_selection() {
+    fn always_notes_exempt_from_budget() {
+        // Two `always` notes whose combined length far exceeds max_chars: both
+        // are injected in full anyway (normative notes never silently drop).
         let big = "x".repeat(2000);
         let mut c = cfg();
         c.max_chars = 200;
@@ -281,6 +290,32 @@ mod tests {
             note("b", "b", &[], &[], &big, true),
         ];
         let got = select(&notes, "anything", &c);
-        assert_eq!(got.len(), 1); // second would overflow the budget
+        assert_eq!(got.len(), 2); // both always notes survive the budget
+                                  // each is carried whole — the full body is present, not truncated
+        assert!(got.iter().all(|n| n.body.len() == big.len()));
+    }
+
+    #[test]
+    fn budget_drops_only_non_always() {
+        // An `always` note already overruns the budget; a scored non-`always`
+        // note that matches the prompt is the one shed, not the normative note.
+        let big = "x".repeat(2000);
+        let mut c = cfg();
+        c.max_chars = 200;
+        let notes = vec![
+            note("norm", "core convention", &[], &[], &big, true),
+            note(
+                "scored",
+                "memory rule",
+                &["lightgbm"],
+                &[],
+                "use chunksize",
+                false,
+            ),
+        ];
+        let got = select(&notes, "lightgbm のメモリで落ちる", &c);
+        // the always note is kept; the budgeted scored note is dropped
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].slug, "norm");
     }
 }
