@@ -10,6 +10,18 @@
 //! hook wrapper (see the harness invariants). Plugin-specific domain logic and
 //! config/metrics *fields* stay in each plugin crate and compose these.
 
+// never-break-a-turn invariant backstop: the exit-0-on-error guarantee relies on
+// std::panic::catch_unwind in hook::run_hook and gate::run_guarded. Under
+// panic="abort" catch_unwind is a silent NO-OP and a panicking hook would abort
+// the process, breaking the turn. Fail the build loudly instead of silently
+// disabling the guarantee. (cfg(panic) predicate is stable since Rust 1.60.)
+#[cfg(not(panic = "unwind"))]
+compile_error!(
+    "harness-core requires panic=\"unwind\": catch_unwind in hook::run_hook and \
+     gate::run_guarded is a NO-OP under panic=\"abort\", which would break the \
+     never-break-a-turn (exit-0-on-error) invariant. Restore panic=\"unwind\"."
+);
+
 pub mod config;
 pub mod daily;
 pub mod gate;

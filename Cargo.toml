@@ -35,3 +35,9 @@ sha2       = "0.10"
 strip     = true
 lto       = true
 opt-level = "z"
+# never-break-a-turn invariant: the exit-0-on-error guarantee rests on
+# std::panic::catch_unwind in hook::run_hook and gate::run_guarded, which becomes
+# a silent NO-OP under panic="abort". Pin "unwind" so a panic is caught and the
+# turn still exits cleanly. harness-core has a #[cfg(not(panic = "unwind"))]
+# compile_error! backstop guarding against this being changed.
+panic     = "unwind"
