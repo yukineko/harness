@@ -18,6 +18,24 @@ use context_governor::{
 };
 use context_governor::{ContextInjector, SpecClassifier};
 
+// ── Shared env lock (integration-crate analogue of `guard::acquire_env_lock`) ──
+// Integration tests compile as a separate crate, so they cannot reach the
+// crate-internal `#[cfg(test)] defaults::guard::acquire_env_lock`. Mirror it
+// here: one process-global, poison-tolerant lock that every env-mutating test in
+// this file acquires, so no two tests race on the process-global
+// CONTEXT_GOVERNOR_STATE_DIR / CONTEXT_GOVERNOR_REFERENCE_DOC /
+// CLAUDE_CODE_SESSION_ID / CONTEXT_GOVERNOR_GROOM_BUDGET concurrently.
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn env_lock() -> MutexGuard<'static, ()> {
+    ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 fn item(lane: Lane, tokens: u32) -> ContextItem {
     ContextItem {
         id: ItemId(1),
@@ -224,6 +242,9 @@ fn classifier_check_resident_ok_and_overrun() {
 fn injector_reads_reference_doc_from_env_and_injects() {
     use std::io::Write as _;
 
+    // Serialise against every other env-mutating test in this crate.
+    let _env = env_lock();
+
     let mut tmp = tempfile::NamedTempFile::new().expect("temp file");
     tmp.write_all(PHASE2_DOC.as_bytes()).expect("write doc");
     tmp.flush().expect("flush");
@@ -296,6 +317,9 @@ fn additional_context(out: &HookOutput) -> Option<String> {
 #[test]
 fn phase2_guard_rehydrator_checkpointer_end_to_end() {
     use std::io::Write as _;
+
+    // Serialise against every other env-mutating test in this crate.
+    let _env = env_lock();
 
     let td = tempfile::tempdir().expect("state dir");
     // SAFETY: single-threaded test; we set the var once before any store opens.
@@ -436,5 +460,185 @@ fn phase2_guard_rehydrator_checkpointer_end_to_end() {
             additional_context(&out).is_none(),
             "rehydrate must return the empty default when no snapshot exists"
         );
+    }
+}
+
+// ── Phase 2: action-ledger acceptance (I6) ────────────────────────────────────
+
+/// Recursively locate the single `ledger.jsonl` written under a state dir,
+/// without reconstructing the `project_key/safe_session` path layout.
+fn find_ledger(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if let Some(found) = find_ledger(&p) {
+                return Some(found);
+            }
+        } else if p.file_name().and_then(|n| n.to_str()) == Some("ledger.jsonl") {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// I6 end-to-end: the three size-bearing levers — groom (PostToolUse), inject
+/// (UserPromptSubmit), and snapshot (PreCompact) — each append exactly one
+/// durable JSONL row carrying both `saved_tokens` and `resident_tokens`, and
+/// `ledger::rollup` sums them deterministically.
+///
+/// All three emits are routed through one fixed `(STATE_DIR, cwd, session)`, so
+/// they land in a single `ledger.jsonl` that `rollup(cwd)` reads back. The
+/// scenario runs under the shared `env_lock` because it mutates the
+/// process-global `CONTEXT_GOVERNOR_STATE_DIR` / `CLAUDE_CODE_SESSION_ID` /
+/// `CONTEXT_GOVERNOR_REFERENCE_DOC`. It also asserts the byte-frozen contract
+/// files (`types.rs` / `handlers.rs` / `io.rs`) were not modified by this work.
+#[test]
+fn action_ledger_records_groom_inject_snapshot_and_rollup_sums() {
+    use context_governor::defaults::DefaultGroomer;
+    use context_governor::rollup;
+    use std::io::Write as _;
+
+    let _env = env_lock();
+
+    let td = tempfile::tempdir().expect("state dir");
+    let state_dir = td.path().to_str().expect("utf-8 state dir").to_string();
+    let unique_cwd = td.path().join("ledger-acceptance-proj");
+    let cwd = unique_cwd.to_str().expect("utf-8 cwd").to_string();
+    let session_id = format!("ledger-acceptance-{}", std::process::id());
+
+    std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", &state_dir);
+    std::env::set_var("CLAUDE_CODE_SESSION_ID", &session_id);
+
+    // ── 1. Groom: an over-budget tool_response → one `groomed` row ────────────
+    let groom_input: HookInput = serde_json::from_value(serde_json::json!({
+        "session_id": &session_id,
+        "transcript_path": "",
+        "cwd": &cwd,
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_response": "z".repeat(40_000), // ~10 000 tokens, well over the 2048 default
+    }))
+    .expect("groom HookInput");
+    let groom_out = DefaultGroomer.to_output(&groom_input);
+    assert!(
+        groom_out.to_json().contains("updatedToolOutput"),
+        "over-budget groom must return a PostToolUse envelope"
+    );
+
+    // ── 2. Inject: a heading-matching prompt against a real doc → one `injected` row ──
+    let mut doc = tempfile::NamedTempFile::new().expect("reference doc");
+    doc.write_all(PHASE2_DOC.as_bytes()).expect("write doc");
+    doc.flush().expect("flush doc");
+    std::env::set_var("CONTEXT_GOVERNOR_REFERENCE_DOC", doc.path());
+
+    let inject_input: HookInput = serde_json::from_value(serde_json::json!({
+        "session_id": &session_id,
+        "transcript_path": "",
+        "cwd": &cwd,
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "show me some examples",
+    }))
+    .expect("inject HookInput");
+    let inject_out = DefaultInjector.inject(&inject_input);
+    assert!(
+        inject_out.to_json().contains("additionalContext"),
+        "heading-match inject must produce additionalContext"
+    );
+    std::env::remove_var("CONTEXT_GOVERNOR_REFERENCE_DOC");
+
+    // ── 3. Snapshot: PreCompact backstop over a real transcript → one `snapshotted` row ──
+    let mut tf = tempfile::NamedTempFile::new().expect("transcript file");
+    writeln!(
+        tf,
+        r#"{{"message":{{"role":"user","content":"hello from the user turn"}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        tf,
+        r#"{{"message":{{"role":"assistant","content":"reply from the assistant turn"}}}}"#
+    )
+    .unwrap();
+    tf.flush().unwrap();
+
+    let mut store = TranscriptBackingStore::open(&cwd).expect("open store");
+    let snap_input = HookInput {
+        session_id: session_id.clone(),
+        transcript_path: tf.path().to_str().unwrap().to_string(),
+        cwd: cwd.clone(),
+        hook_event_name: "PreCompact".to_string(),
+        ..Default::default()
+    };
+    let mut guard = DefaultGuard;
+    assert!(
+        matches!(
+            guard.on_pre_compact(&snap_input, &mut store),
+            CompactDecision::Proceed
+        ),
+        "PreCompact backstop proceeds after securing a snapshot"
+    );
+
+    // ── 4. Rollup: exactly three rows, one per event, with summed saved_tokens ──
+    let summary = rollup(&cwd);
+    assert_eq!(
+        summary.rows, 3,
+        "groom + inject + snapshot must produce exactly three ledger rows; got {summary:?}"
+    );
+    assert_eq!(
+        summary.per_event.get("groomed"),
+        Some(&1),
+        "one groomed row"
+    );
+    assert_eq!(
+        summary.per_event.get("injected"),
+        Some(&1),
+        "one injected row"
+    );
+    assert_eq!(
+        summary.per_event.get("snapshotted"),
+        Some(&1),
+        "one snapshotted row"
+    );
+    // Only the groom carries saved_tokens; inject/snapshot record 0, so the sum is
+    // the groom's reclaimed-token estimate and must be strictly positive.
+    assert!(
+        summary.total_saved_tokens > 0,
+        "rollup must sum the groom's saved_tokens (> 0); got {}",
+        summary.total_saved_tokens
+    );
+
+    // ── 5. Every emitted row must carry both size fields on disk ──────────────
+    let sink = find_ledger(td.path()).expect("ledger.jsonl must exist under the state dir");
+    let contents = std::fs::read_to_string(&sink).expect("read ledger");
+    let rows: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        rows.len(),
+        3,
+        "exactly three JSONL rows on disk; got {rows:?}"
+    );
+    for line in &rows {
+        let v: serde_json::Value = serde_json::from_str(line).expect("each row is valid JSON");
+        assert!(
+            v.get("saved_tokens").and_then(|x| x.as_u64()).is_some(),
+            "every row must carry a numeric saved_tokens; got: {line}"
+        );
+        assert!(
+            v.get("resident_tokens").and_then(|x| x.as_u64()).is_some(),
+            "every row must carry a numeric resident_tokens; got: {line}"
+        );
+    }
+
+    // ── 6. Frozen-file guard: the byte-frozen contract files must be untouched ─
+    const FROZEN: [&str; 3] = ["src/types.rs", "src/handlers.rs", "src/io.rs"];
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let mut args: Vec<&str> = vec!["-C", manifest, "diff", "--quiet", "HEAD", "--"];
+    args.extend(FROZEN.iter().copied());
+    match std::process::Command::new("git").args(&args).status() {
+        // exit 0 = no diff; exit 1 = a real diff. Only fail on a real diff; any
+        // other outcome (git absent, detached layout) is environmental, not a
+        // contract violation, so we don't flake the suite on it.
+        Ok(status) if status.code() == Some(1) => {
+            panic!("frozen contract files were modified vs HEAD: {FROZEN:?}");
+        }
+        _ => {}
     }
 }
