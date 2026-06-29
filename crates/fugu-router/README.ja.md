@@ -1,0 +1,102 @@
+# fugu-router
+
+Claude Code オーケストレーション向けの fugu 風モデルルーティング。タスクごとにどの Claude ティアを走らせるかを、過去の実績から決定論的に決める。
+
+## 目的
+
+fugu-router は、condukt が生成したタスク分解 JSON を受け取り、各タスクの `suggested_model` を「実績から学習した方策」で上書きするルーティング層である。
+
+[Sakana AI の fugu](https://sakana.ai/fugu-release/) は、**訓練済みのコーディネータ**がリクエストを役割（Thinker / Worker / Verifier）ごとに専用モデル群へ割り当て、その成果を検証・統合する。このコーディネータは進化戦略や強化学習で学習される。Claude の重みは学習できないので、fugu-router は fugu の**形（コーディネータという独立した決定論コンポーネント）**だけを残し、*学習された判断*を**実績の検索**に置き換える。
+
+```
+record で実績を蓄積 ── episodes.jsonl ──▶ 似た過去タスクを k-NN で検索
+(model, pass?, cost)                       │
+                                           ▼
+                            しきい値を歴史的に満たす
+                            最安ティア  →  suggested_model
+```
+
+つまり fugu は router を*学習*するが、fugu-router は方策を*検索*する。粒度はトークン単位ではなくタスク単位と粗いが、その代わり API キーも埋め込みサービスも要らない。
+
+学習は二系統を意図的に併用する。
+
+- **非パラメトリック（検索）:** 記録済みエピソードに対する k-NN。1 件の追加で挙動が変わる即時適応、完全に解釈可能、悪いエピソードを消すだけで訂正できる。類似度は語尾のステミングとドメイン概念辞書（`semantic.rs`）で、login ↔ auth ↔ session のような同義語を橋渡しする（純粋な字面一致では取りこぼす）。
+- **パラメトリック/オンライン（バンディット）:** ティアごとの Beta(passes, fails) 事後分布に対する Thompson サンプリング（`explore` で切替）。各ティアの合格確率を引き、しきい値を満たす最安ティアを選ぶため、実績の乏しい安価なティアも不確実性下で*試され*、結果から方策が更新される。報酬（どのティアが見合うか）を実際にオンライン学習する。
+
+限界は率直に述べる。ルーティングはターン単位ではなくタスク単位であり、隠れ状態ヘッドによるルーティングもニューラルな重み更新も無い。バンディットが学ぶのは報酬であって深い表現ではない。意味的な橋渡しも埋め込みではなく辞書ベースである。
+
+## どうして必要か
+
+condukt はオーケストレーションの背骨だが、「どのタスクにどのモデルを充てるか」を毎回 interpreter の直感に委ねると、次の痛みが残る。
+
+- **モデル選択が経験から学ばない。** interpreter の `suggested_model` はその場のキーワード判断で、過去に同種のタスクを安いティアが通したという**実績が反映されない**。fugu-router は検証を通った実績を蓄積し、似た過去タスクで合格率がしきい値を超えた最安ティアを選ぶので、毎回賢くなる。
+- **コスト過多か品質不足のどちらかに振れる。** 安全側に倒して常に opus を使えば高コスト、安易に haiku を使えば検証落ちが増える。fugu-router は pass 率としきい値（`pass_threshold`）に基づき、歴史的に基準を満たす**最安ティア**を選んでこのトレードオフを定量化する。
+- **検証バイアスの自己強化。** `record` の合否は verifier が兄弟タスクの成果を自己判定した結果なので、偏った verifier が悪いルーティングを強化しうる。`label` で人間が訂正でき、人間の判定は方策集計で `pass` を上書きする（`Episode::effective_pass`）。
+- **実績がマシンに閉じる。** 1 台で貯めた実績が他マシンに伝わらないと学習がやり直しになる。stores を git 管理し `import` でマージできるので、知見をマシン間で共有できる。
+
+判断（解釈・実装・検証）は LLM、ルーティング（実績検索・ティア選択）は決定論バイナリ、と割り切ることで、再現性とコスト効率を保ちつつ condukt の判断を強化する。結合は**ソフト**で、`fugu-router` バイナリが無ければ condukt は interpreter 自身の `suggested_model` にフォールバックし、何も壊れない。
+
+## どう使うか
+
+### condukt と併用する（主用途）
+
+スキル `/fugu-router [decomp.json | 課題文]` で起動する。condukt の Phase 2（`validate` と `schedule` の間）で `route` を噛ませ、`suggested_model` を学習方策で上書きする。
+
+```bash
+condukt validate --file decomp.json
+fugu-router route --file decomp.json --report /tmp/route.json > decomp.routed.json
+condukt schedule --file decomp.routed.json
+```
+
+stdout は `suggested_model` を更新した分解 JSON（そのまま condukt へ渡す）。`--report` ファイルには condukt のスキーマに無い助言——とりわけ **`verifier_model`**（独立した、通常は別ティアの検証モデル）——がタスク id ごとに入る。worker は `suggested_model`、verifier は report の `verifier_model` で起動する。
+
+### 結果を書き戻す（学習信号）
+
+各タスクの検証後、結果を `record` で蓄えると次回が賢くなる。
+
+```bash
+fugu-router record --title "<task title>" --files "<touched_files>" \
+  --class parallel --model sonnet --status verified --cost 0.09
+```
+
+`--status` が合格語（`verified|pass|passed|ok|true`）以外なら非合格として数える。`--cost` は任意（gauge から読めばコスト考慮ルーティングになる）。`--files` に絶対パスを渡すと記録時にリポジトリ相対パスへ正規化され（`/Users/yuki/src/harness/crates/x.rs` → `crates/x.rs`）、マシン固有のパスがストアに混入しないので k-NN の精度が落ちない。`--skill-fingerprint "$(fugu-router fingerprint)"` を渡すと、その実績を生んだ SKILL.md コーパスのバージョンで刻印できる。
+
+**condukt と併用する場合、`record` の発火は手書き不要で、condukt の Stop hook が `condukt state record-run --all` で決定論的・冪等に行う**（手書き snippet は単発／condukt 非併用時のフォールバック）。
+
+### その他のサブコマンド
+
+```
+fugu-router suggest --files src/auth/login.ts "fix login validation"  # 単発でモデルの当たりを見る
+fugu-router stats [--json]                  # モデル別 pass率 / 平均コスト（HOTL 可視化）
+fugu-router label "add login" --verdict bad --by human   # 人間が実績を訂正（--latest も可）
+fugu-router fingerprint [--dir crates]      # SKILL.md コーパスのバージョンスタンプ
+fugu-router import --episodes /path/episodes.jsonl [--playbooks ...] [--dry-run]  # 別マシンの stores をマージ
+fugu-router import --dedup                  # ローカル stores の重複除去（content-hash, first-seen 優先）
+fugu-router init                            # fugu-router.toml を書き出す
+```
+
+`procedures search` サブコマンドは、似た検証済みタスクが*どう解かれたか*を k-NN で引いて condukt の interpreter を seed する（独立した `playbook` プラグインの知識ノート注入とは別物。旧名 `playbook` は隠しエイリアスとして残る）。
+
+### インストールと配線
+
+プラグイン版はバイナリと UserPromptSubmit フックを同梱する。フックは、プロンプトがコーディング作業に見えるときルーティングメモリの要約を 1 ブロック注入する。API キー不要で**サブスクリプションで完結**する。
+
+手動導入する場合は次のとおり。
+
+```bash
+cargo build --release
+cp target/release/fugu-router ~/.cargo/bin/
+fugu-router init                  # 設定（任意）
+fugu-router install --dry-run     # settings.json の変更をプレビュー
+fugu-router install               # UserPromptSubmit フックをマージ
+```
+
+削除は `fugu-router uninstall`。`FUGU_ROUTER_DISABLED=1` で無効化（no-op）できる。
+
+### 設定
+
+`~/.fugu-router/config.toml`（`fugu-router.example.toml` 参照）。主な調整項目は `pass_threshold`（安いティアを信頼する前にどれだけ確信が要るか）、`min_samples`（コールドスタート prior を抜けるのに必要な履歴量）、`sim_threshold`（過去タスクをどれだけ似ていれば数えるか）。`store_file` と `playbook_file` を git リポジトリ内のパスに向ければ、`git pull` 後に `import` するだけでマシン間同期が完結する（content-hash で重複排除されるので同じ実績を二度引いても安全）。
+
+### コールドスタート
+
+ストアが空のときは、interpreter のルールを写したキーワード prior を使う。design/refactor/migrate/security や多ファイル → `opus`、rename/format/docs/typo → `haiku`、それ以外 → `sonnet`。`gated` タスクは自動ルーティングしない（人間承認の対象）。
