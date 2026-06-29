@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use super::classifier::{split_sections, Section};
 use crate::handlers::ContextInjector;
 use crate::io::HookOutput;
+use crate::ledger::{Action, Ledger, LedgerNode};
 use harness_core::hook::HookInput;
 
 // ── tokenizer ─────────────────────────────────────────────────────────────────
@@ -119,6 +120,13 @@ impl ContextInjector for DefaultInjector {
     /// path). If unset or unreadable, returns `{}` — never break a turn (hook
     /// invariant). Otherwise delegates to `inject_for` which contains all
     /// testable logic.
+    ///
+    /// When `inject_for` produces an `additionalContext` envelope (either the
+    /// heading-match path or the ToC-sentinel path), this method emits exactly
+    /// one `Action::Injected` ledger row as a pure side effect. The `{}` no-op
+    /// paths (env unset, unreadable file, empty doc, no sections, no headings)
+    /// never emit a row. The returned `HookOutput` is byte-identical to what
+    /// `inject_for` would return — the ledger write is an invisible side effect.
     fn inject(&self, input: &HookInput) -> HookOutput {
         let path = match std::env::var("CONTEXT_GOVERNOR_REFERENCE_DOC") {
             Ok(p) if !p.is_empty() => p,
@@ -128,7 +136,31 @@ impl ContextInjector for DefaultInjector {
             Ok(s) => s,
             Err(_) => return HookOutput::default(),
         };
-        self.inject_for(&input.prompt, &doc)
+        let out = self.inject_for(&input.prompt, &doc);
+
+        // Emit one ledger row iff the call actually injected something.
+        // Both the heading-match path and the ToC-sentinel path set
+        // `additional_context` to a non-empty `Some`; the `{}` no-op leaves it
+        // `None`. Reading the field directly avoids fragile string matching on
+        // the serialised output and keeps this check O(1).
+        if let Some(text) = out
+            .specific
+            .as_ref()
+            .and_then(|s| s.additional_context.as_deref())
+            .filter(|t| !t.is_empty())
+        {
+            let resident = (text.chars().count().div_ceil(4)).max(1) as u32;
+            let node = LedgerNode {
+                session: input.session_id.clone(),
+                hook: "UserPromptSubmit".to_string(),
+                item: None,
+                action: Action::Injected,
+                reason: "reference-injection",
+            };
+            Ledger::open(&input.cwd).append(&node, resident);
+        }
+
+        out
     }
 }
 
@@ -138,6 +170,13 @@ impl ContextInjector for DefaultInjector {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    // Serialise all tests that mutate process-global env vars. Unit tests in
+    // this binary run in parallel by default, and `CONTEXT_GOVERNOR_REFERENCE_DOC`
+    // is shared state — without a lock, `inject_without_env_var_returns_empty_object`
+    // (which removes the var) and `inject_emits_ledger_row_on_injection` (which sets
+    // it) would race and flake each other.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Spec doc with one normative section (API Contracts), two reference
     /// sections (Endpoints, Glossary) and one example section.
@@ -225,6 +264,7 @@ Token: an opaque string identifying a session.
 
     #[test]
     fn inject_without_env_var_returns_empty_object() {
+        let _g = ENV_MUTEX.lock().unwrap();
         // Guard: ensure the env var is not set for this test.
         std::env::remove_var("CONTEXT_GOVERNOR_REFERENCE_DOC");
         let input = make_input("show me the endpoints");
@@ -238,6 +278,99 @@ Token: an opaque string identifying a session.
     fn inject_for_empty_doc_returns_empty_object() {
         let out = DefaultInjector.inject_for("anything", "");
         assert_eq!(out.to_json(), "{}", "empty doc must produce no-op {{}}");
+    }
+
+    // ── ledger emission ───────────────────────────────────────────────────────
+
+    /// Verify that calling `inject` (the public trait method) with a matching
+    /// prompt appends exactly one `injected` ledger row, while calling it with
+    /// `CONTEXT_GOVERNOR_REFERENCE_DOC` unset appends no row at all.
+    ///
+    /// Design constraints observed here:
+    /// * `inject_for` is NOT called directly — it is a pure core with no
+    ///   side effects; all ledger assertions go through `inject`.
+    /// * A fresh `tempfile::tempdir()` is used for `CONTEXT_GOVERNOR_STATE_DIR`
+    ///   so this test's ledger never bleeds into other tests' ledgers.
+    /// * A unique `cwd` value makes `rollup(cwd)` read only this test's rows.
+    /// * Both branches (inject and no-op) are covered in one test function to
+    ///   keep all env-mutation inside the mutex guard.
+    #[test]
+    fn inject_emits_ledger_row_on_injection() {
+        use std::io::Write as _;
+        let _g = ENV_MUTEX.lock().unwrap();
+
+        // Write a small reference doc to a named temp file.
+        let mut doc_file = tempfile::NamedTempFile::new().expect("temp doc file");
+        doc_file
+            .write_all(b"# Endpoints\nGET /users - list all users\nPOST /users - create\n")
+            .expect("write doc");
+        doc_file.flush().expect("flush");
+
+        // Fresh state dir so the ledger is isolated from every other test.
+        let state_dir = tempfile::tempdir().expect("temp state dir");
+
+        // Unique cwd: rollup(cwd) will only see rows from this test.
+        let cwd = format!("/nonexistent/injector-emit-test-{}", std::process::id());
+
+        // ── injection path ────────────────────────────────────────────────────
+        std::env::set_var("CONTEXT_GOVERNOR_REFERENCE_DOC", doc_file.path());
+        std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", state_dir.path());
+
+        let input: HookInput = serde_json::from_value(serde_json::json!({
+            "session_id": "ledger-test-session",
+            "transcript_path": "",
+            "cwd": cwd,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "show me the endpoints",
+        }))
+        .expect("build HookInput");
+
+        let out = DefaultInjector.inject(&input);
+        // The returned HookOutput must carry additionalContext (heading-match).
+        assert!(
+            out.to_json().contains("\"additionalContext\""),
+            "inject must produce additionalContext for a matching prompt; got: {}",
+            out.to_json()
+        );
+
+        // Exactly ONE injected row must appear in the ledger for this cwd.
+        let summary = crate::ledger::rollup(&cwd);
+        assert_eq!(
+            summary.per_event.get("injected").copied(),
+            Some(1),
+            "expected exactly 1 injected ledger row; summary: {summary:?}"
+        );
+
+        // ── no-op path (env unset) ────────────────────────────────────────────
+        // Use a distinct cwd so rollup only counts rows from the no-op call.
+        let cwd_noop = format!("/nonexistent/injector-emit-noop-{}", std::process::id());
+        std::env::remove_var("CONTEXT_GOVERNOR_REFERENCE_DOC");
+
+        let input_noop: HookInput = serde_json::from_value(serde_json::json!({
+            "session_id": "ledger-test-session",
+            "transcript_path": "",
+            "cwd": cwd_noop,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "show me the endpoints",
+        }))
+        .expect("build noop HookInput");
+
+        let out_noop = DefaultInjector.inject(&input_noop);
+        assert_eq!(
+            out_noop.to_json(),
+            "{}",
+            "unset env var must produce no-op {{}}"
+        );
+
+        // The ledger for the noop cwd must be empty.
+        let summary_noop = crate::ledger::rollup(&cwd_noop);
+        assert_eq!(
+            summary_noop.rows, 0,
+            "no-op inject must not append any ledger rows; summary: {summary_noop:?}"
+        );
+
+        // Clean up env.
+        std::env::remove_var("CONTEXT_GOVERNOR_STATE_DIR");
     }
 
     // ── proptest invariant ────────────────────────────────────────────────────
