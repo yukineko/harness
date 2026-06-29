@@ -1,19 +1,22 @@
 ## north_star
-outcome trend を load-bearing にする。単一 verdict を記録するだけの層から、蓄積した outcome 履歴（末尾の連続した unchanged または backward の streak）を決定論的に集計し、north_star レベルの pivot（方向転換）か persevere（継続）かの勧告を駆動する層へ。confidence や weight が順序を駆動したのと対称に、outcome trend が『方向転換するか継続するか』の決定を駆動し、その決定を記録して次サイクルに読み戻す。
+I6 で観測可能になった size 圧(ledger の resident_tokens=ウィンドウ占有)を、size レバー(groom・inject・snapshot)の制御入力へ昇格させる。観測するだけの台帳から、観測値が次のレバー決定を駆動する閉ループ(observe→act)へ。confidence が分割を、weight が順序を、outcome trend が pivot を駆動したのと対称に、観測した size 圧が『どれだけ刈り込むか』を駆動する。最初の最も対称な一手は groom 予算を固定キャップから window-pressure-aware にすること(観測→制御の最小スライス)。
 
 ## definition_of_done
-- crates/compass/src/outcome.rs が、記録済みの outcome 履歴から末尾の連続した unchanged または backward の streak を集計する決定論関数を持つ。streak が閾値（既定 3）以上なら pivot、さもなくば persevere を、集計理由（streak 長・対象 verdict 列・参照した最後の forward の seq）つきで返す。履歴が空、または末尾が forward なら persevere（後方互換）。
-- その勧告が CLI から観測できる。compass pivot-check が recommendation（persevere か pivot）と streak と reason を JSON で stdout に出し exit 0 で終わる。
-- streak 集計と閾値判定の unit test を crates/compass/src/outcome.rs に追加する。末尾 forward なら persevere、閾値マイナス1の連続 unchanged なら persevere、閾値ぶんの連続 backward なら pivot、途中に forward が挟まると streak がリセットされ persevere。cargo test --workspace 全 pass、clippy -D warnings clean、cargo fmt --check clean。
-- crates/flow/skills/flow/SKILL.md の Step 4（loop 終端）が compass pivot-check を consume し、pivot 勧告時は集計理由を引用して north_star を彫り直すか（再オリエンテーション）を promptし、persevere ならそのまま継続する手順が明記される。これで outcome trend が store から CLI そして flow の決定まで実際に流れ inert にならない。
+- DefaultGroomer の groom 予算が固定値ではなく、観測された window pressure(resident 占有 または 明示の pressure 入力)の決定論関数になる。pressure が高いほど予算が小さくなる単調関数で、pressure 入力が無いかゼロのときは現行の既定 budget に一致する(後方互換)。
+- pressure から budget への写像が unit test を持つ: 高 pressure で budget が縮む、ゼロや欠損で既定値、単調性(pressure 増で budget 非増)。
+- 観測ソースが配線される: groomer が pressure を観測値(ledger か state、もしくは HookInput)から読み、その値で予算を決める経路が存在する(pure な budget 関数 と それを呼ぶ to_output)。
+- cargo test --workspace 全 pass、clippy -D warnings clean、cargo fmt --check clean。frozen な契約モジュール(types・handlers・io)は byte 不変に保つ。
 
 ## measuring_stick
 私が今も擁護できるゴールに、測れるだけ近づくか(build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること)。
 
 ## current_gap
-outcome 層は単一 verdict を記録するだけ(crates/compass/src/outcome.rs の record/latest は最新1件のみ、trend/集計なし)で、連続 unchanged/backward の streak が pivot 判断を駆動しない=inert。confidence/weight が順序を駆動したのと対称な最大かつ右サイズの gap は DoD#1-#3: outcome.rs に末尾 streak 集計+閾値(既定3)で pivot/persevere を理由つきで返す決定論関数、compass pivot-check CLI で JSON 観測、streak/閾値の unit test。次の一手 = outcome.rs の集計関数+test と main.rs の pivot-check サブコマンド。DoD#4(flow SKILL Step4 の consume)は parked で次スライス。
+groomer の予算は固定キャップ(groom_budget() が CONTEXT_GOVERNOR_GROOM_BUDGET env か既定 2048 を読むだけ)で、観測された window pressure に盲目。I6 台帳は resident_tokens を記録するようになったが、それを読み戻して挙動を変える経路が無い=observe without act。最大かつ右サイズの gap は DoD#1-#3: pure な単調関数 budget_for(pressure, default)(高 pressure で縮む・ゼロ/欠損で既定)+ unit test、to_output がその関数で予算を決める配線。parked は他2レバーの observe→act スライス(反復 injection の dedup、巨大ツール出力の truncate)。
 
 ## next_action
+crates/context-governor/src/defaults/groomer.rs に pure な pressure→budget 単調関数 budget_for(pressure, default) を追加(高 pressure で縮む・ゼロや欠損で既定値・単調)し unit test を付け、to_output が観測 pressure からその関数で予算を決める経路を配線する。frozen モジュール(types・handlers・io)は不変、workspace test/clippy/fmt green。
 
 ## parked
+- context-governor: 反復する per-turn reference injection を seen-state で dedup する(injector の observe→act スライス, backlog 442f03c0)
+- context-governor/ctxrot: 巨大ツール出力を nudge だけでなく truncate する(+反復 nudge を cap)(groomer/guard の observe→act スライス, backlog 8ebfa49c)
 
