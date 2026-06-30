@@ -10,6 +10,27 @@ use std::panic::UnwindSafe;
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Context window statistics supplied by Claude Code on Stop / SubagentStop events.
+#[derive(Debug, Default, Deserialize)]
+pub struct ContextWindow {
+    /// Fraction of the context window used (0.0–100.0 as a percentage).
+    /// `None` when Claude Code did not include the field.
+    pub used_percentage: Option<f64>,
+    pub total_input_tokens: Option<u64>,
+    pub total_output_tokens: Option<u64>,
+}
+
+impl ContextWindow {
+    /// Total token count (input + output), if both are present.
+    pub fn total_tokens(&self) -> Option<u64> {
+        match (self.total_input_tokens, self.total_output_tokens) {
+            (Some(i), Some(o)) => Some(i + o),
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    }
+}
+
 // Some fields (hook_event_name, tool_input) are part of the payload schema but
 // not consumed by every plugin; kept for completeness and future hooks.
 #[allow(dead_code)]
@@ -53,6 +74,10 @@ pub struct HookInput {
     /// previous stop-hook continuation.
     #[serde(default)]
     pub stop_hook_active: bool,
+
+    /// Stop / SubagentStop: context window usage reported by Claude Code.
+    /// `None` on hook events that don't carry this payload.
+    pub context_window: Option<ContextWindow>,
 }
 
 impl HookInput {

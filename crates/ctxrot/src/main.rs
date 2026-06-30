@@ -644,8 +644,10 @@ fn main() {
             // Never break the status bar: any failure prints nothing, exits 0.
             let cfg = Config::load();
             let raw = read_stdin();
-            if let Some(line) = statusline_from(&cfg, &raw) {
-                println!("{line}");
+            if let Some(input) = harness_core::hook::HookInput::parse(&raw) {
+                if let Some(line) = statusline_from(&cfg, &input) {
+                    println!("{line}");
+                }
             }
         }
         Command::Usage {
@@ -805,35 +807,22 @@ where
     }
 }
 
-/// Build the status-bar line from the statusLine stdin JSON. Prefers Claude's own
+/// Build the status-bar line from a parsed hook payload. Prefers Claude's own
 /// `context_window.used_percentage`; falls back to estimating from the transcript.
-fn statusline_from(cfg: &Config, raw: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let cw = v.get("context_window");
-    let pct = cw
-        .and_then(|c| c.get("used_percentage"))
-        .and_then(serde_json::Value::as_f64);
-    let tokens = cw.and_then(|c| {
-        let inp = c
-            .get("total_input_tokens")
-            .and_then(serde_json::Value::as_u64);
-        let out = c
-            .get("total_output_tokens")
-            .and_then(serde_json::Value::as_u64);
-        match (inp, out) {
-            (Some(i), Some(o)) => Some(i + o),
-            (Some(i), None) => Some(i),
-            _ => None,
-        }
-    });
+fn statusline_from(cfg: &Config, input: &harness_core::hook::HookInput) -> Option<String> {
+    let pct = input
+        .context_window
+        .as_ref()
+        .and_then(|c| c.used_percentage);
+    let tokens = input.context_window.as_ref().and_then(|c| c.total_tokens());
     if let Some(p) = pct {
         return Some(usage::line(cfg, p.round() as u64, tokens));
     }
     // Fallback: estimate from the transcript when Claude didn't supply a %.
-    let path = v
-        .get("transcript_path")
-        .and_then(serde_json::Value::as_str)?;
-    let (t, _src) = harness_core::transcript::estimate_tokens(path)?;
+    if input.transcript_path.is_empty() {
+        return None;
+    }
+    let (t, _src) = harness_core::transcript::estimate_tokens(&input.transcript_path)?;
     Some(usage::line(cfg, usage::pct_from_tokens(cfg, t), Some(t)))
 }
 
