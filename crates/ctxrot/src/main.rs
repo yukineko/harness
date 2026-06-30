@@ -44,6 +44,11 @@ enum Command {
     Preguard,
     /// PostToolUse hook: warn on huge tool output.
     Toolguard,
+    /// Stop hook: block the turn (ask Claude to run /compact) when context
+    /// usage exceeds `auto_compact_at_percentage`. Exits 0 immediately when
+    /// `stop_hook_active` is true (re-entry guard) or `auto_compact_enabled`
+    /// is false (opt-in). Requires `auto_compact_enabled = true` in config.
+    Stop,
     /// Merge ctxrot hooks into ~/.claude/settings.json.
     Install {
         #[arg(long)]
@@ -342,6 +347,38 @@ fn main() {
         }),
 
         // ----- user-invoked (normal error reporting) -----
+        Command::Stop => run_hook(|| {
+            let raw = read_stdin();
+            let Some(input) = HookInput::parse(&raw) else {
+                return;
+            };
+            // Re-entry guard: when Claude Code re-fires Stop after a block,
+            // stop_hook_active is true. Allow the session to end.
+            if input.stop_hook_active {
+                return;
+            }
+            let cfg = Config::load();
+            if !cfg.auto_compact_enabled {
+                return;
+            }
+            let Some(pct) = input
+                .context_window
+                .as_ref()
+                .and_then(|c| c.used_percentage)
+            else {
+                return;
+            };
+            let threshold = cfg.auto_compact_at_percentage * 100.0;
+            if pct >= threshold {
+                let reason = format!(
+                    "Context at {pct:.0}% (threshold {threshold:.0}%). Please run /compact to free up context before continuing."
+                );
+                println!(
+                    "{}",
+                    serde_json::json!({ "decision": "block", "reason": reason })
+                );
+            }
+        }),
         Command::Install { dry_run } => {
             if let Err(e) = install::install(dry_run) {
                 eprintln!("install failed: {e}");
