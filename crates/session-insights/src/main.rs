@@ -8,6 +8,7 @@
 //! state (and, opt-in, the vault); it never blocks a turn and always exits 0.
 
 mod config;
+mod context;
 mod install;
 mod metrics;
 mod model;
@@ -58,6 +59,11 @@ enum Command {
         /// Summarize all recorded sessions instead.
         #[arg(long)]
         all: bool,
+        /// Also join context-governor's ledger health (saved/resident tokens,
+        /// per-action counts) into the single-session report. Best-effort: shows
+        /// "no context ledger" when the ledger is absent/empty.
+        #[arg(long)]
+        context: bool,
     },
     /// Merge the PostToolUse + Stop hooks into ~/.claude/settings.json.
     Install {
@@ -82,7 +88,11 @@ fn main() {
         Command::Stop => run_hook(stop),
         Command::Sessionend => run_hook(sessionend),
         Command::RecordNow { session } => record_now(session),
-        Command::Report { session, all } => report(session, all),
+        Command::Report {
+            session,
+            all,
+            context,
+        } => report(session, all, context),
         Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
         Command::Init => exit_on_err(init()),
@@ -241,7 +251,7 @@ fn record_now(session_arg: Option<String>) {
     }
 }
 
-fn report(session: Option<String>, all: bool) {
+fn report(session: Option<String>, all: bool, context: bool) {
     let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let cfg = Config::load(&root);
     if all {
@@ -269,7 +279,16 @@ fn report(session: Option<String>, all: bool) {
         None => metrics::latest(&cfg),
     };
     match chosen {
-        Some(s) => print!("{}", s.render_report(&cfg)),
+        Some(s) => {
+            print!("{}", s.render_report(&cfg));
+            // Loose-coupled join: read context-governor's ledger for this cwd and
+            // merge a context-health block into the report. Best-effort — never
+            // panics; an absent/empty ledger renders "no context ledger".
+            if context {
+                let summary = context::summarize(&root);
+                print!("{}", context::render_block(&summary));
+            }
+        }
         None => println!("(no matching session — run some tools first, or try --all)"),
     }
 }

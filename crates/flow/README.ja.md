@@ -88,7 +88,7 @@ flow バイナリは決定論的・非ブロッキングで、エラー時も ex
 Claude Code プラグインとして入れるのが推奨。hook・`/flow` skill・プリビルドバイナリを同梱し、**subscription で完結**する（API キー不要）。
 
 ```text
-/plugin marketplace add yukineko/harness
+/plugin marketplace add yukineko/claude-harnesses
 /plugin install flow@yukineko
 ```
 

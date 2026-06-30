@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# audit-ignore-file: packaging/build script (plugin scaffold), not application logic — mirrors the cargo-metadata pattern shipped by sibling crates; verified by running it end-to-end, not unit-tested.
-# Build a release binary and stage it into bin/ as condukt-<os>-<arch>, the name
-# the bin/condukt launcher looks for. The committed per-platform binaries are what
-# `/plugin install` ships, so end users need neither cargo nor an API key.
+# audit-ignore-file: packaging/build script (plugin scaffold), not application logic — mirrors the identical build-plugin-bin.sh shipped by every other crate; verified by running it end-to-end, not unit-tested.
+# Build a release binary and stage it into bin/ as context-governor-<os>-<arch>,
+# the name the bin/context-governor launcher looks for. The committed
+# per-platform binaries are what `/plugin install` ships, so end users need
+# neither cargo nor an API key.
 #
 # Usage:
 #   scripts/build-plugin-bin.sh                 # build for the host platform
 #   scripts/build-plugin-bin.sh <rust-target>   # cross-build, e.g. aarch64-apple-darwin
 #
 # To produce the macOS binaries, run this ON A MAC:
-#   scripts/build-plugin-bin.sh                 # Apple Silicon -> bin/condukt-darwin-arm64
+#   scripts/build-plugin-bin.sh                 # Apple Silicon -> bin/context-governor-darwin-arm64
 #   rustup target add x86_64-apple-darwin
-#   scripts/build-plugin-bin.sh x86_64-apple-darwin   # -> bin/condukt-darwin-x86_64
-# then commit the new bin/condukt-darwin-* files.
+#   scripts/build-plugin-bin.sh x86_64-apple-darwin   # -> bin/context-governor-darwin-x86_64
+# then commit the new bin/context-governor-darwin-* files.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,11 +28,11 @@ target_dir="${target_dir:-../../target}"
 if [ -n "$target" ]; then
   rustc_triple="$target"
   cargo build --release --target "$target"
-  src="$target_dir/$target/release/condukt"
+  src="$target_dir/$target/release/context-governor"
 else
   rustc_triple="$(rustc -vV | sed -n 's/^host: //p')"
   cargo build --release
-  src="$target_dir/release/condukt"
+  src="$target_dir/release/context-governor"
 fi
 
 # normalize <triple> -> <os>-<arch>
@@ -48,8 +49,8 @@ case "$rustc_triple" in
 esac
 
 mkdir -p bin
-out="bin/condukt-$os-$arch"
+out="bin/context-governor-$os-$arch"
 cp -f "$src" "$out"
-chmod +x "$out" bin/condukt
+chmod +x "$out" bin/context-governor
 echo "staged $out ($(du -h "$out" | cut -f1), from $rustc_triple)"
-echo "remember: git add bin/ && git update-index --chmod=+x $out bin/condukt && commit"
+echo "remember: git add bin/ && git update-index --chmod=+x $out bin/context-governor && commit"

@@ -17,6 +17,33 @@ use crate::types::{ItemId, StoreKey};
 use harness_core::metrics;
 use harness_core::store::{project_key, safe_session};
 
+/// Default upper bound on rows kept in `ledger.jsonl`. The ledger is append-only
+/// and otherwise grows without limit on long sessions (one line per hook
+/// decision). 50_000 rows is generous headroom — at the JSONL line sizes this
+/// crate writes (~150–250B) that is on the order of ~10MB before any prune — yet
+/// it caps a runaway session at a bounded, queryable size. Overridable via
+/// `CONTEXT_GOVERNOR_LEDGER_MAX_ROWS` (see [`max_rows`]).
+const DEFAULT_LEDGER_MAX_ROWS: usize = 50_000;
+
+/// Run the prune at most once per this many appends. Counting + rewriting the
+/// whole file on every single append would make `append` O(n) per call; gating it
+/// behind a stride keeps the amortized cost flat while still bounding growth. The
+/// file can transiently exceed the cap by at most this many rows between prunes,
+/// which is acceptable for a best-effort GC.
+const PRUNE_STRIDE: u64 = 256;
+
+/// Resolve the row cap from the env (mirrors how the crate reads
+/// `CONTEXT_GOVERNOR_STATE_DIR`): a valid, non-zero `CONTEXT_GOVERNOR_LEDGER_MAX_ROWS`
+/// wins, otherwise [`DEFAULT_LEDGER_MAX_ROWS`]. A zero or unparseable value falls
+/// back to the default rather than disabling the bound (best-effort, fail-safe).
+fn max_rows() -> usize {
+    std::env::var("CONTEXT_GOVERNOR_LEDGER_MAX_ROWS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_LEDGER_MAX_ROWS)
+}
+
 /// What a hook did, with the size delta where one applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -113,6 +140,79 @@ impl Ledger {
         // Use the resolved, env-derived session (the one that scopes `sink`), so
         // every line in this file shares one canonical session id.
         metrics::emit(&self.sink, &self.session, event, extra);
+
+        // Best-effort GC after the write. Gated on a cheap stat so the O(n)
+        // read-rewrite only runs once the file is plausibly over cap, never on the
+        // common small-file path. Each hook runs in a fresh process (no surviving
+        // in-memory counter), so the gate is derived from on-disk file state, not a
+        // call count. Any failure is swallowed — a prune must never break a turn.
+        let cap = max_rows();
+        if file_could_exceed(&self.sink, cap) {
+            prune_jsonl(&self.sink, cap);
+        }
+    }
+}
+
+/// Cheap stat-based gate for whether `sink` is large enough to *possibly* hold
+/// more than `max_rows` lines. JSONL rows this crate writes are well over
+/// `MIN_ROW_BYTES`, so once the file exceeds `max_rows * MIN_ROW_BYTES` it cannot
+/// be under cap and a real count is worthwhile; below that it provably cannot
+/// exceed the cap and we skip the read entirely. A `metadata` failure returns
+/// `false` (skip), keeping the hot path free of errors. The `+ PRUNE_STRIDE` slack
+/// lets the file drift a little past the cap between prunes so we don't rewrite on
+/// every single append once we're near the boundary (amortized cost).
+fn file_could_exceed(sink: &Path, max_rows: usize) -> bool {
+    /// Floor on a single JSONL row's byte length, including the trailing newline.
+    /// Smaller than any real `metrics::emit` line (which always carries the
+    /// `ts`/`session`/`event`/`saved_tokens`/`resident_tokens`/`hook`/`reason`
+    /// keys), so the gate never skips a file that is actually over cap.
+    const MIN_ROW_BYTES: u64 = 16;
+    let Ok(meta) = std::fs::metadata(sink) else {
+        return false;
+    };
+    let trigger_rows = (max_rows as u64).saturating_add(PRUNE_STRIDE);
+    meta.len() >= trigger_rows.saturating_mul(MIN_ROW_BYTES)
+}
+
+/// Best-effort prune of a ledger JSONL file at `sink` to its most recent
+/// `max_rows` non-empty lines. Pure function of `(path, max_rows)` — no env — so
+/// it is deterministic and unit-testable like [`summarize_jsonl`]. Semantics:
+///
+/// - Under cap (`rows <= max_rows`) or a missing/unreadable file: no change.
+/// - Over cap: rewrite the file keeping the LAST `max_rows` lines (the most recent
+///   entries), each terminated by a newline.
+///
+/// Fail-soft throughout: a read error, a write-tempfile error, or a rename error
+/// all leave the original file untouched rather than panicking or truncating it.
+/// The rewrite goes via a sibling tempfile + atomic rename so a crash mid-prune
+/// never leaves a half-written ledger.
+fn prune_jsonl(sink: &Path, max_rows: usize) {
+    let Ok(contents) = std::fs::read_to_string(sink) else {
+        return;
+    };
+
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() <= max_rows {
+        // Under cap (or exactly at it): nothing to do.
+        return;
+    }
+
+    let keep = &lines[lines.len() - max_rows..];
+    let mut out = String::with_capacity(contents.len());
+    for line in keep {
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    // Atomic-ish replace via a sibling tempfile so a failure never corrupts the
+    // existing ledger. Best-effort: bail (leaving the original intact) on any error.
+    let tmp = sink.with_extension("jsonl.prune.tmp");
+    if std::fs::write(&tmp, out.as_bytes()).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if std::fs::rename(&tmp, sink).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -423,5 +523,97 @@ mod tests {
             9500,
         );
         assert_eq!(last_snapshotted_in(&sink), Some(9500));
+    }
+
+    /// `prune_jsonl` (the env-free core of the GC) caps an over-cap ledger to its
+    /// most-recent `max_rows` lines, leaves an under-cap ledger byte-identical, and
+    /// fail-softs on a missing file.
+    #[test]
+    fn prune_jsonl_caps_to_most_recent_rows() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sink = tmp.path().join("ledger.jsonl");
+
+        // Missing file → no panic, no file created.
+        prune_jsonl(&sink, 3);
+        assert!(!sink.exists(), "prune must not create a missing file");
+
+        // Write 10 ordered rows (a stand-in JSONL; prune is schema-agnostic, it
+        // keeps lines, not parsed nodes).
+        let mut body = String::new();
+        for i in 0..10u32 {
+            body.push_str(&format!("{{\"event\":\"e\",\"n\":{i}}}\n"));
+        }
+        std::fs::write(&sink, &body).expect("seed ledger");
+
+        // Over cap: keep the LAST 3 rows (the most recent), within cap, in order.
+        prune_jsonl(&sink, 3);
+        let after = std::fs::read_to_string(&sink).expect("read pruned");
+        let lines: Vec<&str> = after.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 3, "pruned to cap");
+        assert!(
+            lines[0].contains("\"n\":7"),
+            "oldest kept is n=7: {lines:?}"
+        );
+        assert!(
+            lines[2].contains("\"n\":9"),
+            "newest kept is n=9: {lines:?}"
+        );
+        // The summary core still parses the pruned file cleanly.
+        assert_eq!(summarize_jsonl(&sink).rows, 3);
+
+        // Under cap: a second prune at a larger cap is a no-op (byte-identical).
+        let before = std::fs::read_to_string(&sink).expect("read before");
+        prune_jsonl(&sink, 100);
+        let unchanged = std::fs::read_to_string(&sink).expect("read after");
+        assert_eq!(
+            before, unchanged,
+            "under-cap prune leaves the file untouched"
+        );
+
+        // No tempfile left behind.
+        assert!(
+            !sink.with_extension("jsonl.prune.tmp").exists(),
+            "prune must not leave its tempfile"
+        );
+    }
+
+    /// `append` runs the threshold-gated prune so a real ledger stays bounded.
+    /// Drive it deterministically by setting the cap via the env var (serialised
+    /// against the other env-mutating tests through the crate-shared lock), then
+    /// append past `cap + PRUNE_STRIDE` and assert the file converged near the cap.
+    #[test]
+    fn append_prunes_when_over_env_cap() {
+        let _env = crate::defaults::guard::acquire_env_lock();
+        std::env::set_var("CONTEXT_GOVERNOR_LEDGER_MAX_ROWS", "4");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger {
+            sink: tmp.path().join("ledger.jsonl"),
+            session: "S1".to_string(),
+        };
+        let node = LedgerNode {
+            session: "S1".to_string(),
+            hook: "PostToolUse".to_string(),
+            item: None,
+            action: Action::Pinned,
+            reason: "pin-reinjection",
+        };
+
+        // Append well past cap + PRUNE_STRIDE so the stat gate certainly fires.
+        let total = 4 + PRUNE_STRIDE as usize + 50;
+        for _ in 0..total {
+            ledger.append(&node, 100);
+        }
+
+        std::env::remove_var("CONTEXT_GOVERNOR_LEDGER_MAX_ROWS");
+
+        // After the gated prune, the file is bounded: at the cap, and never more
+        // than one stride past it (the slack the gate allows between prunes).
+        let rows = summarize_jsonl(&ledger.sink).rows;
+        assert!(rows >= 4, "keeps at least the cap of recent rows: {rows}");
+        assert!(
+            rows <= 4 + PRUNE_STRIDE,
+            "append keeps the ledger bounded near cap: {rows}"
+        );
     }
 }

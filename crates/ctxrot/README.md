@@ -348,6 +348,18 @@ Manual hook check:
 echo '{"prompt":"read /big.log","cwd":"'"$PWD"'","transcript_path":"tests/fixtures/transcript.jsonl","session_id":"s1"}' | ctxrot guard
 ```
 
+## Coexistence with context-governor
+
+`ctxrot` and [`context-governor`](../context-governor/README.ja.md) both hook
+`PostToolUse` / `UserPromptSubmit` / `SessionStart` / `PreCompact`. They pull on
+different levers — ctxrot *nudges / rescues / controls* (advice text, rescue notes,
+the load gate), while context-governor *mutates* the window (grooms tool output,
+injects reference bodies, snapshots on compact) — so their writes land in disjoint
+envelope fields and neither blocks (except ctxrot's `preguard` deny and
+context-governor's never-taken `PreCompact` block). The per-event decision matrix,
+verified against both plugins' handler code, lives in
+[`context-governor/docs/coexistence-with-ctxrot.md`](../context-governor/docs/coexistence-with-ctxrot.md).
+
 ## License
 
 MIT
