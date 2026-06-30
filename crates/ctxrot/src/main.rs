@@ -956,6 +956,25 @@ distill_timeout_secs = 180
 # /compact. Fires at most once per upward crossing. Spends one model call per
 # crossing. Set false (or CTXROT_AUTO_DISTILL_ON_BAND=0) to disable.
 auto_distill_on_band = true
+
+# --- Stop-hook auto-compact nudge (feature ⑤) ---------------------------------
+# When auto_compact_enabled = true, the `ctxrot stop` handler checks context
+# usage on each Stop event. If usage exceeds auto_compact_at_percentage AND the
+# stop is not itself a re-entry (stop_hook_active=false), it returns
+# {"decision":"block", "reason":"..."} asking Claude to run /compact.
+# The stop_hook_active guard prevents infinite loops: on the next Stop (after
+# Claude responds) the hook sees stop_hook_active=true and exits 0 (allow).
+#
+# IMPORTANT: hooks cannot shell-out to /compact directly. This nudge causes
+# Claude Code to continue the session so Claude itself can run /compact.
+# Requires the `Stop` hook to be wired (ctxrot install, or manually in hooks.json).
+#
+# Default false (opt-in, so existing users are not surprised).
+# env: CTXROT_AUTO_COMPACT=1
+auto_compact_enabled = false
+# Fraction of the context window (0.0–1.0) that triggers the nudge.
+# Default 0.90 (90 %). env: CTXROT_AUTO_COMPACT_AT_PERCENTAGE
+auto_compact_at_percentage = 0.90
 "#;
 
 fn init() -> anyhow::Result<()> {
