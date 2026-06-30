@@ -84,12 +84,18 @@ fn dispatch(input: &HookInput) -> Dispatch {
         "UserPromptSubmit" => Dispatch::Emit(injector().inject(input)),
 
         "SessionStart" => {
-            let store = open_store(input);
+            // No store → nothing to rehydrate from; proceed silently.
+            let Some(store) = open_store(input) else {
+                return Dispatch::Emit(HookOutput::default());
+            };
             Dispatch::Emit(rehydrator().rehydrate(input, &store))
         }
 
         "PreCompact" => {
-            let mut store = open_store(input);
+            // No store → never block compaction on a store-open failure.
+            let Some(mut store) = open_store(input) else {
+                return Dispatch::Emit(HookOutput::default());
+            };
             match guard().on_pre_compact(input, &mut store) {
                 CompactDecision::Proceed => Dispatch::Emit(HookOutput::default()),
                 CompactDecision::Block { reason } => Dispatch::Block(reason),
@@ -98,8 +104,10 @@ fn dispatch(input: &HookInput) -> Dispatch {
 
         // Side effects only; output discarded so checkpointing can never block.
         "Stop" | "SubagentStop" => {
-            let mut store = open_store(input);
-            checkpointer().checkpoint(input, &mut store);
+            // No store → skip the checkpoint; a Stop hook must never break a turn.
+            if let Some(mut store) = open_store(input) {
+                checkpointer().checkpoint(input, &mut store);
+            }
             Dispatch::Emit(HookOutput::default())
         }
 
@@ -107,11 +115,13 @@ fn dispatch(input: &HookInput) -> Dispatch {
     }
 }
 
-/// Open the backing store for this invocation. Phase 1: the store's `open` is a
-/// `todo!()` seam; this helper centralizes where the store is constructed so the
-/// event arms stay uniform.
-fn open_store(input: &HookInput) -> TranscriptBackingStore {
-    TranscriptBackingStore::open(&input.cwd).expect("backing store open")
+/// Open the backing store for this invocation. Returns `None` (fail-soft) when
+/// the store cannot be opened, so a hook never panics and breaks the turn — the
+/// caller falls back to a silent no-op. The contract is that losing the
+/// governor's side effects is always preferable to breaking the surrounding
+/// turn.
+fn open_store(input: &HookInput) -> Option<TranscriptBackingStore> {
+    TranscriptBackingStore::open(&input.cwd).ok()
 }
 
 #[cfg(test)]
@@ -132,6 +142,35 @@ mod tests {
             Dispatch::Emit(out) => assert_eq!(out.to_json(), "{}"),
             Dispatch::Block(_) => panic!("unknown event must never block"),
         }
+    }
+
+    /// Regression for the never-break-a-turn contract: `open_store` is now
+    /// fail-soft (`Option`), so a store-touching event routes to a silent
+    /// `Dispatch::Emit` and never panics or blocks. The `is_some()` assertion
+    /// also fails to compile if a future change reverts `open_store` to a
+    /// panicking `.expect()` that returns the store directly.
+    #[test]
+    fn store_event_is_fail_soft_and_never_breaks_a_turn() {
+        let td = tempfile::tempdir().expect("tempdir");
+        // Isolate state under a tempdir so the test never pollutes $HOME and
+        // never reads another run's ledger.
+        std::env::set_var("CONTEXT_GOVERNOR_STATE_DIR", td.path());
+
+        let input = HookInput {
+            hook_event_name: "Stop".to_string(),
+            cwd: td.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        assert!(open_store(&input).is_some(), "a valid cwd opens the store");
+
+        // A Stop hook must emit `{}` and never block the turn.
+        match dispatch(&input) {
+            Dispatch::Emit(out) => assert_eq!(out.to_json(), "{}"),
+            Dispatch::Block(_) => panic!("Stop must never block a turn"),
+        }
+
+        std::env::remove_var("CONTEXT_GOVERNOR_STATE_DIR");
     }
 
     /// Pure formatting test for `render_rollup` — does not spawn a process or
