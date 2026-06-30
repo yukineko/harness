@@ -157,6 +157,30 @@
       }
     },
     {
+      "name": "context-governor",
+      "description": "A thin control layer around Claude Code's built-in compaction: pin + lossless-recall + retrieval + tool-hygiene, wired as a single hook-dispatch binary. Separates the three axes it touches — size (window occupancy), cost (recompute/cache), correctness (norm preservation) — and never writes its own lossy summarizer (compression is delegated to built-in compaction). Subscription-native (hooks + binary, no API key).",
+      "version": "0.1.0",
+      "category": "context",
+      "keywords": [
+        "context",
+        "compaction",
+        "hooks",
+        "retrieval",
+        "rust"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/yukineko/harness/tree/main/crates/context-governor",
+      "author": {
+        "name": "yukineko"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/yukineko/harness.git",
+        "path": "crates/context-governor",
+        "ref": "main"
+      }
+    },
+    {
       "name": "ctxrot",
       "description": "Context-rot guard for Claude Code: detect, rescue, restore, distill, and CONTROL what loads into context (rule-based allow/deny gate + /ctx pin/drop/load + switchable carryover). Subscription-native (hooks + subagent + skill, no API key).",
       "version": "0.4.1",
