@@ -139,7 +139,12 @@ impl Store {
                 }
             }
         }
-        entries.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+        // Newest-first by mtime, breaking ties by filename descending. Notes embed
+        // a timestamp in their name (e.g. rescue-<tag>-20260619-110000), so the
+        // lexically greater name is the chronologically later note. Without this
+        // tie-break two notes written in the same mtime tick (fast filesystems /
+        // CI) order nondeterministically, which flaked latest_fallback_note.
+        entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
         entries.into_iter().map(|(_, p)| p).collect()
     }
 

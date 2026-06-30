@@ -103,6 +103,17 @@ pub struct Config {
     /// disk) stands as the safety net. The detached worker, not the 10s hook,
     /// bears this wait — so it can be generous.
     pub distill_timeout_secs: u64,
+    /// On by default: proactively fire the SAME background `claude -p` distill when
+    /// real usage first crosses into the *top* band (≈90%+ of `context_window`,
+    /// i.e. the 200k danger line) — without waiting for a `/compact`. Hooks can't
+    /// trigger compaction, so this is how "auto-distill at 200k" is realized: the
+    /// heavy history is externalized to a `distill-*` note now, and the next
+    /// `guard` re-injects the summary so main context trends toward "要約＋リンク".
+    /// Actual token release still needs `/compact` (hooks can't evict live tokens).
+    /// Set `false` (or `CTXROT_AUTO_DISTILL_ON_BAND=0`) to disable — it spends a
+    /// model call per upward crossing into the danger band. Gated independently of
+    /// `distill_on_compact` so the on-compact path can stay on while this is off.
+    pub auto_distill_on_band: bool,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -134,6 +145,7 @@ struct FileConfig {
     distill_on_compact: Option<bool>,
     distill_cmd: Option<String>,
     distill_timeout_secs: Option<u64>,
+    auto_distill_on_band: Option<bool>,
 }
 
 /// The `~/.ctxrot` base directory.
@@ -188,6 +200,7 @@ impl Default for Config {
             distill_on_compact: true,
             distill_cmd: "claude -p".to_string(),
             distill_timeout_secs: 180,
+            auto_distill_on_band: true,
         }
     }
 }
@@ -284,6 +297,9 @@ impl Config {
                 if let Some(v) = fc.distill_timeout_secs {
                     cfg.distill_timeout_secs = v;
                 }
+                if let Some(v) = fc.auto_distill_on_band {
+                    cfg.auto_distill_on_band = v;
+                }
             }
         }
 
@@ -326,6 +342,9 @@ impl Config {
         }
         if let Some(v) = env_u64("CTXROT_DISTILL_TIMEOUT_SECS") {
             cfg.distill_timeout_secs = v;
+        }
+        if let Some(v) = env_bool("CTXROT_AUTO_DISTILL_ON_BAND") {
+            cfg.auto_distill_on_band = v;
         }
 
         // bands must be ascending and within (0,1]; sanitize defensively
@@ -389,5 +408,13 @@ mod tests {
         assert!(cfg.distill_on_compact);
         assert_eq!(cfg.distill_cmd, "claude -p");
         assert_eq!(cfg.distill_timeout_secs, 180);
+    }
+
+    #[test]
+    fn auto_distill_on_band_defaults_on() {
+        // Regression guard: proactive band-3 (≈200k) auto-distill is ON by default,
+        // so "auto-distill at 200k" works without a config.toml. Flipping this to
+        // false silently removes the proactive externalize-before-compact behavior.
+        assert!(Config::default().auto_distill_on_band);
     }
 }
