@@ -122,7 +122,12 @@ fn report_context_joins_synthetic_ledger() {
     // with <CG state> overridden to an isolated dir via CONTEXT_GOVERNOR_STATE_DIR.
     let cg_state = home.join("cg-state");
     let sid = "it-ctx-join";
-    let project = harness_core::store::project_key(&home);
+    // The binary derives the key from a *canonicalized* cwd (it runs with
+    // current_dir(home), which the OS canonicalizes). Mirror that here so the
+    // synthetic ledger lands where the reader looks (macOS temp_home is under a
+    // /var→/private/var symlink, so the raw vs canonical strings differ).
+    let home_canonical = home.canonicalize().unwrap_or_else(|_| home.clone());
+    let project = harness_core::store::project_key(&home_canonical);
     let session = harness_core::store::safe_session(sid);
     let ledger_dir = cg_state.join(&project).join(&session);
     std::fs::create_dir_all(&ledger_dir).expect("ledger dir");
