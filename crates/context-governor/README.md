@@ -47,3 +47,7 @@ context-governor rollup
 aggregates the ledger into a deterministic, read-only view (`total_saved_tokens`, row count, per-action breakdown) — the evidence that lets you later disprove axis confusions like "pinning saves size".
 
 Because it is a thin layer over built-in compaction, no extra API key is needed — it is **subscription-native** (hooks + binary).
+
+## Coexistence with ctxrot
+
+context-governor and [ctxrot](../ctxrot) register hooks on several of the same events but do not conflict — context-governor is the size/cost/correctness lever (groom/inject/rehydrate/guard/checkpoint) while ctxrot is the rot-detect/rescue/control lever. The per-event delegation (and why the two compose) is documented in [docs/coexistence-with-ctxrot.md](docs/coexistence-with-ctxrot.md).
