@@ -20,6 +20,7 @@ const EVENTS: &[(&str, &str, Option<&str>)] = &[
         "toolguard",
         Some("Read|Bash|Grep|Glob|WebFetch|BashOutput|NotebookRead"),
     ),
+    ("Stop", "stop", None),
 ];
 
 fn settings_path() -> PathBuf {
@@ -91,7 +92,7 @@ pub fn install(dry_run: bool) -> Result<()> {
     harness_core::install::write_settings(&settings_path(), &settings)?;
     println!("\nInstalled hooks → {bin}");
     println!("  UserPromptSubmit=guard  PreCompact=rescue  SessionStart=restore");
-    println!("  PreToolUse=preguard  PostToolUse=toolguard");
+    println!("  PreToolUse=preguard  PostToolUse=toolguard  Stop=stop");
     println!("  statusLine=statusline (context-usage meter)");
     Ok(())
 }
