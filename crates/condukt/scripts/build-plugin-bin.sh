@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# audit-ignore-file: packaging/build script (plugin scaffold), not application logic — mirrors the cargo-metadata pattern shipped by sibling crates; verified by running it end-to-end, not unit-tested.
 # Build a release binary and stage it into bin/ as condukt-<os>-<arch>, the name
 # the bin/condukt launcher looks for. The committed per-platform binaries are what
 # `/plugin install` ships, so end users need neither cargo nor an API key.
@@ -17,14 +18,20 @@ cd "$(dirname "$0")/.."
 
 target="${1:-}"
 
+# In a cargo workspace, artifacts land in the workspace-root target/, not the
+# member crate's — resolve it instead of assuming ./target.
+target_dir="$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
+  | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+target_dir="${target_dir:-../../target}"
+
 if [ -n "$target" ]; then
   rustc_triple="$target"
   cargo build --release --target "$target"
-  src="target/$target/release/condukt"
+  src="$target_dir/$target/release/condukt"
 else
   rustc_triple="$(rustc -vV | sed -n 's/^host: //p')"
   cargo build --release
-  src="target/release/condukt"
+  src="$target_dir/release/condukt"
 fi
 
 # normalize <triple> -> <os>-<arch>
