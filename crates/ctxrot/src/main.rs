@@ -349,34 +349,11 @@ fn main() {
         // ----- user-invoked (normal error reporting) -----
         Command::Stop => run_hook(|| {
             let raw = read_stdin();
-            let Some(input) = HookInput::parse(&raw) else {
-                return;
-            };
-            // Re-entry guard: when Claude Code re-fires Stop after a block,
-            // stop_hook_active is true. Allow the session to end.
-            if input.stop_hook_active {
-                return;
-            }
-            let cfg = Config::load();
-            if !cfg.auto_compact_enabled {
-                return;
-            }
-            let Some(pct) = input
-                .context_window
-                .as_ref()
-                .and_then(|c| c.used_percentage)
-            else {
-                return;
-            };
-            let threshold = cfg.auto_compact_at_percentage * 100.0;
-            if pct >= threshold {
-                let reason = format!(
-                    "Context at {pct:.0}% (threshold {threshold:.0}%). Please run /compact to free up context before continuing."
-                );
-                println!(
-                    "{}",
-                    serde_json::json!({ "decision": "block", "reason": reason })
-                );
+            if let Some(input) = HookInput::parse(&raw) {
+                let cfg = Config::load();
+                if let Some(out) = hooks::stop::run(&input, &cfg) {
+                    println!("{out}");
+                }
             }
         }),
         Command::Install { dry_run } => {
