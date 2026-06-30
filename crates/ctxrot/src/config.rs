@@ -18,6 +18,14 @@ pub struct Config {
     pub context_window: u64,
     pub large_file_bytes: u64,
     pub huge_tool_output_bytes: u64,
+    /// PostToolUse toolguard: maximum number of "big tool output" nudges to inject
+    /// per session before suppressing further ones. The toolguard fights rot by
+    /// steering the *next* heavy read, but an uncapped nudge that fires on every
+    /// oversized output becomes a rot source itself, so the detector caps its own
+    /// repeated advice. Counted across all rot-source keys this session; an
+    /// already-nudged key never re-nudges regardless of the cap. 0 disables the
+    /// nudge entirely (never advise).
+    pub toolguard_nudge_cap: u64,
     /// PreToolUse hard gate: a `Read` of an unbounded (no `limit`) local file at
     /// or above this many bytes is denied, steering the model to a sub-agent.
     /// 0 disables the gate entirely.
@@ -124,6 +132,7 @@ struct FileConfig {
     context_window: Option<u64>,
     large_file_bytes: Option<u64>,
     huge_tool_output_bytes: Option<u64>,
+    toolguard_nudge_cap: Option<u64>,
     gate_file_bytes: Option<u64>,
     gate_bash: Option<bool>,
     metrics: Option<bool>,
@@ -179,6 +188,7 @@ impl Default for Config {
             context_window: 200_000,
             large_file_bytes: 50_000,
             huge_tool_output_bytes: 50_000,
+            toolguard_nudge_cap: 20,
             gate_file_bytes: 1_000_000,
             gate_bash: false,
             metrics: true,
@@ -231,6 +241,9 @@ impl Config {
                 }
                 if let Some(v) = fc.huge_tool_output_bytes {
                     cfg.huge_tool_output_bytes = v;
+                }
+                if let Some(v) = fc.toolguard_nudge_cap {
+                    cfg.toolguard_nudge_cap = v;
                 }
                 if let Some(v) = fc.gate_file_bytes {
                     cfg.gate_file_bytes = v;
@@ -322,6 +335,9 @@ impl Config {
         if let Some(v) = env_u64("GUARD_INJECT_MAX_CHARS") {
             cfg.guard_inject_max_chars = v as usize;
         }
+        if let Some(v) = env_u64("CTXROT_TOOLGUARD_NUDGE_CAP") {
+            cfg.toolguard_nudge_cap = v;
+        }
         if let Some(v) = env_list("CTXROT_LOAD_DENY") {
             cfg.load_deny = v;
         }
@@ -408,6 +424,17 @@ mod tests {
         assert!(cfg.distill_on_compact);
         assert_eq!(cfg.distill_cmd, "claude -p");
         assert_eq!(cfg.distill_timeout_secs, 180);
+    }
+
+    #[test]
+    fn toolguard_nudge_cap_defaults_nonzero() {
+        // Regression guard: the per-session toolguard nudge cap defaults to a
+        // sane non-zero value so repeated big-output nudges are bounded out of the
+        // box. A default of 0 would read as "never nudge" and silently disable the
+        // toolguard's steering for every user without a config.toml.
+        let cfg = Config::default();
+        assert_eq!(cfg.toolguard_nudge_cap, 20);
+        assert!(cfg.toolguard_nudge_cap > 0);
     }
 
     #[test]
