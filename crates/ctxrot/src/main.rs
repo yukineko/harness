@@ -333,14 +333,27 @@ fn main() {
             let raw = read_stdin();
             if let Some(input) = HookInput::parse(&raw) {
                 let cfg = Config::load();
-                if let Some(text) = hooks::toolguard::run(&input, &cfg) {
-                    // PostToolUse needs JSON to inject context.
-                    let out = serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PostToolUse",
-                            "additionalContext": text,
-                        }
-                    });
+                let out_fields = hooks::toolguard::run(&input, &cfg);
+                let mut hook_output = serde_json::Map::new();
+                hook_output.insert(
+                    "hookEventName".to_string(),
+                    serde_json::Value::String("PostToolUse".to_string()),
+                );
+                if let Some(updated) = out_fields.updated {
+                    hook_output.insert(
+                        "updatedToolOutput".to_string(),
+                        serde_json::Value::String(updated),
+                    );
+                }
+                if let Some(nudge) = out_fields.nudge {
+                    hook_output.insert(
+                        "additionalContext".to_string(),
+                        serde_json::Value::String(nudge),
+                    );
+                }
+                // Only emit JSON when something beyond hookEventName was set.
+                if hook_output.len() > 1 {
+                    let out = serde_json::json!({ "hookSpecificOutput": hook_output });
                     println!("{out}");
                 }
             }
