@@ -19,3 +19,9 @@ chrono = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
 anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Integration tests derive the context-governor ledger path with the SAME shared
+# helpers the writer uses (project_key / safe_session), so the join can never drift.
+harness-core = { path = "../harness-core" }

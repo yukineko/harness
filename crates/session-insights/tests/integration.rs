@@ -92,6 +92,98 @@ fn record_then_report_round_trips() {
     );
 }
 
+/// `report --context` degrades gracefully when no context-governor ledger
+/// exists: it still prints the session report plus a "no context ledger" line,
+/// and never panics / exits non-zero.
+#[test]
+fn report_context_without_ledger_degrades_gracefully() {
+    let home = temp_home();
+    let payload = r#"{"hook_event_name":"PostToolUse","session_id":"it-ctx-empty","tool_name":"Read","tool_input":{"file_path":"a.rs"}}"#;
+    let (rc, _) = run_in(&home, &["record"], payload);
+    assert_eq!(rc, 0);
+    let (code, stdout) = run_in(
+        &home,
+        &["report", "--session", "it-ctx-empty", "--context"],
+        "",
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains("context health"), "got: {stdout}");
+    assert!(stdout.contains("no context ledger"), "got: {stdout}");
+}
+
+/// `report --context` joins a synthetic context-governor ledger. The ledger path
+/// is derived with the SAME shared helpers the writer uses (project_key /
+/// safe_session), so this asserts the path convention is consistent end-to-end.
+#[test]
+fn report_context_joins_synthetic_ledger() {
+    let home = temp_home();
+    // The binary runs with current_dir(home) and CLAUDE_CODE_SESSION_ID set below,
+    // so the ledger path is: <CG state>/<project_key(home)>/<safe_session(sid)>/ledger.jsonl
+    // with <CG state> overridden to an isolated dir via CONTEXT_GOVERNOR_STATE_DIR.
+    let cg_state = home.join("cg-state");
+    let sid = "it-ctx-join";
+    let project = harness_core::store::project_key(&home);
+    let session = harness_core::store::safe_session(sid);
+    let ledger_dir = cg_state.join(&project).join(&session);
+    std::fs::create_dir_all(&ledger_dir).expect("ledger dir");
+    let jsonl = concat!(
+        r#"{"session":"it-ctx-join","event":"groomed","saved_tokens":50,"resident_tokens":1200}"#,
+        "\n",
+        r#"{"session":"it-ctx-join","event":"injected","saved_tokens":0,"resident_tokens":1180}"#,
+        "\n",
+        r#"{"session":"it-ctx-join","event":"groomed","saved_tokens":30,"resident_tokens":900}"#,
+        "\n",
+    );
+    std::fs::write(ledger_dir.join("ledger.jsonl"), jsonl).expect("write ledger");
+
+    // Record a tool call for the session, then report with --context.
+    let payload = r#"{"hook_event_name":"PostToolUse","session_id":"it-ctx-join","tool_name":"Read","tool_input":{"file_path":"a.rs"}}"#;
+
+    let bin = env!("CARGO_BIN_EXE_session-insights");
+    let rec = Command::new(bin)
+        .args(["record"])
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", sid)
+        .env("CONTEXT_GOVERNOR_STATE_DIR", &cg_state)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn record");
+    {
+        let mut child = rec;
+        if let Some(mut s) = child.stdin.take() {
+            let _ = s.write_all(payload.as_bytes());
+        }
+        let _ = child.wait_with_output().expect("record runs");
+    }
+
+    let out = Command::new(bin)
+        .args(["report", "--session", sid, "--context"])
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", sid)
+        .env("CONTEXT_GOVERNOR_STATE_DIR", &cg_state)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn report")
+        .wait_with_output()
+        .expect("report runs");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("context health"), "got: {stdout}");
+    assert!(stdout.contains("rows: 3"), "got: {stdout}");
+    assert!(stdout.contains("saved tokens: 80"), "got: {stdout}");
+    assert!(stdout.contains("groomed 2"), "got: {stdout}");
+    assert!(stdout.contains("injected 1"), "got: {stdout}");
+    assert!(stdout.contains("1200 peak"), "got: {stdout}");
+    assert!(stdout.contains("900 last"), "got: {stdout}");
+}
+
 #[test]
 fn record_hook_survives_garbage_stdin() {
     let (code, _stdout) = run(&["record"], "not json");
