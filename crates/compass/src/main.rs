@@ -10,6 +10,7 @@ mod breadcrumb;
 mod carve;
 mod charter;
 mod config;
+mod discovery;
 mod freshness;
 mod gap;
 mod gates;
@@ -72,6 +73,11 @@ enum Command {
     /// active outcome (charter `north_star`), the discovery-side layer between
     /// the goal and the single solution `route` hands to condukt.
     Opportunity(OpportunityArgs),
+    /// Machine-scope shared discovery store (cross-session dedup): record/select/
+    /// list discovered tasks so concurrent compass/scout sessions don't re-surface
+    /// a task another session already found. Every subcommand is fail-soft and
+    /// exits 0 (called from skills/hooks — must never break a turn).
+    Discovery(DiscoveryArgs),
     /// Pivot-or-persevere signal from the trailing outcome streak (§7).
     /// Prints `{"recommendation":"persevere"|"pivot","streak":N,"threshold":N,"reason":"…"}` and exits 0.
     PivotCheck,
@@ -168,6 +174,49 @@ enum OpportunityCmd {
     },
 }
 
+#[derive(Args)]
+struct DiscoveryArgs {
+    #[command(subcommand)]
+    cmd: DiscoveryCmd,
+}
+
+#[derive(Subcommand)]
+enum DiscoveryCmd {
+    /// Append a `Discovered` row for `--title` (fingerprinted) under the given
+    /// session (`--session-id` else `CLAUDE_CODE_SESSION_ID` else `local`).
+    /// Fail-soft: store errors are swallowed and the command still exits 0.
+    Record {
+        /// The discovered task title (fingerprinted deterministically).
+        #[arg(long, value_name = "TITLE")]
+        title: String,
+        /// The discovering session id. Defaults to `CLAUDE_CODE_SESSION_ID` (or
+        /// `local` when unset/blank).
+        #[arg(long, value_name = "ID")]
+        session_id: Option<String>,
+    },
+    /// Mark a discovered task `Selected`, resolving the fingerprint from
+    /// `--fingerprint` else `fingerprint(--title)`. With neither, prints a usage
+    /// note and exits 0 (never breaks a caller turn). Fail-soft.
+    Select {
+        /// The fingerprint to select (used verbatim if given).
+        #[arg(long, value_name = "FP")]
+        fingerprint: Option<String>,
+        /// Resolve the fingerprint from this title when `--fingerprint` is absent.
+        #[arg(long, value_name = "TITLE")]
+        title: Option<String>,
+        /// Accepted for symmetry with `record`; selection is session-agnostic.
+        #[arg(long, value_name = "ID")]
+        session_id: Option<String>,
+    },
+    /// List discovery rows (`--json` => a JSON array, `[]` when empty/absent).
+    /// Fail-soft; always exits 0.
+    List {
+        /// Print the rows as a JSON array instead of human lines.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let r = match cli.command {
@@ -181,6 +230,7 @@ fn main() {
         Command::Charter(args) => charter_command(args),
         Command::Outcome(args) => outcome_command(args),
         Command::Opportunity(args) => opportunity_command(args),
+        Command::Discovery(args) => discovery_command(args),
         Command::PivotCheck => pivot_check_command(),
     };
     if let Err(e) = r {
@@ -539,8 +589,12 @@ fn gap_command(args: GapArgs) -> Result<()> {
     // so the skill derives a gap per named bet, not one flat gap. Ranked by
     // weight descending (load-bearing — heaviest bet leads). Tolerant load — a
     // missing/corrupt store must not break `gap`.
-    inputs.opportunities = opportunity::list_under_ranked(&root, &charter.north_star)
-        .unwrap_or_default()
+    // Cross-session dedup (DoD#2): drop any opportunity another session already
+    // discovered, so this session doesn't re-surface a duplicate. Byte-equivalent
+    // fallback (DoD#4): an absent/corrupt discovery store drops nothing.
+    let ranked = opportunity::list_under_ranked(&root, &charter.north_star).unwrap_or_default();
+    let my_session = discovery::session_from_env();
+    inputs.opportunities = discovery::filter_undiscovered_by_others(&root, &my_session, ranked)
         .into_iter()
         .map(|o| gap::OpportunityGap {
             id: o.id,
@@ -616,6 +670,10 @@ fn opportunity_command(args: OpportunityArgs) -> Result<()> {
             let outcome_ref = outcome.unwrap_or(active_outcome);
             let weight = weight.unwrap_or(opportunity::DEFAULT_WEIGHT);
             let rec = opportunity::record(&root, &title, &outcome_ref, weight)?;
+            // DoD#1: a named bet is also a discovered task — emit a discovery row
+            // for it under the current session. Fail-soft: this must NOT change
+            // the `opportunity add` behavior/output/exit if the store errors.
+            discovery::append_discovered(&root, &rec.title, &discovery::session_from_env());
             println!(
                 "compass: recorded opportunity [{}] \"{}\" (weight {}) under outcome — {}",
                 rec.id,
@@ -636,6 +694,30 @@ fn opportunity_command(args: OpportunityArgs) -> Result<()> {
                     println!("- [{}] (weight {}) {}", o.id, o.weight, o.title);
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// discovery (cross-session dedup): record/select/list rows in the machine-scope
+/// shared discovery store. All three subcommands are fail-soft — the store calls
+/// swallow their own errors — so a skill/hook invocation always exits 0. The
+/// project cwd ([`project_root`]) keys the per-project store.
+fn discovery_command(args: DiscoveryArgs) -> Result<()> {
+    let cwd = project_root();
+    match args.cmd {
+        DiscoveryCmd::Record { title, session_id } => {
+            discovery::record_command(&cwd, title, session_id);
+        }
+        DiscoveryCmd::Select {
+            fingerprint,
+            title,
+            session_id: _,
+        } => {
+            discovery::select_command(&cwd, fingerprint, title);
+        }
+        DiscoveryCmd::List { json } => {
+            discovery::list_command(&cwd, json)?;
         }
     }
     Ok(())
@@ -674,8 +756,11 @@ fn route_command(args: RouteArgs) -> Result<()> {
     // named opportunities under the active outcome (charter north_star) so the
     // handed-off solution carries its opportunity refs (DoD#2).
     let charter = Charter::load(&Charter::project_path(&root)).unwrap_or_default();
-    let opportunities =
-        opportunity::list_under_ranked(&root, &charter.north_star).unwrap_or_default();
+    // Cross-session dedup (DoD#2) on the handed-off opportunity refs; byte-equiv
+    // fallback (DoD#4) when the discovery store is absent/corrupt.
+    let ranked = opportunity::list_under_ranked(&root, &charter.north_star).unwrap_or_default();
+    let my_session = discovery::session_from_env();
+    let opportunities = discovery::filter_undiscovered_by_others(&root, &my_session, ranked);
     println!();
     print!(
         "{}",
