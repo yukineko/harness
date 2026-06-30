@@ -24,6 +24,7 @@ compile_error!(
 
 pub mod config;
 pub mod daily;
+pub mod discovery;
 pub mod gate;
 pub mod hash;
 pub mod hook;
