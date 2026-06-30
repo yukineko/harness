@@ -126,6 +126,11 @@ pub struct Config {
     /// auto-compact nudge. Default 0.90 (90 %). Only meaningful when
     /// `auto_compact_enabled` is true. env: `CTXROT_AUTO_COMPACT_AT_PERCENTAGE`
     pub auto_compact_at_percentage: f64,
+    /// Maximum number of nudge messages toolguard will inject per session.
+    /// Once the session's tooldump count reaches this threshold, toolguard
+    /// still truncates the output (`updated`) but omits the advisory nudge.
+    /// Default 3. 0 disables nudge entirely; u32::MAX effectively uncaps it.
+    pub toolguard_nudge_cap: u32,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -160,6 +165,7 @@ struct FileConfig {
     auto_distill_on_band: Option<bool>,
     auto_compact_enabled: Option<bool>,
     auto_compact_at_percentage: Option<f64>,
+    toolguard_nudge_cap: Option<u32>,
 }
 
 /// The `~/.ctxrot` base directory.
@@ -217,6 +223,7 @@ impl Default for Config {
             auto_distill_on_band: true,
             auto_compact_enabled: false,
             auto_compact_at_percentage: 0.90,
+            toolguard_nudge_cap: 3,
         }
     }
 }
@@ -321,6 +328,9 @@ impl Config {
                 }
                 if let Some(v) = fc.auto_compact_at_percentage {
                     cfg.auto_compact_at_percentage = v;
+                }
+                if let Some(v) = fc.toolguard_nudge_cap {
+                    cfg.toolguard_nudge_cap = v;
                 }
             }
         }

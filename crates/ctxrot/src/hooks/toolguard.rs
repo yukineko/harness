@@ -61,6 +61,14 @@ pub fn run(input: &HookInput, cfg: &Config) -> ToolguardOutput {
         };
     }
 
+    // Read session's existing tooldump count BEFORE emitting, so we count how
+    // many nudges have already been sent (not including this turn).
+    let existing_dumps = crate::metrics::summarize(cfg)
+        .into_iter()
+        .find(|s| s.session == input.session_id)
+        .map(|s| s.tooldumps)
+        .unwrap_or(0);
+
     crate::metrics::emit(
         cfg,
         &input.session_id,
@@ -73,18 +81,23 @@ pub fn run(input: &HookInput, cfg: &Config) -> ToolguardOutput {
     let limit = cfg.huge_tool_output_bytes as usize;
     let updated = truncate_response(&text, limit);
 
-    let kb = size as f64 / 1024.0;
-    let tok = size / 4;
-    let nudge = format!(
-        "[context-rot guard] {} が大きい出力 (~{:.0}KB, 推定~{}tok) を context に投入。\
-         → 次回以降この種の重い読み込み/検索は Explore か general-purpose sub-agent に委譲し、\
-         必要な該当行・結論だけ受け取ること。今回ぶんは用が済んだら蒸留/退避を検討。",
-        input.tool_name, kb, tok
-    );
+    // Suppress the advisory nudge once the cap is reached; truncation continues.
+    let nudge = if existing_dumps < u64::from(cfg.toolguard_nudge_cap) {
+        let kb = size as f64 / 1024.0;
+        let tok = size / 4;
+        Some(format!(
+            "[context-rot guard] {} が大きい出力 (~{:.0}KB, 推定~{}tok) を context に投入。\
+             → 次回以降この種の重い読み込み/検索は Explore か general-purpose sub-agent に委譲し、\
+             必要な該当行・結論だけ受け取ること。今回ぶんは用が済んだら蒸留/退避を検討。",
+            input.tool_name, kb, tok
+        ))
+    } else {
+        None
+    };
 
     ToolguardOutput {
         updated: Some(updated),
-        nudge: Some(nudge),
+        nudge,
     }
 }
 
@@ -240,9 +253,20 @@ mod tests {
         }
     }
 
+    /// Config suitable for unit tests: metrics writes disabled and state_dir
+    /// pointed at a nonexistent path so summarize() always returns an empty
+    /// list, keeping tooldump counts at zero regardless of the developer's
+    /// local ctxrot state.
+    fn test_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.metrics = false;
+        cfg.state_dir = std::path::PathBuf::from("/nonexistent-ctxrot-test-state");
+        cfg
+    }
+
     #[test]
     fn warns_on_big_read() {
-        let cfg = Config::default();
+        let cfg = test_cfg();
         let big = "x".repeat(60_000);
         let out = run(&input("Read", json!({ "content": big })), &cfg);
         assert!(out.nudge.unwrap().contains("Read"));
@@ -251,7 +275,7 @@ mod tests {
 
     #[test]
     fn silent_on_small_and_unwatched() {
-        let cfg = Config::default();
+        let cfg = test_cfg();
         let small_out = run(&input("Read", json!({ "content": "small" })), &cfg);
         assert!(small_out.updated.is_none());
         assert!(small_out.nudge.is_none());
@@ -264,7 +288,7 @@ mod tests {
 
     #[test]
     fn measures_stdout() {
-        let cfg = Config::default();
+        let cfg = test_cfg();
         let big = "y".repeat(60_000);
         let out = run(&input("Bash", json!({ "stdout": big, "stderr": "" })), &cfg);
         assert!(out.updated.is_some());
@@ -334,6 +358,24 @@ mod tests {
             "truncated result ({}) should not far exceed limit ({})",
             result_len,
             limit
+        );
+    }
+
+    #[test]
+    fn nudge_cap_default_is_3() {
+        assert_eq!(Config::default().toolguard_nudge_cap, 3);
+    }
+
+    #[test]
+    fn nudge_cap_zero_suppresses_nudge_but_keeps_truncation() {
+        let mut cfg = test_cfg();
+        cfg.toolguard_nudge_cap = 0; // cap=0 means never nudge
+        let big = "x".repeat(60_000);
+        let out = run(&input("Read", json!({ "content": big })), &cfg);
+        assert!(out.updated.is_some(), "truncation should still occur");
+        assert!(
+            out.nudge.is_none(),
+            "nudge must be suppressed when cap is 0"
         );
     }
 }
