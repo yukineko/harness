@@ -30,11 +30,54 @@ pub struct DiscoveryRecord {
     pub title: String,
 }
 
+/// Resolve the canonical git repo root for a cwd so that distinct worktrees /
+/// subdirectories of the SAME repo key to one discovery store (the whole point
+/// of the machine-scoped dedup — two git worktrees of one repo have different
+/// cwds but must share one record file).
+///
+/// Strategy: ask git for the toplevel (`git -C <cwd> rev-parse
+/// --show-toplevel`), trim it, and canonicalize. Fully fail-soft: if git is
+/// missing, the dir isn't a repo, or any IO/parse error occurs, fall back to
+/// `cwd.canonicalize()` (and finally the raw cwd). NEVER panics.
+pub fn resolve_repo_root(cwd: &Path) -> PathBuf {
+    if let Some(top) = git_toplevel(cwd) {
+        if let Ok(canon) = top.canonicalize() {
+            return canon;
+        }
+        return top;
+    }
+    cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf())
+}
+
+/// Best-effort `git -C <cwd> rev-parse --show-toplevel`. Returns `None` on any
+/// spawn/exit/parse failure (not a repo, git absent, empty output, ...).
+fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let top = String::from_utf8(output.stdout).ok()?;
+    let top = top.trim();
+    if top.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(top))
+}
+
 /// Path to the discovery.jsonl store for a given cwd.
-/// Returns `~/.compass/<project_key>/discovery.jsonl`.
+/// Returns `~/.compass/<project_key>/discovery.jsonl`, keyed by the canonical
+/// git repo root (see [`resolve_repo_root`]) so sibling worktrees / subdirs of
+/// one repo share a single store. All other store fns route through this, so
+/// they inherit the canonical-root keying.
 pub fn record_path(cwd: &Path) -> PathBuf {
     crate::config::base_dir("compass")
-        .join(crate::store::project_key(cwd))
+        .join(crate::store::project_key(&resolve_repo_root(cwd)))
         .join("discovery.jsonl")
 }
 
@@ -353,6 +396,34 @@ mod tests {
             fp1.chars().all(|c| c.is_ascii_hexdigit()),
             "fingerprint should be all hex digits"
         );
+    }
+
+    #[test]
+    fn record_path_shares_one_store_across_subdirs_of_one_repo() {
+        // Two distinct cwds under the SAME git repo root (the repo root itself
+        // and a nested subdir) must map to the SAME record_path — that's the
+        // canonical-root keying that lets sibling worktrees/subdirs dedup.
+        let tempdir = tempfile::tempdir().expect("tempfile::tempdir");
+        let root = tempdir.path();
+
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("init")
+            .arg("-q")
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init should succeed");
+
+        let sub = root.join("a/b/c");
+        std::fs::create_dir_all(&sub).expect("create_dir_all");
+
+        assert_eq!(
+            record_path(root),
+            record_path(&sub),
+            "repo root and a subdir of the same repo must share one record_path"
+        );
+        assert_eq!(resolve_repo_root(root), resolve_repo_root(&sub));
     }
 
     #[test]
