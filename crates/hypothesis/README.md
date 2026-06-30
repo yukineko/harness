@@ -105,7 +105,7 @@ The plugin bundles the SessionStart hook (`hooks/hooks.json`), the `/hypothesis`
 
 ```text
 # in Claude Code:
-/plugin marketplace add yukineko/harness
+/plugin marketplace add yukineko/claude-harnesses
 /plugin install hypothesis@yukineko
 ```
 
@@ -189,6 +189,6 @@ context 注入し、`validate`/`reject` を促す。`linked_goal` が compass ch
 
 ### 導入
 
-プラグイン（推奨）: `/plugin marketplace add yukineko/harness` → `/plugin install hypothesis@yukineko`。
+プラグイン（推奨）: `/plugin marketplace add yukineko/claude-harnesses` → `/plugin install hypothesis@yukineko`。
 [compass](../compass)（検証先のゴール）と [flow](../flow)（賭けを build・計測する driver）と組み合わせて
 ループが閉じる。

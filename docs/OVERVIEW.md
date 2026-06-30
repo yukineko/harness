@@ -244,7 +244,7 @@ budgetguard の支出台帳 + gauge のセッション記録 + taskprog の prog
 ## インストール方法
 
 ```
-/plugin marketplace add yukineko/harness
+/plugin marketplace add yukineko/claude-harnesses
 /plugin install <plugin>@yukineko   # 必要なプラグインを個別に
 ```
 

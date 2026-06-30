@@ -57,7 +57,7 @@ cargo deny check advisories bans sources licenses
 
 ```text
 # Claude Code 内で:
-/plugin marketplace add yukineko/harness
+/plugin marketplace add yukineko/claude-harnesses
 /plugin install daily@yukineko
 ```
 

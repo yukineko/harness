@@ -71,7 +71,7 @@ substring match — set it to turn the runner off entirely.
 
 ```text
 # in Claude Code:
-/plugin marketplace add yukineko/harness
+/plugin marketplace add yukineko/claude-harnesses
 /plugin install daily@yukineko
 ```
 
