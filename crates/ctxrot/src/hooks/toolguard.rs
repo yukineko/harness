@@ -2,8 +2,11 @@
 //!
 //! After a tool runs, measure how much text it dumped into context. A single
 //! huge Read/Bash/Grep result is a classic rot source. When it exceeds the
-//! threshold we inject a short, ONE-LINE-ish nudge to route the next heavy read
-//! through a sub-agent (Explore / general-purpose) and keep only conclusions.
+//! threshold we:
+//!   1. Truncate the response (head + tail, with an omission header) so the
+//!      live context load is bounded (`updated`).
+//!   2. Inject a short nudge to route the next heavy read through a sub-agent
+//!      (`nudge`).
 //!
 //! We do NOT block the tool — the output is already in context this turn; the
 //! goal is to steer the *next* heavy read.
@@ -25,14 +28,37 @@ const WATCHED: &[&str] = &[
     "NotebookRead",
 ];
 
-pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
+/// Output from the toolguard hook.
+///
+/// - `updated`: truncated tool response text (replaces the raw output in context).
+/// - `nudge`:   advisory text injected as `additionalContext` to steer the model.
+pub struct ToolguardOutput {
+    pub updated: Option<String>,
+    pub nudge: Option<String>,
+}
+
+pub fn run(input: &HookInput, cfg: &Config) -> ToolguardOutput {
     if input.tool_name.is_empty() || !WATCHED.contains(&input.tool_name.as_str()) {
-        return None;
+        return ToolguardOutput {
+            updated: None,
+            nudge: None,
+        };
     }
-    let resp = input.tool_response.as_ref()?;
+    let resp = match input.tool_response.as_ref() {
+        Some(r) => r,
+        None => {
+            return ToolguardOutput {
+                updated: None,
+                nudge: None,
+            }
+        }
+    };
     let size = response_text_len(resp);
     if (size as u64) < cfg.huge_tool_output_bytes {
-        return None;
+        return ToolguardOutput {
+            updated: None,
+            nudge: None,
+        };
     }
 
     crate::metrics::emit(
@@ -42,14 +68,136 @@ pub fn run(input: &HookInput, cfg: &Config) -> Option<String> {
         serde_json::json!({ "tool": input.tool_name, "bytes": size }),
     );
 
+    // Extract text from response for truncation.
+    let text = response_text(resp);
+    let limit = cfg.huge_tool_output_bytes as usize;
+    let updated = truncate_response(&text, limit);
+
     let kb = size as f64 / 1024.0;
     let tok = size / 4;
-    Some(format!(
+    let nudge = format!(
         "[context-rot guard] {} が大きい出力 (~{:.0}KB, 推定~{}tok) を context に投入。\
          → 次回以降この種の重い読み込み/検索は Explore か general-purpose sub-agent に委譲し、\
          必要な該当行・結論だけ受け取ること。今回ぶんは用が済んだら蒸留/退避を検討。",
         input.tool_name, kb, tok
-    ))
+    );
+
+    ToolguardOutput {
+        updated: Some(updated),
+        nudge: Some(nudge),
+    }
+}
+
+/// Truncate `text` to at most `limit` characters using head/tail strategy.
+///
+/// If the text fits within `limit`, it is returned unchanged (no header).
+/// Otherwise the text is split into lines; the first and last halves (by line
+/// count) are kept so that the total character count stays below `limit`, and
+/// an omission header is prepended:
+///
+/// ```text
+/// [toolguard: {orig_kb:.0}KB → {limit_kb:.0}KB, 中間{skipped}行省略]
+/// ```
+pub fn truncate_response(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    let total_lines = lines.len();
+    let orig_kb = text.chars().count() as f64 / 1024.0;
+    let limit_kb = limit as f64 / 1024.0;
+
+    // Reserve space for the header line itself (approximate).
+    let header_placeholder =
+        format!("[toolguard: {orig_kb:.0}KB → {limit_kb:.0}KB, 中間{total_lines}行省略]");
+    let usable = limit.saturating_sub(header_placeholder.chars().count() + 1);
+    let half = usable / 2;
+
+    // Greedily accumulate head lines.
+    let mut head_lines: Vec<&str> = Vec::new();
+    let mut head_chars = 0usize;
+    for line in &lines {
+        let lc = line.chars().count() + 1; // +1 for newline
+        if head_chars + lc > half {
+            break;
+        }
+        head_lines.push(line);
+        head_chars += lc;
+    }
+
+    // Greedily accumulate tail lines (from the end).
+    let mut tail_lines: Vec<&str> = Vec::new();
+    let mut tail_chars = 0usize;
+    let tail_budget = usable.saturating_sub(head_chars);
+    for line in lines.iter().rev() {
+        let lc = line.chars().count() + 1;
+        if tail_chars + lc > tail_budget {
+            break;
+        }
+        tail_lines.push(line);
+        tail_chars += lc;
+    }
+    tail_lines.reverse();
+
+    // Determine which lines were skipped.
+    let head_count = head_lines.len();
+    let tail_count = tail_lines.len();
+    // If head and tail overlap (very short text that somehow got here), just return text.
+    if head_count + tail_count >= total_lines {
+        return text.to_string();
+    }
+    let skipped = total_lines - head_count - tail_count;
+
+    let header = format!("[toolguard: {orig_kb:.0}KB → {limit_kb:.0}KB, 中間{skipped}行省略]");
+
+    let mut result = String::with_capacity(limit + 64);
+    result.push_str(&header);
+    result.push('\n');
+    for line in &head_lines {
+        result.push_str(line);
+        result.push('\n');
+    }
+    for line in &tail_lines {
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Extract the primary text content from a tool response value.
+fn response_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items
+            .iter()
+            .map(response_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(map) => {
+            let mut parts = Vec::new();
+            for key in ["stdout", "stderr", "text", "output", "result"] {
+                if let Some(s) = map.get(key).and_then(Value::as_str) {
+                    if !s.is_empty() {
+                        parts.push(s.to_string());
+                    }
+                }
+            }
+            if let Some(c) = map.get("content") {
+                let t = response_text(c);
+                if !t.is_empty() {
+                    parts.push(t);
+                }
+            }
+            if parts.is_empty() {
+                v.to_string()
+            } else {
+                parts.join("\n")
+            }
+        }
+        _ => String::new(),
+    }
 }
 
 /// Best-effort character length of a tool_response, whether it's a bare string,
@@ -97,15 +245,21 @@ mod tests {
         let cfg = Config::default();
         let big = "x".repeat(60_000);
         let out = run(&input("Read", json!({ "content": big })), &cfg);
-        assert!(out.unwrap().contains("Read"));
+        assert!(out.nudge.unwrap().contains("Read"));
+        assert!(out.updated.is_some());
     }
 
     #[test]
     fn silent_on_small_and_unwatched() {
         let cfg = Config::default();
-        assert!(run(&input("Read", json!({ "content": "small" })), &cfg).is_none());
+        let small_out = run(&input("Read", json!({ "content": "small" })), &cfg);
+        assert!(small_out.updated.is_none());
+        assert!(small_out.nudge.is_none());
+
         let big = "x".repeat(60_000);
-        assert!(run(&input("Edit", json!({ "content": big })), &cfg).is_none());
+        let edit_out = run(&input("Edit", json!({ "content": big })), &cfg);
+        assert!(edit_out.updated.is_none());
+        assert!(edit_out.nudge.is_none());
     }
 
     #[test]
@@ -113,6 +267,73 @@ mod tests {
         let cfg = Config::default();
         let big = "y".repeat(60_000);
         let out = run(&input("Bash", json!({ "stdout": big, "stderr": "" })), &cfg);
-        assert!(out.is_some());
+        assert!(out.updated.is_some());
+        assert!(out.nudge.is_some());
+    }
+
+    #[test]
+    fn truncate_short_text_unchanged() {
+        let text = "hello\nworld\n";
+        let result = truncate_response(text, 1000);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn truncate_long_text_has_header() {
+        // Build a text that is well over the limit.
+        let lines: Vec<String> = (0..1000).map(|i| format!("line {:04}", i)).collect();
+        let text = lines.join("\n");
+        let limit = 200;
+        let result = truncate_response(&text, limit);
+        assert!(
+            result.contains("[toolguard:"),
+            "should have omission header"
+        );
+        assert!(
+            result.contains("行省略"),
+            "header should mention skipped lines"
+        );
+        assert!(
+            result.chars().count() <= limit + 128,
+            "result should be close to limit ({}), got {}",
+            limit,
+            result.chars().count()
+        );
+    }
+
+    #[test]
+    fn truncate_contains_head_and_tail() {
+        let lines: Vec<String> = (0..200).map(|i| format!("line {:03}", i)).collect();
+        let text = lines.join("\n");
+        // Use a modest limit so truncation kicks in.
+        let limit = 100;
+        let result = truncate_response(&text, limit);
+        // The first line should appear.
+        assert!(result.contains("line 000"), "should contain head");
+        // The last line should appear.
+        assert!(result.contains("line 199"), "should contain tail");
+        // Middle lines should be omitted.
+        assert!(
+            !result.contains("line 100"),
+            "middle lines should be omitted"
+        );
+    }
+
+    #[test]
+    fn truncate_result_within_limit_plus_header() {
+        let lines: Vec<String> = (0..500)
+            .map(|i| "a".repeat(20) + &format!(" {}", i))
+            .collect();
+        let text = lines.join("\n");
+        let limit = 512;
+        let result = truncate_response(&text, limit);
+        // Allow a small slack for the header line itself (which can be ~50 chars).
+        let result_len = result.chars().count();
+        assert!(
+            result_len <= limit + 128,
+            "truncated result ({}) should not far exceed limit ({})",
+            result_len,
+            limit
+        );
     }
 }
