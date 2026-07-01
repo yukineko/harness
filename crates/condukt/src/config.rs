@@ -269,7 +269,11 @@ max_iters = 5
             assert_eq!(parse_autonomous_env(v), Some(true), "{v:?} should be true");
         }
         for v in ["0", "false", "No", "off"] {
-            assert_eq!(parse_autonomous_env(v), Some(false), "{v:?} should be false");
+            assert_eq!(
+                parse_autonomous_env(v),
+                Some(false),
+                "{v:?} should be false"
+            );
         }
         for v in ["", "maybe", "2", "enabled"] {
             assert_eq!(parse_autonomous_env(v), None, "{v:?} should be None");

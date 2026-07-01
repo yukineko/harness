@@ -36,7 +36,10 @@ pub fn list_files(repo_root: &Path, dir: &str) -> Vec<String> {
     let entries = match std::fs::read_dir(&d) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("specguard: cannot read decisions dir '{}': {err}", d.display());
+            eprintln!(
+                "specguard: cannot read decisions dir '{}': {err}",
+                d.display()
+            );
             return vec![];
         }
     };
@@ -44,7 +47,10 @@ pub fn list_files(repo_root: &Path, dir: &str) -> Vec<String> {
         .filter_map(|e| match e {
             Ok(de) => Some(de),
             Err(err) => {
-                eprintln!("specguard: skipping unreadable entry in '{}': {err}", d.display());
+                eprintln!(
+                    "specguard: skipping unreadable entry in '{}': {err}",
+                    d.display()
+                );
                 None
             }
         })

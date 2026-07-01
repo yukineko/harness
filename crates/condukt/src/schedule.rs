@@ -476,11 +476,17 @@ mod prop_tests {
     }
 
     fn pd(tasks: Vec<Task>) -> Decomposition {
-        Decomposition { goal: "g".into(), tasks }
+        Decomposition {
+            goal: "g".into(),
+            tasks,
+        }
     }
 
     fn batch_index(sched: &Schedule, id: &str) -> Option<usize> {
-        sched.batches.iter().position(|b| b.parallel.contains(&id.to_string()))
+        sched
+            .batches
+            .iter()
+            .position(|b| b.parallel.contains(&id.to_string()))
     }
 
     proptest! {

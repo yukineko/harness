@@ -75,7 +75,14 @@ fn query_backlog_pending() -> Option<Vec<BacklogItem>> {
     let project = cwd.to_string_lossy().to_string();
 
     let out = std::process::Command::new("backlog")
-        .args(["list", "--project", &project, "--status", "pending", "--json"])
+        .args([
+            "list",
+            "--project",
+            &project,
+            "--status",
+            "pending",
+            "--json",
+        ])
         .output()
         .ok()?;
 

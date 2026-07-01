@@ -338,11 +338,17 @@ mod prop_tests {
     use std::collections::HashSet;
 
     fn mk_area(name: &str, globs: Vec<String>) -> Area {
-        Area { name: name.into(), globs, canon: vec![] }
+        Area {
+            name: name.into(),
+            globs,
+            canon: vec![],
+        }
     }
 
     fn all_hit_files(hits: &[AreaHit]) -> Vec<String> {
-        hits.iter().flat_map(|h| h.matched_files.iter().cloned()).collect()
+        hits.iter()
+            .flat_map(|h| h.matched_files.iter().cloned())
+            .collect()
     }
 
     proptest! {

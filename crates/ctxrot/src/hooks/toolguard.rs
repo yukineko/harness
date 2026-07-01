@@ -84,9 +84,7 @@ pub fn run(input: &HookInput, cfg: &Config) -> ToolguardOutput {
     // already nudged this session, and stop once the session's nudge budget
     // (`toolguard_nudge_cap`, 0 = never advise) is spent.
     let (seen, total) = crate::metrics::nudge_state(cfg, &input.session_id);
-    let nudge = if total >= cfg.toolguard_nudge_cap
-        || seen.contains(&input.tool_name)
-    {
+    let nudge = if total >= cfg.toolguard_nudge_cap || seen.contains(&input.tool_name) {
         None
     } else {
         // Committing to a nudge: record it so the next invocation sees this key.
@@ -398,8 +396,14 @@ mod tests {
         let text = lines.join("\n");
         let limit = 200;
         let result = truncate_response(&text, limit);
-        assert!(result.contains("[toolguard:"), "should have omission header");
-        assert!(result.contains("行省略"), "header should mention skipped lines");
+        assert!(
+            result.contains("[toolguard:"),
+            "should have omission header"
+        );
+        assert!(
+            result.contains("行省略"),
+            "header should mention skipped lines"
+        );
         assert!(
             result.chars().count() <= limit + 128,
             "result should be close to limit ({}), got {}",
@@ -416,7 +420,10 @@ mod tests {
         let result = truncate_response(&text, limit);
         assert!(result.contains("line 000"), "should contain head");
         assert!(result.contains("line 199"), "should contain tail");
-        assert!(!result.contains("line 100"), "middle lines should be omitted");
+        assert!(
+            !result.contains("line 100"),
+            "middle lines should be omitted"
+        );
     }
 
     #[test]

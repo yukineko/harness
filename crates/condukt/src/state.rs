@@ -1830,7 +1830,10 @@ mod tests {
             ..Default::default()
         };
         let json = serde_json::to_string(&t).unwrap();
-        assert!(json.contains("branch_sha"), "branch_sha must appear in JSON");
+        assert!(
+            json.contains("branch_sha"),
+            "branch_sha must appear in JSON"
+        );
         let back: TaskState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.branch_sha.as_deref(), Some("abc1234def5678"));
     }
@@ -1865,6 +1868,9 @@ mod tests {
             ..Default::default()
         };
         let ref_to_check = t_without_sha.branch_sha.as_deref().unwrap_or(branch);
-        assert_eq!(ref_to_check, branch, "branch name must be used when branch_sha is None");
+        assert_eq!(
+            ref_to_check, branch,
+            "branch name must be used when branch_sha is None"
+        );
     }
 }
