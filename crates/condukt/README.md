@@ -29,7 +29,8 @@ hook (`restore`) and a Stop hook (`state record-run --all`).
 | `condukt schedule` | read a decomposition JSON, output ordered parallel batches + serial/gated lists. Two tasks share a batch only if their `touched_files` don't conflict and neither depends on the other. |
 | `condukt validate` | check a decomposition JSON (unique ids, known deps, no cycles). |
 | `condukt worktree create/merge/remove/cleanup/list` | git-worktree lifecycle; enforces "path outside the repo" and "one dir = one branch". |
-| `condukt state init/set/show/gate/list` | persist a run's task statuses; `set` accepts `--model`/`--cost` so a recorded outcome reflects the actual (escalated) model and gauge cost; `gate` exits non-zero until every task is verified and no worktree is left dirty or unremoved. |
+| `condukt state init/set/show/gate/list` | persist a run's task statuses; `set` accepts `--model`/`--cost` so a recorded outcome reflects the actual (escalated) model and gauge cost; `gate` exits non-zero until every task is verified and no worktree is left dirty or unremoved. `set --status verified` also enforces the F→P reproduction gate (below): it refuses to promote a `fix`/`feature` task that lacks a valid Fail→Pass oracle. |
+| `condukt state check-oracle --run <id> --task <id>` | ask whether a `fix`/`feature` task carries a valid Fail→Pass reproduction proof. When the task is in scope (`kind` is `fix`/`feature`) and has `reproduction_tests`, it runs `tdd oracle --task <id>` inside the task's worktree and prints `{"required","valid_fp_oracle","fallback","transition","reason"}`. Fail-soft: when `tdd` is absent/unreachable or the verdict is unreadable it returns `fallback:true` (degrade to the legacy gate) and never panics or exits non-zero. |
 | `condukt state conflict-check/abandon/list-tasks/cancel/pause` | cross-session safety + run editing: detect file/goal conflicts before `init`, return stuck `running` tasks to `pending` (`--all-stuck`), list/cancel a run's tasks, pause a conflicting run (see the skill's Phase 0/3.5 and the cancel utility). |
 | `condukt state autonomy-check` | report whether condukt is in autonomous mode (config `autonomous` + `CONDUKT_AUTONOMOUS` env): prints `{"autonomous":<bool>}` and exits 0 when autonomous, 1 when not, so the skill can deterministically degrade human gates (e.g. the Phase 3 agreement) only when autonomous. Off by default (every `AskUserQuestion` still fires — backward compatible). |
 | `condukt state record-run --run <id> \| --all` | deterministically record settled tasks to fugu-router (fired by the Stop hook; idempotent via per-run `recorded_at`; soft no-op when fugu-router is absent). |
@@ -51,10 +52,20 @@ Canonical definition: `agents/condukt-interpreter.md`.
 { "goal": "...", "linked_hypotheses": ["hid1"],
   "tasks": [
   { "id": "t1", "title": "...", "touched_files": ["path/or/glob"],
-    "deps": ["t0"], "class": "parallel|serial|gated",
+    "deps": ["t0"], "class": "parallel|serial|gated", "kind": "fix|feature|chore",
     "suggested_model": "sonnet|opus|haiku", "done_criteria": "observable pass condition" }
 ]}
 ```
+
+`kind` is optional and backward-compatible (`#[serde(default)]`). Only `fix` and
+`feature` (case-insensitive) are in scope for the **F→P reproduction gate**: such a
+task must ship a task-specific test that fails on the buggy tree and passes on the
+fixed tree (a Fail→Pass transition). `condukt state check-oracle` classifies the
+worker's `tdd` red/green proofs, and `state set --status verified` refuses the
+promotion unless the transition is a valid Fail→Pass — so "done" means *the
+reproduction actually flipped from red to green*, not just that the criteria text
+matched. The whole path is fail-soft: with `tdd` absent, no `reproduction_tests`,
+or a non-`fix`/`feature` task, the gate degrades to the legacy done-criteria check.
 
 ## Install
 
