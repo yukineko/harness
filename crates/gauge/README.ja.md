@@ -78,3 +78,13 @@ output = 25.0
 ### 設定
 
 プロジェクトの `./gauge.toml` > `~/.gauge/config.toml` > 組み込みデフォルトの順（最初に存在したファイルが勝つ）。`gauge.example.toml` を参照。ストアの既定値は `~/.gauge/store`。
+
+## ビルド
+
+```sh
+cargo build --release        # バイナリは target/release/gauge
+cargo test
+make bins                    # バンドル済み bin/gauge-darwin-* と -linux-x86_64 を更新
+```
+
+Linux 版は cargo-zigbuild で macOS からクロスコンパイルされ（Docker 不要）、古い glibc フロアに固定して各ディストロで動くようにしている。

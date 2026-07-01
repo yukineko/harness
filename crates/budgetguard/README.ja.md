@@ -93,11 +93,12 @@ block_usd = 20.00
 ### サブコマンド
 
 ```sh
-budgetguard gate      # Stop フック (stdin の JSON を読み、判定を出す)
-budgetguard status    # 解決済みの設定 + 今日の支出
-budgetguard init      # 雛形の budgetguard.toml を書き出す
-budgetguard install   # フックを ~/.claude/settings.json にマージする
-budgetguard uninstall # フックを取り除く
+budgetguard gate           # Stop フック (stdin の JSON を読み、判定を出す)
+budgetguard status         # 解決済みの設定 + 今日の支出
+budgetguard status --json  # 機械可読な予算プレッシャー (fugu-router 向け)
+budgetguard init           # 雛形の budgetguard.toml を書き出す
+budgetguard install        # フックを ~/.claude/settings.json にマージする
+budgetguard uninstall      # フックを取り除く
 ```
 
 ### 料金

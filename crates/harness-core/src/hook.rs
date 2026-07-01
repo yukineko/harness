@@ -10,6 +10,27 @@ use std::panic::UnwindSafe;
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Context window statistics supplied by Claude Code on Stop / SubagentStop events.
+#[derive(Debug, Default, Deserialize)]
+pub struct ContextWindow {
+    /// Fraction of the context window used (0.0–100.0 as a percentage).
+    /// `None` when Claude Code did not include the field.
+    pub used_percentage: Option<f64>,
+    pub total_input_tokens: Option<u64>,
+    pub total_output_tokens: Option<u64>,
+}
+
+impl ContextWindow {
+    /// Total token count (input + output), if both are present.
+    pub fn total_tokens(&self) -> Option<u64> {
+        match (self.total_input_tokens, self.total_output_tokens) {
+            (Some(i), Some(o)) => Some(i + o),
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    }
+}
+
 // Some fields (hook_event_name, tool_input) are part of the payload schema but
 // not consumed by every plugin; kept for completeness and future hooks.
 #[allow(dead_code)]
@@ -53,6 +74,10 @@ pub struct HookInput {
     /// previous stop-hook continuation.
     #[serde(default)]
     pub stop_hook_active: bool,
+
+    /// Stop / SubagentStop: context window usage reported by Claude Code.
+    /// `None` on hook events that don't carry this payload.
+    pub context_window: Option<ContextWindow>,
 }
 
 impl HookInput {
@@ -130,10 +155,30 @@ pub fn catch_silent<F: FnOnce() + UnwindSafe>(f: F) -> bool {
     std::panic::catch_unwind(f).is_ok()
 }
 
-/// Run a hook handler with all panics swallowed; always exits 0. The handler does
-/// its own stdout/stderr writing — this only guarantees the turn is never broken.
+/// Like `catch_silent` but writes the panic payload to stderr so it is
+/// visible in Claude Code's hook diagnostics without breaking the turn.
+/// Returns `true` if `f` completed without panicking.
+pub fn catch_and_log<F: FnOnce() + UnwindSafe>(hook_name: &str, f: F) -> bool {
+    match std::panic::catch_unwind(f) {
+        Ok(()) => true,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "(non-string panic payload)".to_string()
+            };
+            eprintln!("[harness hook panic] {hook_name}: {msg}");
+            false
+        }
+    }
+}
+
+/// Run a hook handler with all panics caught and logged to stderr; always
+/// exits 0 so the turn is never broken.
 pub fn run_hook<F: FnOnce() + UnwindSafe>(f: F) -> ! {
-    let _ = catch_silent(f);
+    let _ = catch_and_log("hook", f);
     std::process::exit(0);
 }
 
@@ -166,5 +211,16 @@ mod tests {
             "a panicking handler must be caught, not propagated"
         );
         assert!(ok, "a clean handler reports success");
+    }
+
+    #[test]
+    fn catch_and_log_returns_false_on_panic_and_true_on_ok() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = catch_and_log("test-hook", || panic!("logged panic"));
+        let ok = catch_and_log("test-hook", || {});
+        std::panic::set_hook(prev);
+        assert!(!panicked, "panicking handler returns false");
+        assert!(ok, "clean handler returns true");
     }
 }

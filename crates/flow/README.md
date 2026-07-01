@@ -130,7 +130,7 @@ git add bin/ && git update-index --chmod=+x bin/flow bin/flow-*
 ## Plugin layout
 
 ```
-.claude-plugin/plugin.json     # plugin manifest (version 0.1.2)
+.claude-plugin/plugin.json     # plugin manifest (version 0.1.3)
 hooks/hooks.json               # SessionStart=propose → ${CLAUDE_PLUGIN_ROOT}/bin/flow
 skills/flow/SKILL.md           # the /flow skill (drives the source→executor loop)
 bin/flow                       # POSIX launcher → flow-<os>-<arch>

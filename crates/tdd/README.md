@@ -53,10 +53,31 @@ never trapped. Escape hatch: a one-line `.tdd-skip` file in the project root
 ```
 
 `tdd red` refuses to record a proof if the tests already pass (that isn't
-test-first); `tdd green` refuses without a prior RED proof.
+test-first); `tdd green` refuses without a prior RED proof. The test command
+comes from `--cmd`, else `tdd.toml`'s `test_cmd` (default `cargo test`).
+
+## Config & other subcommands
+
+`tdd` reads `./tdd.toml` (trusted projects only — its `test_cmd` is executed
+verbatim), else `~/.tdd/config.toml`, else language-aware defaults. Common keys:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | master switch for the gate |
+| `max_attempts` | `3` | give up (allow the stop) after N consecutive blocks |
+| `reset_after_secs` | `600` | idle gap that resets the attempt counter |
+| `min_added_impl_lines` | `1` | added impl lines before a test is required |
+| `test_cmd` | `cargo test` | default command for `tdd red` / `tdd green` |
+| `proof_dir` | `.tdd` | where RED/GREEN proofs are written |
+
+`impl_globs` / `test_path_globs` / `test_markers` override the language-aware
+file/marker defaults. Other subcommands: `tdd status` (show the resolved config +
+what the gate would do), `tdd trust` (honor this project's `tdd.toml` `test_cmd`,
+untrusted by default), `tdd uninstall` (remove the Stop hook).
 
 ## Install
 
-Via the plugin marketplace (wires the Stop hook through `hooks/hooks.json` and
-ships the `/tdd` skill). For non-plugin use: `tdd install` merges the Stop hook
-into `~/.claude/settings.json`; `tdd init` writes a starter `tdd.toml`.
+Via the plugin marketplace (wires the Stop hook through `hooks/hooks.json`, with
+a 30s timeout, and ships the `/tdd` skill). For non-plugin use: `tdd install`
+merges the Stop hook into `~/.claude/settings.json`; `tdd init` writes a starter
+`tdd.toml`.

@@ -26,11 +26,14 @@ k = 6
 sim_threshold = 0.15
 
 # A model is eligible only if its neighbours passed at least this rate (0..1).
-pass_threshold = 0.7
+# Biased cheap: 0.6 lets a mostly-reliable cheaper tier qualify. The verifier's
+# cascade escalation buys back up the few tasks it gets wrong.
+pass_threshold = 0.6
 
 # ...and only if there are at least this many neighbour samples for that model.
-# Below this, fugu-router falls back to the keyword prior (cold start).
-min_samples = 2
+# Below this, fugu-router falls back to the keyword prior (cold start). Default 1
+# so a single similar success is enough to start trusting a cheaper tier.
+min_samples = 1
 
 # Exploration. true = Thompson sampling (occasionally tries an unproven cheaper
 # tier and learns from the result); false = deterministic "cheapest that clears

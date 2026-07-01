@@ -1,5 +1,8 @@
 mod budget;
 mod display;
+mod hooks;
+mod inject;
+mod plugins;
 mod progress;
 mod sessions;
 
@@ -31,6 +34,12 @@ enum Command {
     Sessions,
     /// Show progress file only
     Progress,
+    /// Show Stop-hook latency aggregation only
+    Hooks,
+    /// Show UserPromptSubmit injection-size aggregation only
+    Inject,
+    /// Classify all plugins by activation scope
+    Plugins,
 }
 
 fn today() -> String {
@@ -142,14 +151,88 @@ fn main() {
                 println!("[no progress file] {}", p.path);
             }
         }
+        Some(Command::Hooks) => {
+            let h = hooks::read();
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&h).unwrap_or_default());
+            } else if h.sessions.is_empty() {
+                println!("[no Stop-hook latency recorded]");
+            } else {
+                for sess in &h.sessions {
+                    println!(
+                        "{} | {}ms across {} hooks",
+                        hooks::sess8(&sess.session),
+                        sess.total_ms,
+                        sess.per_hook.len()
+                    );
+                }
+                for sess in &h.sessions {
+                    if sess.over_budget {
+                        println!(
+                            "⚠ session {} Stop-hook total {}ms exceeds budget {}ms",
+                            hooks::sess8(&sess.session),
+                            sess.total_ms,
+                            h.budget_ms
+                        );
+                    }
+                }
+            }
+        }
+        Some(Command::Inject) => {
+            let i = inject::read();
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&i).unwrap_or_default());
+            } else if i.turns.is_empty() {
+                println!("[no UserPromptSubmit injections recorded]");
+            } else {
+                for t in &i.turns {
+                    println!(
+                        "{} | {} chars across {} injectors",
+                        inject::key8(&t.turn_key),
+                        t.total_chars,
+                        t.per_plugin.len()
+                    );
+                }
+                for t in &i.turns {
+                    if t.over_budget {
+                        println!(
+                            "⚠ turn {} injection total {} chars exceeds budget {}",
+                            inject::key8(&t.turn_key),
+                            t.total_chars,
+                            i.budget_chars
+                        );
+                    }
+                }
+            }
+        }
+        Some(Command::Plugins) => {
+            let root = plugins::find_repo_root(&cwd);
+            let r = plugins::report(&root);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+            } else {
+                let section = |title: &str, items: &[plugins::PluginInfo]| {
+                    println!("{} ({})", title, items.len());
+                    for p in items {
+                        println!("  {}  —  {}", p.name, p.trigger);
+                    }
+                    println!();
+                };
+                section("ALWAYS-ON", &r.always_on);
+                section("EVENT-SCOPED", &r.event_scoped);
+                section("MANUAL", &r.manual);
+            }
+        }
         None => {
             let b = budget::read(&today);
             let s = sessions::recent(cli.sessions);
             let p = progress::read(&cwd);
+            let h = hooks::read();
+            let i = inject::read();
             if cli.json {
-                display::print_json(&today, &b, &s, &p);
+                display::print_json(&today, &b, &s, &p, &h, &i);
             } else {
-                display::print_status(&today, &b, &s, &p, &cwd.to_string_lossy());
+                display::print_status(&today, &b, &s, &p, &h, &i, &cwd.to_string_lossy());
             }
         }
     }

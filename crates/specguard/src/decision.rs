@@ -33,11 +33,27 @@ pub fn list_files(repo_root: &Path, dir: &str) -> Vec<String> {
     let Some(d) = resolve_dir(repo_root, dir) else {
         return vec![];
     };
-    let Ok(entries) = std::fs::read_dir(&d) else {
-        return vec![];
+    let entries = match std::fs::read_dir(&d) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!(
+                "specguard: cannot read decisions dir '{}': {err}",
+                d.display()
+            );
+            return vec![];
+        }
     };
     let mut files: Vec<String> = entries
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(de) => Some(de),
+            Err(err) => {
+                eprintln!(
+                    "specguard: skipping unreadable entry in '{}': {err}",
+                    d.display()
+                );
+                None
+            }
+        })
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "md"))
         .map(|p| p.to_string_lossy().into_owned())

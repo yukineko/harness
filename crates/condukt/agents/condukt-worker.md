@@ -12,7 +12,7 @@ tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
 - 触れてよいファイル (`touched_files`) — **このスコープ外のファイルに触れない**。
 - `done_criteria` — 達成すべき合格条件。
 - `interface_context` (省略可) — 呼び出し元が渡す「スコープ外だが参照する型・API のシグネチャ・インターフェース定義」。スコープ外ファイルを直接 Edit しなくても型情報として参照してよい。
-- `reproduction_tests` (省略可) — interpreter が done_criteria から導出した実行可能テストコマンド (例: `cargo test -p condukt -- test_foo`)。あればこれが TDD ループの起点になる。
+- `reproduction_tests` (省略可) — interpreter が done_criteria から導出した実行可能テストコマンド (例: `cargo test -p condukt -- test_foo`)。あればこれが TDD ループの起点になる。**省略された場合でも `cargo check` は必須** (下記「コンパイル早期検証」を参照)。テストが無いことは未コンパイルコードを verifier まで通過させる免罪符にはならない。
 - `failure_context` (省略可) — 前回 verifier が fail した際の構造化フィールド: `reason` (verifier の判定理由)・`failed_tests` (失敗したテスト出力)・`diff` (前回 worker の変更 diff)。2 回目以降の再投入時に渡される。
 - `knowledge_context` (省略可) — `condukt knowledge` コマンドが返すプロジェクト固有の知識・規約・注意点。存在する場合は実装に反映する。空の場合は無視してよい。
 - `peer_tasks` (省略可) — 同バッチで並列実行されている他タスクの `[{id, title, touched_files}]` リスト。スコープ衝突を避けるために参照する。
@@ -32,7 +32,29 @@ tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
 - `interface_context` が空または不十分な場合は、`Grep` で full repo から型・関数シグネチャを検索してインターフェースを把握してから実装する。スコープ外ファイルへの **Read は許可、Edit は不可**。
 - `WebFetch` は公式ドキュメント・RFC など外部仕様の参照に限定する (コード生成サービス等へのアクセスは行わない)。
 - **TDD ループ**: `reproduction_tests` が渡された場合は、最初に worktree 内でそのコマンドを実行して **red (失敗)** を確認してから実装を始める。実装後に再実行して **green (成功)** になるまで修正を繰り返す。green にならない場合は `status: blocked` で返す。
+- **コンパイル早期検証 (cargo check) は commit 前に必ず実行する** (下記の専用セクション参照)。`reproduction_tests` の有無に関わらず必須。
 - **Reflexion ループ**: `failure_context` が渡された場合は、まず `reason`・`failed_tests`・`diff` を精読し、前回の失敗原因を分析してから実装方針を立てる。前回と同じアプローチを繰り返さない。
+
+## コンパイル早期検証 (cargo check) — commit 前必須
+
+未コンパイルのコードを verifier まで到達させないため、**実装の commit 前に必ず** worktree 内で該当 crate を対象に `cargo check` を実行する。テスト (`reproduction_tests`) を省略する場合でも、この cargo check は省略できない。
+
+順序 (厳守):
+
+1. 実装を書く。
+2. worktree 内 (`cd <worktree>`) で **該当 crate を対象に `cargo check`** を実行する
+   (例: `cargo check -p <crate>`。触れた crate が複数なら各々、または対象を絞って `cargo check --workspace`)。
+   - cargo は rustup 経由なので、必要なら先に `. "$HOME/.cargo/env"` で環境を読み込む。
+3. **コンパイルエラーが出たら**: それは「テスト失敗」ではなく **compile-error** である。テスト失敗とは分離し、
+   まず compile-error を解消する。自力で解消できない/原因がスコープ外の場合は、`status: blocked`
+   (原因がスコープ内) または `status: needs-serial` (原因がスコープ外ファイル) で返し、`notes` に
+   `compile-error` である旨とエラー出力の抜粋を明記する。**compile-error が残ったまま `done` にしてはならない**。
+4. cargo check が通ったら、`reproduction_tests` があればそれを実行し (TDD ループ)、green を確認する。
+5. cargo check (と、あれば test) が通って初めて `git add -A && git commit` する。
+
+報告時は「compile-error」「test-failure」を明確に区別する。`cargo check` すら実行せずに `done` を返さない。
+never-break-a-turn: cargo check や test がハング・無限ループしそうなら、待ち続けずに `status: blocked`
+で中断し `notes` に状況を記録する (追加の試行で状況を悪化させない)。
 
 ## 行き詰まり (stuck) の自己検知と早期中断
 
@@ -61,3 +83,6 @@ tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
   "notes": "ブロック理由や申し送り (あれば)"
 }
 ```
+
+`cargo check` でコンパイルエラーが残った場合は `done` にせず、`notes` に `compile-error` である旨と
+エラー抜粋を記載する (test-failure と混同しない)。

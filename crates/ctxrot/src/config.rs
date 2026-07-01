@@ -122,6 +122,25 @@ pub struct Config {
     /// model call per upward crossing into the danger band. Gated independently of
     /// `distill_on_compact` so the on-compact path can stay on while this is off.
     pub auto_distill_on_band: bool,
+
+    // ---- Stop-hook auto-compact (feature ⑤) ------------------------------------
+    /// Master switch for the Stop-hook-driven auto-compact trigger.
+    /// When true, the `ctxrot stop` handler returns `{"decision":"block"}` when
+    /// the budget-meter usage crosses into a new band at/above
+    /// `auto_compact_at_percentage`, asking Claude to run `/compact`. Requires
+    /// `ctxrot stop` to be wired in hooks.json. The block is bounded (once per
+    /// band crossing) so it can never permanently trap a turn.
+    /// Default false (opt-in). env: `CTXROT_AUTO_COMPACT=1`
+    pub auto_compact_enabled: bool,
+    /// Fraction (0.0–1.0) at which the Stop hook triggers the auto-compact nudge.
+    /// SEMANTIC (changed in 0.5.0): interpreted against ctxrot's OWN budget meter
+    /// — `est_tokens / context_window`, the same estimate `ctxrot guard` /
+    /// `ctxrot usage` band from (which can read >100%) — NOT the raw model-window
+    /// `context_window.used_percentage`. So 0.90 means "90 % of the configured
+    /// budget", which fires far earlier (and correctly) versus the true ~1M
+    /// window. Default 0.90. Only meaningful when `auto_compact_enabled` is true.
+    /// env: `CTXROT_AUTO_COMPACT_AT_PERCENTAGE`
+    pub auto_compact_at_percentage: f64,
 }
 
 /// On-disk form (`~/.ctxrot/config.toml`); every field optional.
@@ -132,7 +151,6 @@ struct FileConfig {
     context_window: Option<u64>,
     large_file_bytes: Option<u64>,
     huge_tool_output_bytes: Option<u64>,
-    toolguard_nudge_cap: Option<u64>,
     gate_file_bytes: Option<u64>,
     gate_bash: Option<bool>,
     metrics: Option<bool>,
@@ -155,6 +173,9 @@ struct FileConfig {
     distill_cmd: Option<String>,
     distill_timeout_secs: Option<u64>,
     auto_distill_on_band: Option<bool>,
+    auto_compact_enabled: Option<bool>,
+    auto_compact_at_percentage: Option<f64>,
+    toolguard_nudge_cap: Option<u64>,
 }
 
 /// The `~/.ctxrot` base directory.
@@ -188,7 +209,7 @@ impl Default for Config {
             context_window: 200_000,
             large_file_bytes: 50_000,
             huge_tool_output_bytes: 50_000,
-            toolguard_nudge_cap: 20,
+            toolguard_nudge_cap: 3,
             gate_file_bytes: 1_000_000,
             gate_bash: false,
             metrics: true,
@@ -211,6 +232,8 @@ impl Default for Config {
             distill_cmd: "claude -p".to_string(),
             distill_timeout_secs: 180,
             auto_distill_on_band: true,
+            auto_compact_enabled: false,
+            auto_compact_at_percentage: 0.90,
         }
     }
 }
@@ -313,6 +336,12 @@ impl Config {
                 if let Some(v) = fc.auto_distill_on_band {
                     cfg.auto_distill_on_band = v;
                 }
+                if let Some(v) = fc.auto_compact_enabled {
+                    cfg.auto_compact_enabled = v;
+                }
+                if let Some(v) = fc.auto_compact_at_percentage {
+                    cfg.auto_compact_at_percentage = v;
+                }
             }
         }
 
@@ -361,6 +390,14 @@ impl Config {
         }
         if let Some(v) = env_bool("CTXROT_AUTO_DISTILL_ON_BAND") {
             cfg.auto_distill_on_band = v;
+        }
+        if let Some(v) = env_bool("CTXROT_AUTO_COMPACT") {
+            cfg.auto_compact_enabled = v;
+        }
+        if let Ok(v) = std::env::var("CTXROT_AUTO_COMPACT_AT_PERCENTAGE") {
+            if let Ok(f) = v.trim().parse::<f64>() {
+                cfg.auto_compact_at_percentage = f;
+            }
         }
 
         // bands must be ascending and within (0,1]; sanitize defensively
@@ -433,7 +470,7 @@ mod tests {
         // box. A default of 0 would read as "never nudge" and silently disable the
         // toolguard's steering for every user without a config.toml.
         let cfg = Config::default();
-        assert_eq!(cfg.toolguard_nudge_cap, 20);
+        assert_eq!(cfg.toolguard_nudge_cap, 3);
         assert!(cfg.toolguard_nudge_cap > 0);
     }
 
@@ -443,5 +480,23 @@ mod tests {
         // so "auto-distill at 200k" works without a config.toml. Flipping this to
         // false silently removes the proactive externalize-before-compact behavior.
         assert!(Config::default().auto_distill_on_band);
+    }
+
+    #[test]
+    fn auto_compact_defaults() {
+        // auto-compact Stop-hook nudge is OFF by default (opt-in) so existing users
+        // are not surprised by a new block-on-stop behaviour after upgrade.
+        let cfg = Config::default();
+        assert!(!cfg.auto_compact_enabled);
+        assert!((cfg.auto_compact_at_percentage - 0.90).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn auto_compact_env_override() {
+        // CTXROT_AUTO_COMPACT_AT_PERCENTAGE overrides the threshold.
+        std::env::set_var("CTXROT_AUTO_COMPACT_AT_PERCENTAGE", "0.75");
+        let cfg = Config::load();
+        std::env::remove_var("CTXROT_AUTO_COMPACT_AT_PERCENTAGE");
+        assert!((cfg.auto_compact_at_percentage - 0.75).abs() < f64::EPSILON);
     }
 }

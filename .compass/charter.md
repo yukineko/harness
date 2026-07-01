@@ -1,20 +1,26 @@
 ## north_star
-PDO 前提の SOURCE 層(compass と scout)に『発見タスクのマシンスコープ共有レコード』を入れ、同一マシンで並行する別 session の compass や scout が互いの発見タスクと作業をかぶらせないようにする。発見時にレコードへ追記し、新たな発見は既存レコードと内容 fingerprint で突き合わせて重複を surface から外す。flow が一手を選択した後は、そのレコードを selected へ調整し、未選択ぶんは discovered のまま次回に再浮上する。判定(何を発見・選ぶ)は LLM、レコードの永続化と突き合わせ・ロックは決定論バイナリが担い、subscription で完結する。backlog lock(flow の直列化)と直交する『発見の重複回避』層を足す。
+ideate→implement→verify (scout→backlog→flow→condukt) を人間0介入で完走できる autonomy モードを設ける。停止は (a) 情報不足=worker blocked と (b) 外向き不可逆=deploy/push 承認 の2種のみ。それ以外の AskUserQuestion(機械的承認＋意図的HOTL不変)は autonomy 有効時に決定論的既定へ縮退させる。
 
 ## definition_of_done
-- compass と scout がタスクを発見したとき、マシンスコープの共有レコードに発見タスクを 1 件ずつ追記する: 内容 fingerprint・発見元 session id・status(discovered) を持つ行。書き込みは fail-soft(レコード不在なら新規作成、ロック競合や IO エラーで panic せず発見自体は継続)。
-- 新たな compass か scout の発見が、既存レコードと内容 fingerprint が一致するタスクを『他 session が発見済み』として surface から外す。重複回避が観測可能: 2 session ぶんの発見を順に流すと 2 回目は重複タスクを surface しない integration test がある。
-- flow が一手を選択したら、対応レコードの status を selected へ遷移させ、未選択の発見レコードは discovered のまま残る。選択後の調整(status 遷移)を検証する unit test を持つ。
-- 後方互換 fail-soft: レコードが無い・空・破損のときは従来どおり全発見をそのまま surface し panic しない。レコード不在時の compass と scout と flow の挙動は従来と byte 等価。
-- workspace の test 全 pass、clippy が D warnings で clean、fmt の check が clean。
+- 共通の autonomy スイッチ (各バイナリが読む autonomous:bool config か env) が存在し、無効(既定)時は現行の全 AskUserQuestion が従来どおり出る(後方互換)
+- autonomy 有効時: scout Phase4 選別 Ask を省き top-N を auto-queue する経路がある
+- autonomy 有効時: condukt Phase3 分解合意 Ask を省き schedule 結果をそのまま採用する経路がある
+- autonomy 有効時: flow の pivot-check=auto-persevere / lock競合・resume選択・連続失敗 を決定論的に解決し AskUserQuestion を出さない
+- autonomy 有効時に残る停止は worker blocked と deploy/push GATED 承認の2種のみ (テストまたは skill 監査で確認)
+- e2e: 1つの scout 施策が人間0介入で backlog→condukt実装→verify done まで到達する実証手順が green
+- cargo test --workspace 全 pass
 
 ## measuring_stick
-私が今も擁護できるゴールに、測れるだけ近づくか(build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること)。
+擁護可能性 × ゴールへの接近距離 ÷ コスト
 
 ## current_gap
-発見タスクの重複回避レコードが存在しない: compass(次の一手+parked)も scout(施策→backlog)も発見時に他 session が見える永続レコードへ書かず、内容 fingerprint で既出を突き合わせる経路も無い。よって同一マシンの並行 session が同じ発見を independently に surface し作業がかぶる。flow も選択を発見レコードへ書き戻さない。最大かつ右サイズの gap: 発見タスクを追記する fail-soft なマシンスコープ・レコード + 内容 fingerprint による既出除外 + flow 選択時の status 調整。backlog lock とは別レイヤ(lock は実行の直列化、これは発見の重複回避)。
+全13 human-gate が今も無条件 AskUserQuestion を出す。autonomy を選択的に縮退させる共通スイッチ機構が未実装で、各バイナリ(scout/condukt/flow)は「今 autonomous か」を決定論的に読む手段を持たない。最大の関門は condukt Phase3 分解合意——ここを縮退できれば scout選別・flow pivot も同じ縮退パターンを再利用できる。keystone = autonomy スイッチ + condukt Phase3 auto-agree の最小スライスで縮退パターンを1本 validate すること。
 
 ## next_action
+keystone: condukt に autonomy スイッチを追加する。(1) condukt config に autonomous:bool (default false) + env override、(2) 既存 condukt state check-criteria に倣い condukt state autonomy-check サブコマンドで skill が決定論的に読めるようにする、(3) autonomous 有効時のみ condukt SKILL.md Phase3 の分解合意 AskUserQuestion をスキップし schedule 結果をそのまま採用、無効時は従来どおり、(4) 分岐を検証するテスト。size=m。scout auto-queue と flow pivot は同パターンで後続。
 
 ## parked
+- scout Phase4 auto-queue (autonomy 有効時に top-N を選別Ask無しで backlog add)
+- flow autonomy: pivot auto-persevere / lock競合・resume・連続失敗 の決定論解決
+- e2e 実証手順: scout施策1件を人間0介入で done まで通す検証
 

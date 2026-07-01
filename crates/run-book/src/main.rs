@@ -118,6 +118,12 @@ fn inject_hook() {
     let exp = inject::expand(&input.prompt, &books, &cfg);
     if let Some(text) = inject::render(&exp, &books, &cfg) {
         // UserPromptSubmit: plain stdout is injected as additional context.
+        harness_core::inject_metrics::record(
+            "run-book",
+            &input.session_id,
+            &input.prompt,
+            text.chars().count(),
+        );
         println!("{text}");
     }
 }

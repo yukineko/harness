@@ -8,10 +8,18 @@
 //! the "is this good code?" complement to donegate's "does it actually run?".
 //!
 //! Failure modes are split deliberately:
-//!   * a *harness* error (bad config, no git, reviewer crash, our own bug) →
-//!     exit 0, allow the stop. We must never trap a turn because reviewgate broke.
+//!   * a *harness* error (bad config, no git, our own bug) → exit 0, allow the
+//!     stop. We must never trap a turn because reviewgate itself broke.
 //!   * a real review finding (subprocess) or a not-yet-reviewed diff (inject) →
 //!     block on purpose, with an actionable reason.
+//!   * a *reviewer* that fails (subprocess crash / timeout / unusable output) is
+//!     NOT treated as a harness error: it blocks (bounded by max_attempts, with
+//!     an escapable reason) rather than silently allowing, so a broken reviewer
+//!     can't become a bypass. See `review::decide_subprocess`.
+//!   * a diff too large to review whole (truncated to `max_diff_bytes`) is NOT a
+//!     harness error: its dropped tail is unreviewed, so it blocks (bounded by
+//!     `max_attempts`, with an escapable reason) rather than silently allowing —
+//!     otherwise the tail would bypass the gate. See `review::decide_truncated`.
 
 mod config;
 mod git;
@@ -113,6 +121,7 @@ fn review_command() -> ! {
 }
 
 fn review_run(hook: Option<HookInput>) -> ! {
+    let __start = std::time::Instant::now();
     let interactive = hook.is_none();
     let input = hook.unwrap_or_default();
     let root = input.cwd_or_current();
@@ -121,6 +130,7 @@ fn review_run(hook: Option<HookInput>) -> ! {
         if interactive {
             eprintln!("reviewgate: disabled (REVIEWGATE_DISABLE)");
         }
+        harness_core::hook_latency::record("reviewgate", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -129,6 +139,7 @@ fn review_run(hook: Option<HookInput>) -> ! {
         if interactive {
             eprintln!("reviewgate: disabled in config");
         }
+        harness_core::hook_latency::record("reviewgate", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -139,6 +150,11 @@ fn review_run(hook: Option<HookInput>) -> ! {
         state::reset(&cfg.state_dir, &session);
         log_event(&cfg, &session, "skip", &[], 0);
         eprintln!("reviewgate: .reviewgate-skip consumed — allowing stop ({reason})");
+        harness_core::hook_latency::record(
+            "reviewgate",
+            &session,
+            __start.elapsed().as_millis() as u64,
+        );
         std::process::exit(0);
     }
 
@@ -168,6 +184,11 @@ fn review_run(hook: Option<HookInput>) -> ! {
             if interactive {
                 println!("reviewgate: allow ({tag})");
             }
+            harness_core::hook_latency::record(
+                "reviewgate",
+                &session,
+                __start.elapsed().as_millis() as u64,
+            );
             std::process::exit(0);
         }
         Decision::Block {
@@ -189,9 +210,19 @@ fn review_run(hook: Option<HookInput>) -> ! {
             log_event(&cfg, &session, tag, &files, attempts);
             if interactive {
                 eprintln!("{reason}");
+                harness_core::hook_latency::record(
+                    "reviewgate",
+                    &session,
+                    __start.elapsed().as_millis() as u64,
+                );
                 std::process::exit(1);
             }
             println!("{}", json!({ "decision": "block", "reason": reason }));
+            harness_core::hook_latency::record(
+                "reviewgate",
+                &session,
+                __start.elapsed().as_millis() as u64,
+            );
             std::process::exit(0);
         }
     }

@@ -44,6 +44,11 @@ enum Command {
     Preguard,
     /// PostToolUse hook: warn on huge tool output.
     Toolguard,
+    /// Stop hook: block the turn (ask Claude to run /compact) when context
+    /// usage exceeds `auto_compact_at_percentage`. Exits 0 immediately when
+    /// `stop_hook_active` is true (re-entry guard) or `auto_compact_enabled`
+    /// is false (opt-in). Requires `auto_compact_enabled = true` in config.
+    Stop,
     /// Merge ctxrot hooks into ~/.claude/settings.json.
     Install {
         #[arg(long)]
@@ -266,6 +271,12 @@ fn main() {
             if let Some(input) = HookInput::parse(&raw) {
                 let cfg = Config::load();
                 if let Some(text) = hooks::guard::run(&input, &cfg) {
+                    harness_core::inject_metrics::record(
+                        "ctxrot",
+                        &input.session_id,
+                        &input.prompt,
+                        text.chars().count(),
+                    );
                     println!("{text}");
                 }
             }
@@ -328,20 +339,42 @@ fn main() {
             let raw = read_stdin();
             if let Some(input) = HookInput::parse(&raw) {
                 let cfg = Config::load();
-                if let Some(text) = hooks::toolguard::run(&input, &cfg) {
-                    // PostToolUse needs JSON to inject context.
-                    let out = serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PostToolUse",
-                            "additionalContext": text,
-                        }
-                    });
+                let out_fields = hooks::toolguard::run(&input, &cfg);
+                let mut hook_output = serde_json::Map::new();
+                hook_output.insert(
+                    "hookEventName".to_string(),
+                    serde_json::Value::String("PostToolUse".to_string()),
+                );
+                if let Some(updated) = out_fields.updated {
+                    hook_output.insert(
+                        "updatedToolOutput".to_string(),
+                        serde_json::Value::String(updated),
+                    );
+                }
+                if let Some(nudge) = out_fields.nudge {
+                    hook_output.insert(
+                        "additionalContext".to_string(),
+                        serde_json::Value::String(nudge),
+                    );
+                }
+                // Only emit JSON when something beyond hookEventName was set.
+                if hook_output.len() > 1 {
+                    let out = serde_json::json!({ "hookSpecificOutput": hook_output });
                     println!("{out}");
                 }
             }
         }),
 
         // ----- user-invoked (normal error reporting) -----
+        Command::Stop => run_hook(|| {
+            let raw = read_stdin();
+            if let Some(input) = HookInput::parse(&raw) {
+                let cfg = Config::load();
+                if let Some(out) = hooks::stop::run(&input, &cfg) {
+                    println!("{out}");
+                }
+            }
+        }),
         Command::Install { dry_run } => {
             if let Err(e) = install::install(dry_run) {
                 eprintln!("install failed: {e}");
@@ -644,8 +677,10 @@ fn main() {
             // Never break the status bar: any failure prints nothing, exits 0.
             let cfg = Config::load();
             let raw = read_stdin();
-            if let Some(line) = statusline_from(&cfg, &raw) {
-                println!("{line}");
+            if let Some(input) = harness_core::hook::HookInput::parse(&raw) {
+                if let Some(line) = statusline_from(&cfg, &input) {
+                    println!("{line}");
+                }
             }
         }
         Command::Usage {
@@ -805,35 +840,22 @@ where
     }
 }
 
-/// Build the status-bar line from the statusLine stdin JSON. Prefers Claude's own
+/// Build the status-bar line from a parsed hook payload. Prefers Claude's own
 /// `context_window.used_percentage`; falls back to estimating from the transcript.
-fn statusline_from(cfg: &Config, raw: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let cw = v.get("context_window");
-    let pct = cw
-        .and_then(|c| c.get("used_percentage"))
-        .and_then(serde_json::Value::as_f64);
-    let tokens = cw.and_then(|c| {
-        let inp = c
-            .get("total_input_tokens")
-            .and_then(serde_json::Value::as_u64);
-        let out = c
-            .get("total_output_tokens")
-            .and_then(serde_json::Value::as_u64);
-        match (inp, out) {
-            (Some(i), Some(o)) => Some(i + o),
-            (Some(i), None) => Some(i),
-            _ => None,
-        }
-    });
+fn statusline_from(cfg: &Config, input: &harness_core::hook::HookInput) -> Option<String> {
+    let pct = input
+        .context_window
+        .as_ref()
+        .and_then(|c| c.used_percentage);
+    let tokens = input.context_window.as_ref().and_then(|c| c.total_tokens());
     if let Some(p) = pct {
         return Some(usage::line(cfg, p.round() as u64, tokens));
     }
     // Fallback: estimate from the transcript when Claude didn't supply a %.
-    let path = v
-        .get("transcript_path")
-        .and_then(serde_json::Value::as_str)?;
-    let (t, _src) = harness_core::transcript::estimate_tokens(path)?;
+    if input.transcript_path.is_empty() {
+        return None;
+    }
+    let (t, _src) = harness_core::transcript::estimate_tokens(&input.transcript_path)?;
     Some(usage::line(cfg, usage::pct_from_tokens(cfg, t), Some(t)))
 }
 
@@ -956,6 +978,25 @@ distill_timeout_secs = 180
 # /compact. Fires at most once per upward crossing. Spends one model call per
 # crossing. Set false (or CTXROT_AUTO_DISTILL_ON_BAND=0) to disable.
 auto_distill_on_band = true
+
+# --- Stop-hook auto-compact nudge (feature ⑤) ---------------------------------
+# When auto_compact_enabled = true, the `ctxrot stop` handler checks context
+# usage on each Stop event. If usage exceeds auto_compact_at_percentage AND the
+# stop is not itself a re-entry (stop_hook_active=false), it returns
+# {"decision":"block", "reason":"..."} asking Claude to run /compact.
+# The stop_hook_active guard prevents infinite loops: on the next Stop (after
+# Claude responds) the hook sees stop_hook_active=true and exits 0 (allow).
+#
+# IMPORTANT: hooks cannot shell-out to /compact directly. This nudge causes
+# Claude Code to continue the session so Claude itself can run /compact.
+# Requires the `Stop` hook to be wired (ctxrot install, or manually in hooks.json).
+#
+# Default false (opt-in, so existing users are not surprised).
+# env: CTXROT_AUTO_COMPACT=1
+auto_compact_enabled = false
+# Fraction of the context window (0.0–1.0) that triggers the nudge.
+# Default 0.90 (90 %). env: CTXROT_AUTO_COMPACT_AT_PERCENTAGE
+auto_compact_at_percentage = 0.90
 "#;
 
 fn init() -> anyhow::Result<()> {

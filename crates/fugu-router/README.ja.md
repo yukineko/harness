@@ -67,11 +67,13 @@ fugu-router record --title "<task title>" --files "<touched_files>" \
 
 ```
 fugu-router suggest --files src/auth/login.ts "fix login validation"  # 単発でモデルの当たりを見る
+fugu-router procedures search --file decomp.json  # 似た検証済みタスクの解き方を k-NN で引く
 fugu-router stats [--json]                  # モデル別 pass率 / 平均コスト（HOTL 可視化）
 fugu-router label "add login" --verdict bad --by human   # 人間が実績を訂正（--latest も可）
 fugu-router fingerprint [--dir crates]      # SKILL.md コーパスのバージョンスタンプ
 fugu-router import --episodes /path/episodes.jsonl [--playbooks ...] [--dry-run]  # 別マシンの stores をマージ
 fugu-router import --dedup                  # ローカル stores の重複除去（content-hash, first-seen 優先）
+fugu-router sync [--pull-only | --push-only]  # record ストアを sync_repo（git）と同期
 fugu-router init                            # fugu-router.toml を書き出す
 ```
 
@@ -95,8 +97,19 @@ fugu-router install               # UserPromptSubmit フックをマージ
 
 ### 設定
 
-`~/.fugu-router/config.toml`（`fugu-router.example.toml` 参照）。主な調整項目は `pass_threshold`（安いティアを信頼する前にどれだけ確信が要るか）、`min_samples`（コールドスタート prior を抜けるのに必要な履歴量）、`sim_threshold`（過去タスクをどれだけ似ていれば数えるか）。`store_file` と `playbook_file` を git リポジトリ内のパスに向ければ、`git pull` 後に `import` するだけでマシン間同期が完結する（content-hash で重複排除されるので同じ実績を二度引いても安全）。
+`~/.fugu-router/config.toml`（`fugu-router.example.toml` 参照）。主な調整項目は `pass_threshold`（安いティアを信頼する前にどれだけ確信が要るか）、`min_samples`（コールドスタート prior を抜けるのに必要な履歴量）、`sim_threshold`（過去タスクをどれだけ似ていれば数えるか）。
+
+マシン間で stores を共有する方法は 2 通り。**`sync`（管理された git リモート）:** `sync_repo` に git リポジトリ URL を設定すると、`store_file`/`playbook_file` は `<sync_dir>/{episodes,playbooks}.jsonl`（`sync_dir` 既定 `~/.fugu-router/record-repo`）を指す。`fugu-router sync` はまずリモートから pull し、続いてローカルの変更を commit & push する（`--pull-only` / `--push-only` で片側のみ）。**手動（`import`）:** `store_file` と `playbook_file` を自分で管理する git リポジトリ内のパスに向け、`git pull` 後に `import` するだけでマシン間同期が完結する（content-hash で重複排除されるので同じ実績を二度引いても安全）。
 
 ### コールドスタート
 
-ストアが空のときは、interpreter のルールを写したキーワード prior を使う。design/refactor/migrate/security や多ファイル → `opus`、rename/format/docs/typo → `haiku`、それ以外 → `sonnet`。`gated` タスクは自動ルーティングしない（人間承認の対象）。
+ストアが空のときはキーワード prior を使うが、**安い方向にバイアス**する。履歴が無い時は floor（`haiku`）から始め、verifier のカスケードエスカレーション（検証落ちで haiku→sonnet→opus）が本当に必要なタスクだけ買い上げる:
+
+- design/refactor/migrate/security キーワード → `opus`（高stakes は優先で opus）
+- 非常に広い変更（11ファイル超）→ `opus`、中規模（6〜10ファイル）→ `sonnet`
+- rename/format/docs/typo → `haiku`（5ファイル超の広い trivial 一括は `sonnet`）
+- それ以外（通常の小規模変更）→ `haiku`
+
+独立 verifier も低stakesでは安くする。`opus` ワーカーは `sonnet` で検証、低stakesの `sonnet` ワーカーは `haiku` で検証、`haiku` ワーカーは独立性のため一段上の `sonnet` で検証する。serial/design は従来どおり `opus` verifier。`gated` タスクは自動ルーティングしない（人間承認の対象）。
+
+既定値もバイアスを補強する: `pass_threshold = 0.6`・`min_samples = 1` により、ほぼ信頼できる類似成功が1件あれば安いティアを信頼し、Thompson サンプリングの探索は安いティアに小さなボーナスを与えて未検証の安ティアを優先的に試す。

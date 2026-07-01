@@ -8,6 +8,7 @@
 //! completion. Hooks (restore/statusline) never break a turn — they exit 0.
 
 mod config;
+mod consensus;
 mod hooks;
 mod install;
 mod model;
@@ -15,6 +16,7 @@ mod schedule;
 mod state;
 mod status;
 mod store;
+mod verify;
 mod worktree;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -58,6 +60,12 @@ enum Command {
     State {
         #[command(subcommand)]
         action: StateAction,
+    },
+    /// Multi-sample self-consistency: plan an opt-in fan-out, or tally N verifier
+    /// verdicts for one task into a majority winner + escalate-to-opus decision.
+    Consensus {
+        #[command(subcommand)]
+        action: ConsensusAction,
     },
     /// Create ~/.condukt and a default config.toml.
     Init,
@@ -126,6 +134,36 @@ enum WtAction {
     },
     /// List registered worktrees (path<TAB>branch).
     List,
+}
+
+#[derive(Subcommand)]
+enum ConsensusAction {
+    /// Decide whether a task should fan out into N candidate implementations.
+    /// OPT-IN: enabled only by config `[consensus] enabled` / `CONDUKT_CONSENSUS`,
+    /// or a per-task `--risk high`. Prints `{enabled,samples,threshold,risk}` and
+    /// exits 0 when a fan-out is warranted (so the skill can branch on the exit
+    /// code, like `state autonomy-check`), 1 for the ordinary single-sample path.
+    Plan {
+        /// Per-task risk flag; "high"/"critical" forces fan-out even when the
+        /// global switch is off.
+        #[arg(long)]
+        risk: Option<String>,
+    },
+    /// Tally N verifier verdicts (JSON on stdin or --file) for the same task into
+    /// a majority winner, agreement rate, and escalate-to-opus decision. Prints
+    /// the decision JSON; exits 0 when a consensus winner is taken, 1 when the
+    /// caller should escalate (all-fail, tie, or agreement below threshold).
+    ///
+    /// Input is either a bare array of verdicts or an object
+    /// `{"verdicts":[...],"threshold":0.5}`. Each verdict is
+    /// `{"candidate":"<id>","pass":<bool>,"group":"<optional answer bucket>"}`.
+    Vote {
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Agreement threshold override (CLI > JSON > config > built-in default).
+        #[arg(long)]
+        threshold: Option<f64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -252,6 +290,32 @@ enum StateAction {
         #[arg(long)]
         task: String,
     },
+    /// Run the mechanical gate for a task's done_criteria and print JSON.
+    /// Exits 0 if the criteria is met (or non-mechanical), exits 1 if it fails.
+    /// The JSON `skip_verifier` field is true ONLY for purely mechanical criteria
+    /// that pass; behavioral criteria always report `skip_verifier:false`.
+    CheckCriteria {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        task: String,
+    },
+    /// Report whether condukt is in autonomous mode (config.toml `autonomous` +
+    /// `CONDUKT_AUTONOMOUS` env). Prints `{"autonomous":<bool>}` and exits 0 when
+    /// autonomous, 1 when not — so the /condukt skill can branch on the exit code
+    /// to skip human gates (e.g. the Phase 3 agreement) only when autonomous.
+    AutonomyCheck,
+    /// Resolve the verifier model so it never equals the worker model (shared
+    /// blind-spot guard). Prints the chosen model on stdout. A distinct
+    /// --suggested is honoured; otherwise a distinct tier is picked.
+    VerifierModel {
+        /// The model the worker used / will use for this task.
+        #[arg(long)]
+        worker: String,
+        /// The verifier_model from route.json, if any (may equal --worker).
+        #[arg(long)]
+        suggested: Option<String>,
+    },
 }
 
 fn main() {
@@ -310,6 +374,7 @@ fn run_user(cmd: Command) -> Result<()> {
         }
         Command::Worktree { action } => run_worktree(&cfg, &cwd, action)?,
         Command::State { action } => run_state(&cfg, &cwd, action)?,
+        Command::Consensus { action } => run_consensus(&cfg, action)?,
         Command::Init => init(&cfg)?,
         Command::Install { dry_run } => {
             if dry_run {
@@ -399,6 +464,71 @@ fn run_worktree(cfg: &Config, cwd: &Path, action: WtAction) -> Result<()> {
         WtAction::List => {
             for (p, b) in worktree::list(&repo)? {
                 println!("{}\t{}", p.display(), b.unwrap_or_else(|| "-".into()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// JSON input for `consensus vote`: either a bare array of verdicts, or an
+/// object that may also carry a `threshold`.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum ConsensusInput {
+    Wrapped {
+        #[serde(default)]
+        verdicts: Vec<consensus::Verdict>,
+        #[serde(default)]
+        threshold: Option<f64>,
+    },
+    Bare(Vec<consensus::Verdict>),
+}
+
+fn run_consensus(cfg: &Config, action: ConsensusAction) -> Result<()> {
+    match action {
+        ConsensusAction::Plan { risk } => {
+            let plan = consensus::plan(
+                cfg.consensus_enabled,
+                cfg.consensus_samples,
+                cfg.consensus_threshold,
+                risk.as_deref(),
+            );
+            println!("{}", serde_json::to_string(&plan)?);
+            // Exit-code contract (mirrors `state autonomy-check`): 0 = fan out,
+            // 1 = ordinary single-sample path. The skill branches on this.
+            if !plan.enabled {
+                std::process::exit(1);
+            }
+        }
+        ConsensusAction::Vote { file, threshold } => {
+            let raw = match &file {
+                Some(p) => std::fs::read_to_string(p)
+                    .with_context(|| format!("reading {}", p.display()))?,
+                None => read_stdin(),
+            };
+            let input: ConsensusInput =
+                serde_json::from_str(&raw).context("parsing consensus verdicts JSON")?;
+            let (verdicts, json_threshold) = match input {
+                ConsensusInput::Wrapped {
+                    verdicts,
+                    threshold,
+                } => (verdicts, threshold),
+                ConsensusInput::Bare(v) => (v, None),
+            };
+            // Precedence: --threshold flag > JSON threshold > config > default.
+            let thr = threshold
+                .or(json_threshold)
+                .unwrap_or(cfg.consensus_threshold);
+            if !(0.0..=1.0).contains(&thr) {
+                bail!("threshold must be within [0.0, 1.0], got {thr}");
+            }
+            let decision = consensus::tally(&verdicts, thr);
+            println!("{}", serde_json::to_string_pretty(&decision)?);
+            // Exit 1 when the caller should escalate (all-fail, tie, or agreement
+            // below threshold); 0 when a consensus winner is taken. Distinct JSON
+            // on stdout lets the skill tell this apart from a hard error.
+            if decision.escalate {
+                std::process::exit(1);
             }
         }
     }
@@ -495,7 +625,19 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             }
             if clear_branch {
                 t.branch = None;
+                t.branch_sha = None;
             } else if branch.is_some() {
+                // Record the SHA at assignment time so reconcile can detect
+                // force-push false-positives by checking the original commit.
+                if let Some(ref b) = branch {
+                    if t.branch_sha.is_none() {
+                        let repo = worktree::toplevel(cwd).ok();
+                        t.branch_sha = repo
+                            .as_deref()
+                            .and_then(|r| worktree::git(r, &["rev-parse", b]).ok())
+                            .map(|s| s.trim().to_string());
+                    }
+                }
                 t.branch = branch;
             }
             rs.save(cfg, cwd)?;
@@ -737,8 +879,101 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             let (done, total) = rs.counts();
             eprintln!("run '{run}': {done}/{total} done");
         }
+        StateAction::CheckCriteria { run, task } => {
+            let rs = state::RunState::load(cfg, cwd, &run)?;
+            let dec_raw = state::load_decomposition(cfg, cwd, &run)?;
+            let dec: model::Decomposition = serde_json::from_str(&dec_raw)?;
+            let t = dec
+                .tasks
+                .iter()
+                .find(|t| t.id == task)
+                .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
+            let Some(dc) = &t.done_criteria else {
+                // No criteria to check → nothing mechanical, verifier still runs.
+                println!("{{\"mechanical\":false,\"behavioral\":false,\"skip_verifier\":false}}");
+                return Ok(());
+            };
+            let cls = verify::classify_criteria(dc);
+            let run_dir = rs
+                .tasks
+                .iter()
+                .find(|s| s.id == task)
+                .and_then(|s| s.worktree.as_deref())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| cwd.to_path_buf());
+
+            // Behavioral (or non-runnable) criteria: the LLM verifier MUST run.
+            // Any embedded command is run only to attach evidence — never to
+            // skip the verifier, and never to fail this gate.
+            if !cls.skip_eligible {
+                let evidence = cls.mechanical_cmd.as_ref().map(|cmd| {
+                    let (passed, output) = run_mechanical(cmd, &run_dir);
+                    serde_json::json!({ "cmd": cmd, "passed": passed, "output": output })
+                });
+                let out = serde_json::json!({
+                    "mechanical": cls.mechanical_cmd.is_some(),
+                    "behavioral": cls.behavioral,
+                    "skip_verifier": false,
+                    "evidence": evidence,
+                });
+                println!("{}", serde_json::to_string(&out)?);
+                return Ok(());
+            }
+
+            // Purely mechanical criteria: the verifier may be skipped iff the
+            // command passes. A failing mechanical check fails this gate.
+            let cmd = cls
+                .mechanical_cmd
+                .expect("skip_eligible implies a mechanical command");
+            let (passed, output) = run_mechanical(&cmd, &run_dir);
+            let out = serde_json::json!({
+                "mechanical": true,
+                "behavioral": false,
+                "passed": passed,
+                "skip_verifier": passed,
+                "cmd": cmd,
+                "output": output,
+            });
+            println!("{}", serde_json::to_string(&out)?);
+            if !passed {
+                std::process::exit(1);
+            }
+        }
+        StateAction::VerifierModel { worker, suggested } => {
+            let chosen = verify::resolve_verifier_model(&worker, suggested.as_deref());
+            // Invariant guard: never emit a verifier model equal to the worker.
+            debug_assert!(!verify::same_model(&chosen, &worker));
+            println!("{chosen}");
+        }
+        StateAction::AutonomyCheck => {
+            let autonomous = cfg.autonomous;
+            println!("{{\"autonomous\":{autonomous}}}");
+            if !autonomous {
+                std::process::exit(1);
+            }
+        }
     }
     Ok(())
+}
+
+/// Run a mechanical check command in `run_dir`, returning (passed, combined output).
+/// A spawn failure counts as not-passed with the error text as output.
+fn run_mechanical(cmd: &[String], run_dir: &Path) -> (bool, String) {
+    match std::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .current_dir(run_dir)
+        .output()
+    {
+        Ok(out) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            (out.status.success(), combined)
+        }
+        Err(e) => (false, e.to_string()),
+    }
 }
 
 /// Probe whether the `fugu-router` binary is on PATH and, if so, return its
@@ -872,7 +1107,19 @@ fn init(cfg: &Config) -> Result<()> {
          # [loop]\n\
          # build_command  = \"npm run build\"\n\
          # deploy_command = \"kubectl rollout restart deployment/api && kubectl rollout status deployment/api\"\n\
-         # max_iters      = 10\n",
+         # max_iters      = 10\n\
+         \n\
+         # Multi-sample self-consistency (COST GUARD: opt-in, OFF by default).\n\
+         # When enabled, a high-risk task is implemented N independent times,\n\
+         # each verified, and a majority vote picks the winner; low agreement\n\
+         # escalates the task to opus. N-sample generation is N x the cost, so\n\
+         # keep this off unless you want fan-out consensus on risky tasks. A\n\
+         # per-task `condukt consensus plan --risk high` forces fan-out even when\n\
+         # enabled=false. samples is clamped to a ceiling of 5.\n\
+         # [consensus]\n\
+         # enabled   = false\n\
+         # samples   = 3\n\
+         # threshold = 0.5\n",
         cfg.worktree_base.display(),
         cfg.default_branch,
         cfg.max_parallel
@@ -937,6 +1184,7 @@ mod state_set_tests {
                 status: Status::Pending,
                 worktree: worktree.map(str::to_string),
                 branch: branch.map(str::to_string),
+                branch_sha: None,
                 updated_at: None,
                 model: None,
                 cost_usd: None,

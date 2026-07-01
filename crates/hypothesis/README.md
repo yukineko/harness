@@ -54,7 +54,8 @@ hypothesis to a terminal state without recording what you measured. Shipping alo
 reaches `awaiting-measurement` — **build ≠ validate**.
 
 Each record holds `id` / `text` / `status` / `evidence[]` / `linked_goal` /
-`condukt_run` / `created_at` / `updated_at`.
+`condukt_run` / `success_criterion` / `kill_criterion` / `assumptions[]` /
+`confidence` / `created_at` / `updated_at`.
 
 ## Subcommand surface
 
@@ -62,8 +63,9 @@ The binary is thin and deterministic:
 
 | Subcommand | Purpose |
 |---|---|
-| `hypothesis add <text> [--goal <keyword>] [--success "<metric> >= <n>"] [--kill "<metric> <= <n>"]` | add a bet; prints the new id. `--goal` links it to a compass charter goal. `--success`/`--kill` pre-register a falsifiable bar *before* shipping (operators: `>= <= > < ==`) |
-| `hypothesis list [--status <s>]` | list bets, optionally filtered (`open` / `awaiting-measurement` / `validated` / `rejected`); pre-registered criteria are shown inline |
+| `hypothesis add <text> [--goal <keyword>] [--success "<metric> >= <n>"] [--kill "<metric> <= <n>"] [--confidence <0..1>]` | add a bet; prints the new id. `--goal` links it to a compass charter goal. `--success`/`--kill` pre-register a falsifiable bar *before* shipping (operators: `>= <= > < ==`). `--confidence` sets the discovery confidence (default 0.5) |
+| `hypothesis list [--status <s>]` | list bets in **discovery order** (confidence descending, then created_at), optionally filtered (`open` / `awaiting-measurement` / `validated` / `rejected`); pre-registered criteria are shown inline |
+| `hypothesis confidence <id> <value>` | set a bet's discovery confidence (verification priority; higher = surfaces for validation sooner). Reorders the `list` discovery queue |
 | `hypothesis await-measurement <id> [--run <run>]` | mark a shipped-but-unmeasured bet (condukt calls this on merge) |
 | `hypothesis validate <id> --evidence <text>… [--measurement "<metric>=<value>"…] [--run <run>]` | terminal: measured evidence supports the bet (evidence required). If a `--success` criterion was pre-registered, a matching `--measurement` must clear it — otherwise validation is refused (no post-hoc goalpost-shifting) |
 | `hypothesis reject <id> [--reason <text>] [--run <run>]` | terminal: measured evidence refutes the bet |

@@ -19,7 +19,8 @@ error it exits 0 and stays silent.
 | `ctxrot rescue` | `PreCompact` | Right before `/compact`, streams the recent transcript and writes a durable **rescue note** (decisions, open todos, touched files, links, raw recent turns) so nothing is lost to lossy compaction. Deterministic, no LLM. The note filename carries a **session tag** (`rescue-<session>-<ts>.md`). Same writer also powers guard's preemptive rescue (labeled `trigger: band-NN%`). By default it *also* fire-and-forgets a detached `claude -p` async distill (`distill_on_compact`, feature ④) that upgrades the note to LLM quality without blocking compaction. |
 | `ctxrot restore` | `SessionStart` | At session start, injects a **compact carryover** (decisions + open todos + a link). It prefers *this* session's own note (matched by session tag); the cross-session fallback returns the latest note when the stream is unambiguous (≤1 session in the dir) but, when **parallel sessions** share one project dir (≥2 sessions), restricts to untagged/shared notes so it never grabs a sibling's carryover. Never the whole note. |
 | `ctxrot preguard` | `PreToolUse` | **Preventive gate, before the load.** Two layers: (1) **rule-based** — a `Read` matching a `load_deny` glob is denied *regardless of size* ("never load these"; holds even for a bounded slice by default), while a `load_allow` glob bypasses the size gate ("trusted, load whole"). (2) **size-based** — an *unbounded* `Read` (no `limit`) of a local file at/above `gate_file_bytes` (default **1MB**) is denied with an actionable reason. Precedence: **deny → limit → allow → size**. Narrow by design so normal source reads are untouched. |
-| `ctxrot toolguard` | `PostToolUse` | When a `Read`/`Bash`/`Grep`/… returns a huge payload, nudges you to route the *next* heavy read through a sub-agent and keep only conclusions. (Handles the 50KB–1MB middle band the `preguard` gate lets through.) |
+| `ctxrot toolguard` | `PostToolUse` | When a `Read`/`Bash`/`Grep`/… returns a huge payload, nudges you to route the *next* heavy read through a sub-agent and keep only conclusions. (Handles the 50KB–1MB middle band the `preguard` gate lets through.) The per-session nudge count is bounded by `toolguard_nudge_cap` (default 3) so the advice itself doesn't become rot. |
+| `ctxrot stop` | `Stop` | **Opt-in auto-compact nudge.** When budget-meter usage crosses `auto_compact_at_percentage` (default **0.90**), returns `{"decision":"block"}` asking Claude to run `/compact`. The threshold is measured off ctxrot's **OWN budget meter** (`est_tokens / context_window`, the same estimate `guard`/`usage` band from — which can read >100%), **not** the raw model-window `used_percentage`, so it fires correctly against the true ~1M window. Off by default (`auto_compact_enabled = false`); the block is bounded to once per band crossing so it can never permanently trap a turn. |
 | `ctxrot statusline` | `statusLine` | Always-on context-usage meter (`ctxrot 52% ▮▮▯▯ band1 ~104k/200k`), colored by band (green→yellow→red). Reads Claude's `context_window.used_percentage` from the status JSON (falls back to estimating from the transcript). `ctxrot install` sets it only when no status line exists yet, so a custom one is never clobbered. |
 
 Plus two skills:
@@ -49,7 +50,7 @@ write time instead of silently yielding an empty carryover.
 ## Install (recommended: as a Claude Code plugin)
 
 This repo is **both the Rust crate and a Claude Code plugin/marketplace**. The
-plugin bundles the five hooks, the `/distill` and `/ctx` skills, the
+plugin bundles the six hooks, the `/distill` and `/ctx` skills, the
 `ctxrot-distiller` subagent, and a prebuilt binary (`bin/ctxrot`) — so installs
 run entirely on your
 Claude **subscription**, no API key and no separate `cargo install` needed.
@@ -152,7 +153,7 @@ check out non-executable and hooks would fail).
 ```
 .claude-plugin/plugin.json        # plugin manifest
 .claude-plugin/marketplace.json   # single-plugin marketplace (name: yukineko)
-hooks/hooks.json                  # the 5 hooks → ${CLAUDE_PLUGIN_ROOT}/bin/ctxrot
+hooks/hooks.json                  # the 6 hooks → ${CLAUDE_PLUGIN_ROOT}/bin/ctxrot
 agents/ctxrot-distiller.md        # distiller subagent (keeps heavy reads off main ctx)
 skills/distill/SKILL.md           # /distill skill (delegates to the subagent)
 skills/ctx/SKILL.md               # /ctx skill (pin/drop/load via `ctxrot ctx`)
@@ -171,6 +172,7 @@ state_dir = "~/.ctxrot/state"
 context_window = 200000         # see the warning below
 large_file_bytes = 50000        # "large reference" nudge in guard (UserPromptSubmit)
 huge_tool_output_bytes = 50000  # PostToolUse nudge after a big payload lands
+toolguard_nudge_cap = 3         # max big-output nudges per session (0 = never nudge)
 gate_file_bytes = 1000000       # PreToolUse hard gate (deny); 0 = off
 gate_bash = false               # opt-in Bash gate: deny obvious unbounded dumps
 bands = [0.50, 0.75, 0.90]
@@ -205,6 +207,19 @@ distill_on_compact = true       # ON by default: PreCompact also fires a DETACHE
                                 #   compaction — set false to disable.
 distill_cmd = "claude -p"       # headless command (prompt on stdin, note on stdout)
 distill_timeout_secs = 180      # wall-clock cap (s) for that background distill
+auto_distill_on_band = true     # ON by default: also fire the SAME background distill
+                                #   the first time real usage crosses into the TOP band
+                                #   (≈90%+ / the 200k danger line) without waiting for a
+                                #   /compact. Gated independently of distill_on_compact.
+
+# Stop-hook auto-compact nudge (feature ⑤, opt-in):
+auto_compact_enabled = false    # OFF by default. When true, `ctxrot stop` (the Stop hook)
+                                #   returns {"decision":"block"} asking Claude to /compact
+                                #   once budget-meter usage crosses the threshold below.
+                                #   Bounded to once per band crossing (never traps a turn).
+auto_compact_at_percentage = 0.90 # fraction at which to nudge — measured against ctxrot's
+                                #   OWN budget meter (est_tokens / context_window, same as
+                                #   guard/usage), NOT the raw model-window used_percentage.
 ```
 
 Glob syntax for `load_deny`/`load_allow` is path-aware: `*`/`?` stay within a
@@ -222,9 +237,11 @@ Project-relative patterns (`secrets/**`) match absolute paths too.
 Env overrides (Python v1 compatibility): `GUARD_DISABLE` (any value → no-op),
 `CLAUDE_CONTEXT_WINDOW`, `GUARD_LARGE_FILE_BYTES`, `GUARD_GATE_FILE_BYTES`,
 `GUARD_GATE_BASH`, `GUARD_METRICS`. Newer: `CTXROT_LOAD_DENY` / `CTXROT_LOAD_ALLOW`
-(comma-separated globs), `CTXROT_RESTORE_DISABLE=1` (turn carryover off), and
+(comma-separated globs), `CTXROT_RESTORE_DISABLE=1` (turn carryover off),
 `CTXROT_DISTILL_ON_COMPACT` / `CTXROT_DISTILL_CMD` / `CTXROT_DISTILL_TIMEOUT_SECS`
-(async-distill toggle, command, and timeout).
+(async-distill toggle, command, and timeout), `CTXROT_AUTO_DISTILL_ON_BAND`,
+`CTXROT_TOOLGUARD_NUDGE_CAP`, and `CTXROT_AUTO_COMPACT` /
+`CTXROT_AUTO_COMPACT_AT_PERCENTAGE` (Stop-hook auto-compact toggle and threshold).
 
 > **CJK / token-estimate note.** The byte-based thresholds (`large_file_bytes`,
 > `huge_tool_output_bytes`, `gate_file_bytes`) and the `bytes/4` token estimate

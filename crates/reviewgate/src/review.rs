@@ -8,7 +8,19 @@
 //!
 //! Convergence: we hash the reviewable diff. A stop whose diff matches the last
 //! one we forced a review of is allowed (already reviewed). A changed diff costs
-//! one more round, capped by `max_attempts`. Harness errors always allow.
+//! one more round, capped by `max_attempts`. Environment errors that predate any
+//! review (no git repo, nothing reviewable) always allow. A reviewer that itself
+//! fails (subprocess crash / timeout / unusable output) does NOT allow silently:
+//! it blocks up to `max_attempts` times with a loud, escapable reason, then
+//! gives up loudly — a broken reviewer must never become a bypass.
+//!
+//! Truncation guard: if the diff exceeds `max_diff_bytes` it is cut to fit and
+//! the tail is dropped. A dropped tail is *unreviewed* — the reviewer never saw
+//! it and the hash below can't cover it — so a truncated diff must NOT be
+//! silently allowed (that would let the tail bypass the gate). We block it up to
+//! `max_attempts` with a loud, escapable reason (split the change, raise
+//! `max_diff_bytes`, `.reviewgate-skip`, or `REVIEWGATE_DISABLE=1`), then give up
+//! loudly with a distinct tag so the turn is never permanently trapped.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -89,11 +101,13 @@ pub fn evaluate(cfg: &Config, root: &Path, st: &crate::state::SessionState) -> D
         return allow("no-reviewable-changes", st);
     }
 
-    let diff = crate::git::diff_text(root, &files, cfg.max_diff_bytes);
+    let crate::git::DiffText {
+        text: diff,
+        truncated,
+    } = crate::git::diff_text(root, &files, cfg.max_diff_bytes);
     if diff.trim().is_empty() {
         return allow("empty-diff", st);
     }
-    let hash = hash_diff(&diff);
 
     // attempt counter resets after an idle gap (a fresh turn).
     let prior_attempts = if now() - st.last_ts > cfg.reset_after_secs {
@@ -101,6 +115,19 @@ pub fn evaluate(cfg: &Config, root: &Path, st: &crate::state::SessionState) -> D
     } else {
         st.attempts
     };
+
+    // Truncation guard (fail closed, bounded): the diff was larger than
+    // max_diff_bytes and the tail was dropped. That tail is unreviewed, and the
+    // hash below can't cover it, so neither the subprocess reviewer nor the
+    // inject-mode "already-reviewed" convergence can honestly certify the whole
+    // change. Don't silently allow — block (bounded, escapable) so the tail can't
+    // slip through unreviewed. Checked before the hash short-circuit precisely
+    // because that short-circuit would otherwise wave a truncated diff through.
+    if truncated {
+        return decide_truncated(cfg, files, prior_attempts);
+    }
+
+    let hash = hash_diff(&diff);
 
     // Same diff we already forced a review of → the agent reviewed exactly this.
     if !st.last_hash.is_empty() && st.last_hash == hash {
@@ -126,36 +153,90 @@ pub fn evaluate(cfg: &Config, root: &Path, st: &crate::state::SessionState) -> D
                 last_hash: hash,
             }
         }
-        Mode::Subprocess => match run_reviewer(cfg, &diff) {
-            ReviewerResult::Error(e) => {
-                eprintln!("reviewgate: reviewer command failed ({e}) — allowing stop");
-                // Don't record the hash: retry the review on the next stop.
-                allow("reviewer-error", st)
+        Mode::Subprocess => {
+            let result = run_reviewer(cfg, &diff);
+            decide_subprocess(cfg, result, files, hash, prior_attempts)
+        }
+    }
+}
+
+/// Turn a `ReviewerResult` into a `Decision`. Split out from `evaluate` so the
+/// decision logic (especially the fail-closed error path) is unit-testable
+/// without spawning a real reviewer subprocess.
+fn decide_subprocess(
+    cfg: &Config,
+    result: ReviewerResult,
+    files: Vec<String>,
+    hash: String,
+    prior_attempts: u32,
+) -> Decision {
+    match result {
+        // Fail *closed* (but bounded): a reviewer that crashed, timed out, or
+        // produced unparseable output is NOT the same as "reviewed and clean".
+        // Silently allowing here would turn a broken reviewer into a bypass —
+        // exactly the hole this gate exists to close. Instead we block the stop
+        // with a loud, actionable reason for up to `max_attempts` consecutive
+        // stops (giving transient failures — load, timeout — a chance to
+        // recover), then give up *loudly* so a permanently broken reviewer can
+        // never trap the turn. Escape hatches (`.reviewgate-skip`,
+        // REVIEWGATE_DISABLE=1) remain available throughout and are named in the
+        // reason, satisfying the never-break-a-turn invariant.
+        ReviewerResult::Error(e) => {
+            let attempts = prior_attempts + 1;
+            if attempts > cfg.max_attempts {
+                eprintln!(
+                    "reviewgate: WARNING reviewer still unavailable after {max} attempt(s) \
+                     ({e}) — allowing the stop UNREVIEWED. Fix reviewer_cmd (see \
+                     `reviewgate status`) or set REVIEWGATE_DISABLE=1.",
+                    max = cfg.max_attempts,
+                    e = e,
+                );
+                return Decision::Allow {
+                    tag: "reviewer-error-giveup",
+                    attempts: 0,
+                    last_hash: String::new(),
+                };
             }
-            ReviewerResult::Clean => Decision::Allow {
-                tag: "clean",
-                attempts: 0,
-                last_hash: hash,
-            },
-            ReviewerResult::Issues(findings) => {
-                let attempts = prior_attempts + 1;
-                if attempts > cfg.max_attempts {
-                    return Decision::Allow {
-                        tag: "giveup",
-                        attempts: 0,
-                        last_hash: String::new(),
-                    };
-                }
-                let reason = subprocess_reason(&files, &findings, attempts, cfg.max_attempts);
-                Decision::Block {
-                    reason,
-                    tag: "blocked-review",
-                    files,
-                    attempts,
-                    last_hash: hash,
-                }
+            eprintln!(
+                "reviewgate: WARNING reviewer command failed ({e}) — blocking the stop \
+                 (reviewer unavailable, this is NOT a clean review). Attempt {attempts}/{max}.",
+                e = e,
+                attempts = attempts,
+                max = cfg.max_attempts,
+            );
+            // Don't record the hash: keep re-checking whether the reviewer
+            // recovered on the next stop; the attempt counter above bounds it.
+            Decision::Block {
+                reason: reviewer_unavailable_reason(&e, attempts, cfg.max_attempts),
+                tag: "reviewer-unavailable",
+                files,
+                attempts,
+                last_hash: String::new(),
             }
+        }
+        ReviewerResult::Clean => Decision::Allow {
+            tag: "clean",
+            attempts: 0,
+            last_hash: hash,
         },
+        ReviewerResult::Issues(findings) => {
+            let attempts = prior_attempts + 1;
+            if attempts > cfg.max_attempts {
+                return Decision::Allow {
+                    tag: "giveup",
+                    attempts: 0,
+                    last_hash: String::new(),
+                };
+            }
+            let reason = subprocess_reason(&files, &findings, attempts, cfg.max_attempts);
+            Decision::Block {
+                reason,
+                tag: "blocked-review",
+                files,
+                attempts,
+                last_hash: hash,
+            }
+        }
     }
 }
 
@@ -164,6 +245,43 @@ fn allow(tag: &'static str, st: &crate::state::SessionState) -> Decision {
         tag,
         attempts: 0,
         last_hash: st.last_hash.clone(),
+    }
+}
+
+/// The diff was truncated to fit `max_diff_bytes`, so its tail is unreviewed.
+/// Fail *closed* (but bounded): block the stop with a loud, escapable reason for
+/// up to `max_attempts` consecutive stops (giving the agent a chance to split the
+/// change so the diff fits), then give up *loudly* with a distinct tag so a
+/// permanently-too-large diff never traps the turn and is never mistaken for a
+/// clean review. Escape hatches (raise `max_diff_bytes`, `.reviewgate-skip`,
+/// `REVIEWGATE_DISABLE=1`) stay available throughout and are named in the reason,
+/// satisfying the never-break-a-turn invariant. Split out from `evaluate` so it
+/// is unit-testable without spawning git.
+fn decide_truncated(cfg: &Config, files: Vec<String>, prior_attempts: u32) -> Decision {
+    let attempts = prior_attempts + 1;
+    if attempts > cfg.max_attempts {
+        eprintln!(
+            "reviewgate: WARNING diff still exceeds max_diff_bytes ({max_bytes} B) after \
+             {max} attempt(s) — allowing the stop with the truncated tail UNREVIEWED. Split the \
+             change into smaller commits, raise max_diff_bytes, or set REVIEWGATE_DISABLE=1.",
+            max_bytes = cfg.max_diff_bytes,
+            max = cfg.max_attempts,
+        );
+        return Decision::Allow {
+            tag: "truncated-giveup",
+            attempts: 0,
+            last_hash: String::new(),
+        };
+    }
+    Decision::Block {
+        reason: truncated_reason(cfg, &files, attempts, cfg.max_attempts),
+        tag: "diff-truncated",
+        files,
+        attempts,
+        // Deliberately don't record a hash: the hash can't cover the dropped
+        // tail, so we must keep re-checking until the diff fits (or we give up
+        // above) rather than let the "already-reviewed" path certify it.
+        last_hash: String::new(),
     }
 }
 
@@ -213,6 +331,51 @@ fn subprocess_reason(files: &[String], findings: &str, attempt: u32, max: u32) -
         n = files.len(),
         list = file_list(files),
         findings = findings.trim(),
+    )
+}
+
+/// subprocess mode: the independent reviewer itself failed (couldn't spawn,
+/// crashed, timed out, or emitted output we can't use). We block instead of
+/// silently allowing, so the reason must always hand the human a way forward —
+/// otherwise a broken reviewer would trap the turn.
+fn reviewer_unavailable_reason(err: &str, attempt: u32, max: u32) -> String {
+    format!(
+        "🚧 reviewgate: 独立レビュアーを実行できませんでした (round {attempt}/{max}).\n\n\
+         reviewer_cmd がエラー / タイムアウト / 解析不能でした:\n  {err}\n\n\
+         これは「レビュー結果クリーン」ではありません。壊れた（またはハングした）レビュアーを\
+         無言で通過させると gate がバイパスになってしまうため、この停止を一時的にブロックしています。\
+         {max}回連続で失敗した場合は警告を出して通過を許可します（永久にはブロックしません）。\n\n\
+         前に進むには次のいずれか:\n\
+         - reviewer_cmd を修正する（`reviewgate status` で解決済みコマンドを確認）。\n\
+         - このレビューを1回だけスキップ: project root に `.reviewgate-skip` を作成（理由を1行）。\n\
+         - reviewgate を完全に無効化: 環境変数 REVIEWGATE_DISABLE=1。",
+        attempt = attempt,
+        max = max,
+        err = err.trim(),
+    )
+}
+
+/// The diff was truncated: tell the agent the tail went unreviewed and hand it
+/// every way forward, so a too-large change can neither slip through unreviewed
+/// nor permanently trap the turn.
+fn truncated_reason(cfg: &Config, files: &[String], attempt: u32, max: u32) -> String {
+    format!(
+        "🚧 reviewgate: 変更差分が大きすぎてレビュー用に切り詰められました (round {attempt}/{max}).\n\n\
+         diff が max_diff_bytes ({max_bytes} B) を超えたため、末尾がレビュー対象から欠落しています。\
+         欠落した末尾は誰にもレビューされていないため、この停止を無言で許可すると未レビューの変更が\
+         gate をすり抜けてしまいます。全 diff がレビューされることを保証するため、この停止を一時的に\
+         ブロックしています。{max}回連続で解消しなければ警告を出して通過を許可します（永久にはブロックしません）。\n\n\
+         レビュー対象 ({n} files):\n{list}\n\
+         前に進むには次のいずれか:\n\
+         - 変更を小さなコミット / 差分に分割し、それぞれが max_diff_bytes に収まるようにする。\n\
+         - max_diff_bytes を引き上げる（reviewgate.toml の max_diff_bytes、現在 {max_bytes} B）。\n\
+         - このレビューを1回だけスキップ: project root に `.reviewgate-skip` を作成（理由を1行）。\n\
+         - reviewgate を完全に無効化: 環境変数 REVIEWGATE_DISABLE=1。",
+        attempt = attempt,
+        max = max,
+        max_bytes = cfg.max_diff_bytes,
+        n = files.len(),
+        list = file_list(files),
     )
 }
 
@@ -344,5 +507,154 @@ mod tests {
     fn hash_is_stable_and_distinct() {
         assert_eq!(hash_diff("abc"), hash_diff("abc"));
         assert_ne!(hash_diff("abc"), hash_diff("abd"));
+    }
+
+    // --- reviewer failure must not become a silent bypass -------------------
+
+    /// A reviewer subprocess error (crash / spawn failure / unparseable output)
+    /// must BLOCK the stop, never allow it. This is the regression this gate
+    /// exists to prevent: a broken reviewer turning into a bypass (fail-open).
+    #[test]
+    fn reviewer_error_blocks_it_does_not_allow() {
+        let cfg = Config::default(); // max_attempts = 2
+        let d = decide_subprocess(
+            &cfg,
+            ReviewerResult::Error("spawn: boom".to_string()),
+            vec!["src/x.rs".to_string()],
+            "deadbeefdeadbeef".to_string(),
+            0,
+        );
+        match d {
+            Decision::Allow { tag, .. } => {
+                panic!("reviewer error must not allow (fail-open bypass); got allow tag={tag}")
+            }
+            Decision::Block { tag, reason, .. } => {
+                assert_eq!(tag, "reviewer-unavailable");
+                // The never-break-a-turn invariant: the reason must always hand
+                // the human an escape path so a broken reviewer can't trap them.
+                assert!(
+                    reason.contains("REVIEWGATE_DISABLE"),
+                    "reason must name the disable escape hatch: {reason}"
+                );
+            }
+        }
+    }
+
+    /// A timeout is just another reviewer error and must likewise block, not
+    /// allow — while still being bounded (see the giveup test below).
+    #[test]
+    fn reviewer_timeout_blocks_it_does_not_allow() {
+        let cfg = Config::default();
+        let d = decide_subprocess(
+            &cfg,
+            ReviewerResult::Error("timed out".to_string()),
+            vec!["src/x.rs".to_string()],
+            "hash".to_string(),
+            0,
+        );
+        assert!(
+            matches!(d, Decision::Block { .. }),
+            "a reviewer timeout must block the stop, not silently allow it"
+        );
+    }
+
+    /// Bounded, never trapped: after `max_attempts` consecutive reviewer errors
+    /// we give up and allow — but via a *distinct* tag (so logs never mistake it
+    /// for a clean review), not the fail-open path we removed.
+    #[test]
+    fn reviewer_error_gives_up_after_max_attempts_but_never_traps() {
+        let cfg = Config::default(); // max_attempts = 2
+        let d = decide_subprocess(
+            &cfg,
+            ReviewerResult::Error("still broken".to_string()),
+            vec!["src/x.rs".to_string()],
+            "hash".to_string(),
+            cfg.max_attempts, // prior attempts already at the cap
+        );
+        match d {
+            Decision::Allow { tag, .. } => assert_eq!(tag, "reviewer-error-giveup"),
+            Decision::Block { .. } => {
+                panic!("must give up after max_attempts so the turn is never permanently trapped")
+            }
+        }
+    }
+
+    /// End-to-end sanity on the classifier→error boundary: a reviewer_cmd that
+    /// cannot even spawn is reported as an Error (which the decision then
+    /// blocks on), never mistaken for Clean.
+    #[test]
+    fn run_reviewer_reports_error_for_unspawnable_command() {
+        let cfg = Config {
+            reviewer_cmd: "reviewgate-no-such-binary-xyzzy".to_string(),
+            ..Config::default()
+        };
+        match run_reviewer(&cfg, "diff --git a/x b/x\n") {
+            ReviewerResult::Error(_) => {}
+            ReviewerResult::Clean => {
+                panic!("an unspawnable reviewer must be an Error, not Clean (that would bypass)")
+            }
+            ReviewerResult::Issues(_) => panic!("an unspawnable reviewer must be an Error"),
+        }
+    }
+
+    // --- a truncated diff must not become a silent allow ---------------------
+
+    /// A diff truncated to fit max_diff_bytes has an unreviewed tail. It must
+    /// BLOCK the stop, never allow it — otherwise the dropped tail bypasses the
+    /// gate (the hole this fix closes). The reason must always hand the human a
+    /// way forward (never-break-a-turn), and no hash may be recorded (the hash
+    /// can't cover the tail, so "already-reviewed" must not later certify it).
+    #[test]
+    fn truncated_diff_blocks_it_does_not_allow() {
+        let cfg = Config::default(); // max_attempts = 2
+        let d = decide_truncated(&cfg, vec!["src/x.rs".to_string()], 0);
+        match d {
+            Decision::Allow { tag, .. } => {
+                panic!("a truncated diff must not be silently allowed (unreviewed-tail bypass); got allow tag={tag}")
+            }
+            Decision::Block {
+                tag,
+                reason,
+                last_hash,
+                ..
+            } => {
+                assert_eq!(tag, "diff-truncated");
+                assert!(
+                    last_hash.is_empty(),
+                    "must not record a hash for a truncated diff, else already-reviewed could certify the unreviewed tail"
+                );
+                // Override paths must be named so a too-large diff can't trap the turn.
+                assert!(
+                    reason.contains("max_diff_bytes"),
+                    "reason must name the raise-the-limit override: {reason}"
+                );
+                assert!(
+                    reason.contains(".reviewgate-skip"),
+                    "reason must name the one-shot skip escape hatch: {reason}"
+                );
+                assert!(
+                    reason.contains("REVIEWGATE_DISABLE"),
+                    "reason must name the disable escape hatch: {reason}"
+                );
+            }
+        }
+    }
+
+    /// Bounded, never trapped: after max_attempts consecutive truncated stops we
+    /// give up and allow — but via a *distinct* tag, so a permanently-too-large
+    /// diff is never mistaken for a clean review and never traps the turn.
+    #[test]
+    fn truncated_diff_gives_up_after_max_attempts_but_never_traps() {
+        let cfg = Config::default(); // max_attempts = 2
+        let d = decide_truncated(&cfg, vec!["src/x.rs".to_string()], cfg.max_attempts);
+        match d {
+            Decision::Allow { tag, last_hash, .. } => {
+                assert_eq!(tag, "truncated-giveup");
+                assert!(last_hash.is_empty());
+            }
+            Decision::Block { .. } => {
+                panic!("must give up after max_attempts so a too-large diff never permanently traps the turn")
+            }
+        }
     }
 }

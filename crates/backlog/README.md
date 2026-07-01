@@ -31,6 +31,16 @@ The lock is how concurrent sessions serialize: a `/flow` driver acquires it
 before draining the queue, and other sessions back off when `lock status`
 reports an active holder.
 
+## Why it exists
+
+Sessions are volatile: close the conversation and "the thing I meant to do next"
+goes with it, and once you start work in another repo the items you parked in a
+different project drop out of view entirely. Leaning on chat history or memory,
+pending tasks quietly get lost. backlog closes that failure mode — once an item
+is queued it survives across sessions and repos, the SessionStart hook re-injects
+pending work as context wherever you open next, and the exclusive run-lock keeps
+concurrent sessions from draining the queue at the same time and colliding.
+
 ## Install (plugin)
 
 Installed via the plugin marketplace, the bundled `/backlog` skill is available

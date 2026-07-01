@@ -36,7 +36,7 @@ precommit-audit trust   # <root> を信頼し、その .precommit-audit.toml を
 主なフラグとサブコマンド:
 
 - `--mode precommit` — pre-commit フレームワーク / git フック（人間のコミット）向け。失敗時に **1** で終了し、レビュー契約はスキップする。
-- `--mode stop`（既定）— Claude Code の Stop フック向け。subagent のレビュー契約を honor し、指摘をエージェントへ戻すため **2** で終了する。SessionEnd では非ブロッキング（**0**）で走る。
+- `--mode stop`（既定）— Claude Code の Stop フック向け。subagent のレビュー契約を honor し、指摘をエージェントへ戻すため **2** で終了する。**SessionEnd** 実行時は advisory（助言）モードで走り、ブロッキングな指摘も引き続き表面化する（stderr へ目立つ形で出力し、監査ログに `block` として記録する）が、終了コードは **0** のままなので、監査がセッションを失敗させることはない。
 - `--config` — 既定は `<root>/.precommit-audit.toml`。明示指定はオペレータの意図的選択として、信頼の有無にかかわらず常に honor される。
 - `--root` — 既定は `$CLAUDE_PROJECT_DIR`、無ければ git のトップレベル。
 - `trust` — 解決済みの `--root` を共有のワークスペース信頼リスト（`harness_core::trust`。`donegate`/`reviewgate`/`tdd` と同じリスト）に追加し、自動発見された `.precommit-audit.toml` を honor させる。信頼するまではリポジトリ同梱の設定は無視される（組み込みチェックはデフォルトで動作）。
@@ -84,4 +84,4 @@ exec precommit-audit --mode precommit
 
 ### 他の Stop ゲート（donegate / reviewgate / tdd）との関係
 
-precommit-audit は意図的に、`harness_core::gate` 上に構築された JSON Stop ゲートの一員ではない。あの 3 つは Claude 専用の Stop フックで、`{"decision":"block","reason":…}` を出力してブロックする。precommit-audit は git フックと Claude Code Stop フックの両方として動く dual-mode フックであり、git フックは Claude の JSON `decision:block` プロトコルを話せないため、終了コード＋ブロックマーカーという別の契約を保つ。プロジェクトローカル設定を `harness_core::trust` の背後でゲートする点は 3 つと共通だが、JSON Stop ゲートではなく、その兄弟として扱う。
+precommit-audit は意図的に、`harness_core::gate` 上に構築された JSON Stop ゲートの一員ではない。あの 3 つは Claude 専用の Stop フックで、`{"decision":"block","reason":…}` を出力してブロックする。precommit-audit は git フック（`precommit` モード、失敗時 **1**）と Claude Code Stop フック（`stop` モード、**2**）の両方として動き、さらに advisory な **SessionEnd** パス（**0**。ブロッキングな指摘を表面化・記録しつつセッションは失敗させない）も備える dual-mode フックである。git フックは Claude の JSON `decision:block` プロトコルを話せないため、終了コード＋ブロックマーカーという別の契約を保つ。プロジェクトローカル設定を `harness_core::trust` の背後でゲートする点は 3 つと共通だが、JSON Stop ゲートではなく、その兄弟として扱う。

@@ -223,6 +223,19 @@ condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 - `warnings` (shared_glob により serial 降格 等) はユーザーに見せる。以降 `<json.routed>` を正とする。
 
 ### Phase 3 — 合意 (main loop / AskUserQuestion)
+
+**autonomy ゲート判定 (合意 Ask の要否)**: 合意提示の前に autonomy モードを決定論的に確認する:
+```bash
+condukt state autonomy-check   # autonomous なら exit 0 + {"autonomous":true}、そうでなければ exit 1 + {"autonomous":false}
+```
+- **exit 1 (非 autonomous・既定)** → 従来どおり。下記の `AskUserQuestion` で合意を取る（後方互換。既定では必ず合意 Ask が出る）。
+- **exit 0 (autonomous)** → 合意の `AskUserQuestion` を**省略**し、`schedule` 結果 (並列バッチ / serial / gated) を
+  **そのまま採用**して Phase 3.5 へ進む。ただし次は autonomy でも縮退させない（安全側の不変）:
+  - `--dry-run` は autonomy でも**必ずここで停止**する（合意省略は「停止しない」ではない）。
+  - `class: "gated"` タスク (deploy/push 等) は autonomy でも実装・承認の対象外のまま (Phase 8 でユーザー承認)。
+  - `confidence: low`/`medium` のタスクは合意を省略しても**ログに明示**し、後段の Phase 6 検証ゲートで担保する。
+
+合意を取る場合 (非 autonomous):
 `schedule` 結果 (並列バッチ / serial / gated) を `AskUserQuestion` で提示し合意を取る。割り直しが
 出たら Decomposition を直して Phase 2 へ戻る。`--dry-run` ならここで停止。
 
@@ -346,30 +359,95 @@ BASELINE_EXIT=$?
 | `peer_tasks` | 並列タスクがあれば必須 | 同バッチの他タスクの `[{id, title, touched_files}]` | スコープ衝突防止 (Devin peer-awareness 相当)。`title + touched_files` の要約のみ。`done_criteria` や diff は含めない |
 | `failure_context` | 再投入時のみ | verifier の `reason` + 失敗テスト出力 + `git diff` | `{reason, failed_tests, diff}` の形式。worker が前回失敗を把握して別アプローチを取る |
 
+#### Phase 5.5 — Self-consistency 合意形成 (opt-in・高リスクタスク限定)
+
+単一サンプル生成は「そのタスク固有の hallucination」を verifier がすり抜けやすい (worker が書いた
+唯一の候補を verifier が見るだけなので、共有盲点が生き残る)。**高リスクタスクに限り**、同一タスクを
+**N 個の独立実装**として生成し、各々を検証し、**多数決 (self-consistency 投票)** で採用候補を選ぶ。
+合意率が閾値を下回れば opus へエスカレーションする。
+
+**コストガード (既定は単一サンプル)**: N-sample 生成は N 倍のコストになるため **既定では発動しない**。
+発動可否は語感で決めず、**バイナリの決定論ゲート**に委ねる (autonomy-check と同じ exit-code 契約):
+```bash
+# risk はタスクの confidence / class から導く: confidence:"low" もしくは class:"serial"(設計判断) の
+# 高リスクタスクにだけ --risk high を渡す。それ以外は --risk を省略する。
+PLAN=$(condukt consensus plan ${RISK:+--risk "$RISK"})   # → {"enabled":bool,"samples":N,"threshold":T,...}
+PLAN_EXIT=$?
+```
+- **exit 1 (enabled:false・既定)** → 従来どおり **単一実装** (Phase 5 の 1 worker → Phase 6)。追加コストなし。
+- **exit 0 (enabled:true)** → config `[consensus] enabled=true` か `CONDUKT_CONSENSUS=1`、または当該タスクが
+  `--risk high`。このタスクだけ以下の fan-out を回す。`samples` (既定 3・上限 5) と `threshold` (既定 0.5) は
+  `$PLAN` から読む。**全 condukt タスクを既定で fan-out しない** (発動は opt-in の高リスクのみ)。
+
+**fan-out 手順** (enabled のタスクのみ):
+1. `samples` 個の候補実装を作る。各候補 `k` に専用 worktree を切り (`condukt worktree create
+   --topic <t.id>-c<k> --branch condukt/<t.id>-c<k>`)、Phase 5 と同じ worker プロンプトで **並列に**
+   起動する (1 メッセージで複数 `Task`)。Task の `description` は `"<t.id>-c<k>: <title>"`。
+2. 各候補を Phase 6 の verifier で検証し (`state check-criteria` → verifier-model 解決 → verifier agent)、
+   `{candidate:"<t.id>-c<k>", pass:<bool>}` の verdict を集める。候補が明確に別アプローチを取っている場合は
+   `group:"<手法の要約>"` を添えると、投票が手法バケット単位の self-consistency になる (省略時は pass 一括投票)。
+3. verdict を `condukt consensus vote` に渡して**決定論的に集計**する:
+   ```bash
+   printf '%s' "$VERDICTS_JSON" | condukt consensus vote   # → {winner, agreement_rate, escalate, escalate_to, ...}
+   CONSENSUS_EXIT=$?   # 0 = 合意成立 (winner 採用) / 1 = 要エスカレーション
+   ```
+   - **exit 0 (escalate:false)** → `winner` の候補 branch を採用する。その候補を `done` に set して
+     Phase 6 の最終記録 (fugu-router 実績) に進み、**採用しなかった候補の worktree は Phase 7 の
+     cleanup で破棄**する (merge しない)。
+   - **exit 1 (escalate:true)** → 全候補 fail・同票 tie・合意率 < threshold のいずれか。**opus へ
+     エスカレーション**する: `escalate_to` (=`opus`) を worker model に指定し、下記
+     「カスケードエスカレーション」に合流して 1 本を再実装させる (tie-break / redo)。合意率が低いこと自体が
+     「タスクが未特定 or 本質的に難しい」というシグナルなので、より強いモデルで解き直す。
+4. 投票・合意率・エスカレーション判定は**すべて `condukt consensus` バイナリが決定論的に**行う
+   (LLM は候補生成と検証という生成/意味判断に専念する)。この fan-out はユーザー承認を挟まず自動で回す
+   (autonomy 不変条件を変えない — 追加の停止点は作らない)。
+
 ### Phase 6 — 検証 (verifier agent) + 実績の記録
 
-**機械的 done_criteria の早期判定（verifier スキップ）**:
-`done_criteria` が以下のような観察可能な事実の確認のみで構成される場合、verifier agent を省略して `Bash` で直接判定する:
-- 特定の文字列が特定のファイルに存在する (`grep`)
-- 特定のファイル/ディレクトリが存在する (`ls`, `test -f`)
-- `cargo test` / `npm test` などのコマンドが exit 0 で終わる
+**機械的 vs 振る舞い的 done_criteria の分類（verifier スキップ判定はバイナリが強制）**:
+verifier を省略してよいかは **プロンプトの語感で判断しない**。`condukt state check-criteria
+--run $RID --task <id>` が決定論的に分類し、JSON を返す（この判定は SKILL.md ではなくバイナリ側で
+固定されており、プロンプト側の解釈でドリフトしない）:
+```bash
+CC=$(condukt state check-criteria --run "$RID" --task "<id>")
+# → {"mechanical":bool,"behavioral":bool,"skip_verifier":bool, ...}
+```
+- **`skip_verifier: true`** の場合のみ verifier agent を省略できる。これは done_criteria が
+  **純粋に機械的**（`cargo test`/`npm test`/`pytest`/backtick コマンド等、観察可能な事実の確認のみ）で、
+  かつその機械チェックが **exit 0 で pass** したときに限る。この場合 `verified` に set してよい。
+- **`skip_verifier: false`** なら **必ず verifier agent を起動する**。特に done_criteria に「実装」
+  「ロジック」「設計」「コード」「振る舞い」「検証」「正しく」等（英語 implement/logic/design/behavior/
+  correct/prove/enforce 等）の**判断を要する語**が含まれる場合は `behavioral: true` となり、
+  たとえ埋め込まれたテストコマンドが通っていても **スキップしない**。通ったテストは verifier に
+  渡す **証拠 (`evidence`)** であって、verifier の**代替ではない**。
+- 分類が曖昧なとき（コマンドが取れない・判定不能）は `skip_verifier: false` に倒れる（安全側 =
+  verifier を回す）。ターンを壊さない原則により、迷ったら必ず verifier を走らせる。
 
-判断基準: `done_criteria` に「実装」「ロジック」「設計」「コード」「振る舞い」等の語が無く、コマンド 1 ～ 3 本で完結するなら機械判定。shell チェックが pass → verified に set、fail → 通常 verifier フローへ（shell 判定は verifier の前段最適化であり、境界は厳しめに取る）。
-
-**`reproduction_tests` の決定論先行実行（LLM verifier 起動前）**:
-タスクに `reproduction_tests` がある場合、verifier agent を起動する**前に** main が worktree 内で
-そのコマンドを直接 `Bash` 実行する（これは LLM 判断ではなく exit code を見るだけの機械処理）:
-- **exit 非 0** → `failed` に set し、**verifier agent を起動しない**（落ちることが決定論で確定済み）。
+**`reproduction_tests` の決定論先行実行（LLM verifier 起動前の証拠収集）**:
+タスクに `reproduction_tests` がある場合、main が worktree 内でそのコマンドを直接 `Bash` 実行する
+（LLM 判断ではなく exit code を見るだけの機械処理）:
+- **exit 非 0** → `failed` に set し、verifier agent を起動しない（落ちることが決定論で確定済み）。
   そのままカスケードエスカレーション（失敗テスト出力を `failure_context.failed_tests` に入れて再投入）へ。
-- **exit 0** → 「テストが通る」型の done_criteria はこの時点で機械的に満たされたとみなし `verified` に set
-  （上の機械判定スキップと同じ扱い）。done_criteria に振る舞い/設計判断の語が残る場合のみ、
-  この exit 0 を**証拠として添えて** verifier agent に渡し最終判定させる。
+- **exit 0** → これは合格の **証拠**にすぎない。`state check-criteria` が `skip_verifier: true`
+  を返したタスク（純粋に機械的な done_criteria）のみ `verified` に set できる。それ以外
+  （`behavioral: true` 等）は exit 0 を **証拠として添えて** verifier agent に渡し最終判定させる
+  ——テスト緑は verifier の代替にならない。
 
-これにより「テストで赤確定」のタスクは LLM verifier 1 本分を丸ごと省け、
-「テスト緑＋機械的合格条件」のタスクも verifier を起動せず確定できる（正確性は同一の決定論コマンドで不変）。
+これにより「テストで赤確定」のタスクは LLM verifier 1 本分を省けつつ、振る舞い的な done_criteria が
+「テストが通ったから正しい」で verifier を素通りする穴（generation と verification の共有盲点の一種）を
+バイナリ側で塞ぐ。
 
 done の各タスクを `condukt-verifier` 相当で done_criteria 照合する。検証する子の **model は
-`<route.json>` の `verifier_model`**(worker と別ティアの独立検証。無ければ既定 sonnet)を使う。
+worker と必ず別モデルにする**（同一モデルだと generation と verification が同じ盲点を共有するため）。
+モデルは語感で選ばず **バイナリに解決させる**:
+```bash
+# worker が実際に使ったモデル（escalation 後の実モデル）を --worker に渡す。
+# --suggested は route.json の verifier_model（あれば）。無ければ省略でよい。
+VM=$(condukt state verifier-model --worker "<worker_model>" --suggested "<route.json.verifier_model>")
+```
+`state verifier-model` は **`verifier_model != worker_model` を保証**する: 別ティアの `--suggested`
+はそのまま採用し、`--suggested` が空 or worker と同一なら worker より 1 ティア上（worker が最上位なら
+1 ティア下）の独立モデルを返す。fugu-router が無く両者が sonnet に落ちる従来の共有盲点はこれで塞がる。
 verifier 起動プロンプトには以下を渡す:
 - `done_criteria`: タスクの合格条件
 - `worktree`: 対象 worktree パス

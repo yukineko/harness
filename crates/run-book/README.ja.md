@@ -64,4 +64,4 @@ runbook uninstall
 
 ### 設定
 
-[`runbook.example.toml`](runbook.example.toml) を参照。`project_dir`、`global_dir`、`include_global`、`prefix`、`index_token`、`max_chars`、`per_runbook_chars` を指定できる。`RUNBOOK_DISABLE=1` で全体を無効化する。
+[`runbook.example.toml`](runbook.example.toml) を参照。`enabled`、`project_dir`、`global_dir`、`include_global`、`prefix`、`index_token`、`max_chars`、`per_runbook_chars` を指定できる。`RUNBOOK_DISABLE=1` で全体を無効化する。

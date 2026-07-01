@@ -1,0 +1,14 @@
+{
+  "name": "yukineko",
+  "owner": { "name": "yukineko" },
+  "metadata": {
+    "description": "yukineko's Claude Code tools. Hosts propguard, a subscription-native property gate that formalizes semantic invariants from done_criteria."
+  },
+  "plugins": [
+    {
+      "name": "propguard",
+      "source": ".",
+      "description": "Property gate: a Stop hook that derives 3–5 semantic properties from a task's done_criteria and checks the generated code against them before the agent finishes — inject a property checklist for the agent to self-verify, or run an independent checker and count per-property PASS/FAIL. Blocks when fewer than a threshold hold. Bundled Rust binary, runs on your Claude subscription; no API key."
+    }
+  ]
+}

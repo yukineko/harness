@@ -9,7 +9,7 @@ tasks can run in parallel*, *managing git worktrees*, *tracking run state*, and
 condukt splits the two:
 
 ```
-LLM  (the /condukt skill + interpreter/worker/verifier agents)
+LLM  (the /condukt skill + interpreter/researcher/worker/verifier agents)
   ├ interpret the request        ─┐
   ├ decompose into tasks (JSON)   │   condukt binary (deterministic)
   ├ implement each task           ├──▶ schedule:  conflict analysis → parallel/serial batches
@@ -19,8 +19,8 @@ LLM  (the /condukt skill + interpreter/worker/verifier agents)
 
 The binary is a single Rust executable exposing one subcommand per job. It is
 **subscription-native**: no `ANTHROPIC_API_KEY`, no separate install for plugin
-users — the work runs inside Claude Code via a skill, three agents, and one
-SessionStart hook.
+users — the work runs inside Claude Code via a skill, four agents, a SessionStart
+hook (`restore`) and a Stop hook (`state record-run --all`).
 
 ## What the engine does
 
@@ -29,15 +29,19 @@ SessionStart hook.
 | `condukt schedule` | read a decomposition JSON, output ordered parallel batches + serial/gated lists. Two tasks share a batch only if their `touched_files` don't conflict and neither depends on the other. |
 | `condukt validate` | check a decomposition JSON (unique ids, known deps, no cycles). |
 | `condukt worktree create/merge/remove/cleanup/list` | git-worktree lifecycle; enforces "path outside the repo" and "one dir = one branch". |
-| `condukt state init/set/show/gate/list` | persist a run's task statuses; `gate` exits non-zero until every task is verified and no worktree is left dirty or unremoved. |
+| `condukt state init/set/show/gate/list` | persist a run's task statuses; `set` accepts `--model`/`--cost` so a recorded outcome reflects the actual (escalated) model and gauge cost; `gate` exits non-zero until every task is verified and no worktree is left dirty or unremoved. |
 | `condukt state conflict-check/abandon/list-tasks/cancel/pause` | cross-session safety + run editing: detect file/goal conflicts before `init`, return stuck `running` tasks to `pending` (`--all-stuck`), list/cancel a run's tasks, pause a conflicting run (see the skill's Phase 0/3.5 and the cancel utility). |
+| `condukt state autonomy-check` | report whether condukt is in autonomous mode (config `autonomous` + `CONDUKT_AUTONOMOUS` env): prints `{"autonomous":<bool>}` and exits 0 when autonomous, 1 when not, so the skill can deterministically degrade human gates (e.g. the Phase 3 agreement) only when autonomous. Off by default (every `AskUserQuestion` still fires — backward compatible). |
+| `condukt state record-run --run <id> \| --all` | deterministically record settled tasks to fugu-router (fired by the Stop hook; idempotent via per-run `recorded_at`; soft no-op when fugu-router is absent). |
 | `condukt knowledge` | emit project-specific conventions/pitfalls injected into the interpreter/worker prompt (soft; empty when none). |
+| `condukt consensus plan/vote` | multi-sample self-consistency (opt-in cost guard). `plan` decides whether a task should fan out into N candidate implementations (exit 0 = fan out, 1 = single sample); `vote` tallies N verifier verdicts into a deterministic majority winner + agreement rate, escalating to opus on all-fail, a tie, or agreement below threshold. |
 | `condukt state stats` | aggregate all runs (complete and incomplete): completion rate, task count, status distribution — useful as a before/after benchmark. |
 | `condukt state reconcile --run <id> [--dry-run]` | auto-promote tasks to `verified` when their branch is already merged into the default branch or has been deleted with its worktree. Fixes stale state after a session crash without manual `state set` calls. |
 | `condukt state resume-context --run <id>` | emit pending/failed/done tasks as JSON for resuming a stopped run across sessions (see Phase 0-alt in the skill). |
 | `condukt state test` | run the project's test suite from the repo root (auto-detects `cargo test` / `npm test` / `pytest`, or uses `[test].command` from config). |
 | `condukt restore` | SessionStart hook: reminds you of unfinished runs / orphan worktrees. |
 | `condukt statusline` | one-line run progress for the `statusLine` setting. |
+| `condukt status [--all]` | show open runs and their tasks as an ASCII tree (`--all` includes closed runs). |
 | `condukt init / install / uninstall` | create `~/.condukt`; manual hook wiring (plugin users don't need these). |
 
 The decomposition schema (what the interpreter agent emits / `schedule` consumes).
@@ -64,8 +68,8 @@ Canonical definition: `agents/condukt-interpreter.md`.
 /plugin install condukt@yukineko
 ```
 
-This bundles the `/condukt` skill, the three agents, the SessionStart hook, and a
-prebuilt binary. Optionally run `condukt init` once to create `~/.condukt` and a
+This bundles the `/condukt` skill, the four agents, the SessionStart + Stop hooks,
+and a prebuilt binary. Optionally run `condukt init` once to create `~/.condukt` and a
 default `config.toml`.
 
 ### Manual (build from source)
@@ -90,11 +94,22 @@ worktree_base  = "~/.condukt/worktrees"  # MUST be outside any repo
 default_branch = "main"
 max_parallel   = 4                        # advisory soft cap on concurrent workers
 shared_globs   = []                       # globs that force a touching task to run serially
+autonomous     = false                    # when true, degrade human gates (Phase 3 agreement) to deterministic defaults
 
 # Command `condukt state test` runs (via `sh -c`, from the repo root).
 # Omit to auto-detect (cargo test / npm test / pytest).
 # [test]
 # command = "cargo test"
+
+# Multi-sample self-consistency (OPT-IN cost guard; OFF by default). When
+# enabled, a high-risk task is implemented N times, verified, and a majority
+# vote picks the winner; low agreement escalates to opus. N-sample generation
+# is N x the cost. A per-task `consensus plan --risk high` forces fan-out even
+# when enabled = false. samples is clamped to a ceiling of 5.
+# [consensus]
+# enabled   = false
+# samples   = 3
+# threshold = 0.5
 ```
 
 `shared_globs` is how you keep workers off project-wide files without hardcoding
@@ -112,6 +127,8 @@ All config file keys can be overridden at runtime with environment variables.
 | `CONDUKT_DEFAULT_BRANCH` | `main` | Branch completed work is merged back into. |
 | `CONDUKT_MAX_PARALLEL` | `4` | Advisory soft cap on concurrent workers. |
 | `CONDUKT_DISABLE` | _(unset)_ | Set to `1` to make the SessionStart/statusline hooks no-op (useful in CI). |
+| `CONDUKT_CONSENSUS` | `false` | Set to `1`/`true` to enable multi-sample self-consistency fan-out (overrides `[consensus] enabled`). Opt-in cost guard; off by default. |
+| `CONDUKT_AUTONOMOUS` | `false` | Set to `1`/`true` to run autonomously (degrades human gates; overrides config `autonomous`). Read by `state autonomy-check`. |
 
 ### `condukt loop` — test-fix cycle
 
@@ -174,6 +191,25 @@ The command is executed via `sh -c`, so quoted arguments, pipes, and env-var
 expansions all work as expected — e.g. `command = "pytest -k 'unit or smoke'"`.
 Running from the repo root (not the cwd of the caller) means auto-detection always
 sees the project manifest even when the caller is in a subdirectory.
+
+## Soft integrations
+
+The `/condukt` skill has **soft dependencies** on several other plugins: each is
+used when its binary is on `PATH` and skipped (soft no-op) otherwise, so condukt
+never hard-requires any of them.
+
+| plugin | where the skill uses it |
+|---|---|
+| `fugu-router` | deterministic model routing (`route`) and playbook search (`procedures search`); outcomes are recorded back via `state record-run`. |
+| `gauge` | per-sub-agent / per-session cost capture (`gauge subagents` ≥ 0.3.0, `gauge session` ≥ 0.2.0) written into `state set --cost`. |
+| `hypothesis` | inject open hypotheses into the interpreter and mark `linked_hypotheses` `awaiting-measurement` after the gate. |
+| `backlog` / `compass` | source the next task when the argument is "what's next" (Phase 0-next). |
+| `schemaguard` | pre-validate the decomposition JSON before `validate` (one re-ask). |
+| `specguard` | post-gate spec-drift audit when `specguard.toml` exists. |
+| `deepwiki` | inject architecture pages into the interpreter and `deepwiki refresh` after the gate. |
+| `tracekit` / `replaykit` | record interpreter→worker→verifier spans and promote the run to a replay golden. |
+| `trajectoryeval` | check a worker's tool-call trajectory against `expected_trajectory` (second verifier dimension). |
+| `curate` | offer to promote a mechanical verified run to an evalkit golden. |
 
 ## Constraints
 

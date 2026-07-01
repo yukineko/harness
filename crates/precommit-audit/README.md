@@ -79,7 +79,10 @@ precommit-audit trust   # trust <root> so its .precommit-audit.toml is honored
 - `--mode precommit` — for a pre-commit-framework / git hook on a human commit.
   Exits **1** on failure. Skips the (Claude Code) review contract.
 - `--mode stop` (default) — for a Claude Code Stop hook. Honors the subagent
-  review contract and exits **2** to feed findings back to the agent.
+  review contract and exits **2** to feed findings back to the agent. Under a
+  **SessionEnd** invocation it runs in **advisory** mode: blocking findings are
+  still surfaced (printed prominently *and* recorded as a `block` in the audit
+  log) but the exit code stays **0**, so the audit can never fail the session.
 - `--config` — defaults to `<root>/.precommit-audit.toml`.
 - `--root` — defaults to `$CLAUDE_PROJECT_DIR`, else the git top-level.
 
@@ -134,7 +137,8 @@ purpose:
 - It runs both as a **git / pre-commit-framework hook on a human commit**
   (`precommit` mode, exit **1** on failure per pre-commit convention) and as a
   **Claude Code Stop hook** (`stop` mode, exit **2** to feed findings back), plus
-  a non-blocking **SessionEnd** pass (exit **0**). A git hook cannot speak
+  an advisory **SessionEnd** pass (exit **0**) that still surfaces and logs
+  blocking findings but never fails the session. A git hook cannot speak
   Claude's JSON `decision:block` protocol, so the **exit-code + block-marker**
   contract is required, not an oversight. Its own `hookio` exists for the same
   dual-mode reason.

@@ -47,10 +47,24 @@ fn collect(root: &Path, args: &[&str], out: &mut Vec<String>) {
     }
 }
 
+/// A reviewable diff plus whether it had to be truncated to fit `max_bytes`.
+///
+/// `truncated == true` means the real change was larger than `max_bytes` and the
+/// tail was dropped. That dropped tail is **unreviewed**: neither the subprocess
+/// reviewer (which only ever saw `text`) nor the inject-mode hash of `text` can
+/// certify it. Callers must therefore never treat a truncated diff as a
+/// complete, reviewed change — doing so would let the tail slip through the gate.
+pub struct DiffText {
+    pub text: String,
+    pub truncated: bool,
+}
+
 /// The combined diff for `files`: unstaged + staged hunks, plus the full text of
 /// any untracked files (which have no diff). Truncated to `max_bytes` with a
-/// marker so a huge diff can't blow up memory or the reviewer prompt.
-pub fn diff_text(root: &Path, files: &[String], max_bytes: usize) -> String {
+/// marker so a huge diff can't blow up memory or the reviewer prompt; the
+/// returned `truncated` flag lets the caller refuse to silently allow a stop
+/// whose tail was dropped.
+pub fn diff_text(root: &Path, files: &[String], max_bytes: usize) -> DiffText {
     let mut s = String::new();
 
     run_diff(root, &["diff", "--"], files, &mut s);
@@ -96,9 +110,12 @@ fn run_diff(root: &Path, base: &[&str], files: &[String], out: &mut String) {
     }
 }
 
-fn truncate_on_boundary(mut s: String, max_bytes: usize) -> String {
+fn truncate_on_boundary(mut s: String, max_bytes: usize) -> DiffText {
     if s.len() <= max_bytes {
-        return s;
+        return DiffText {
+            text: s,
+            truncated: false,
+        };
     }
     let mut cut = max_bytes;
     while cut > 0 && !s.is_char_boundary(cut) {
@@ -106,5 +123,45 @@ fn truncate_on_boundary(mut s: String, max_bytes: usize) -> String {
     }
     s.truncate(cut);
     s.push_str("\n… (diff truncated by reviewgate max_diff_bytes)\n");
-    s
+    DiffText {
+        text: s,
+        truncated: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn under_limit_is_not_truncated() {
+        let d = truncate_on_boundary("short diff".to_string(), 1000);
+        assert!(!d.truncated);
+        assert_eq!(d.text, "short diff");
+    }
+
+    #[test]
+    fn over_limit_is_flagged_and_marked() {
+        let big = "x".repeat(500);
+        let d = truncate_on_boundary(big, 32);
+        assert!(d.truncated, "a diff larger than max_bytes must be flagged");
+        assert!(
+            d.text.contains("truncated"),
+            "the truncation marker must be present: {}",
+            d.text
+        );
+    }
+
+    #[test]
+    fn truncation_respects_char_boundaries() {
+        // Each of these is 3 bytes; cutting at a byte that splits a char must
+        // step back to a boundary rather than panic on truncate().
+        let s = "あいうえお".to_string(); // 15 bytes
+        let d = truncate_on_boundary(s, 7); // 7 is mid-character (6 is a boundary)
+        assert!(d.truncated);
+        // The head before the marker must remain valid UTF-8 (String guarantees
+        // it, so merely constructing d without panicking proves the boundary
+        // walk-back worked).
+        assert!(d.text.starts_with("あい"));
+    }
 }

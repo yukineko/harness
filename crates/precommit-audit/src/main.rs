@@ -244,6 +244,106 @@ fn run() {
     emit_and_exit(&root, &cfg, &mode, fail_exit, &files, issues);
 }
 
+/// The reporter's decision, computed as a *pure value* (no IO, no `exit`) so
+/// the advisory-mode contract can be unit-tested. `emit_and_exit` turns this
+/// plan into actual stderr writes, marker/log side effects, and a process exit.
+struct Emission {
+    /// Full stderr payload to print. Empty string means stay completely silent.
+    stderr: String,
+    /// Audit-log verdict: `"pass"` or `"block"`.
+    verdict: &'static str,
+    /// Sorted, de-duplicated blocking categories, for the audit log.
+    categories: Vec<String>,
+    /// Whether to drop the on-disk block marker (vs. clear it).
+    set_marker: bool,
+    /// Process exit code. Held at 0 in advisory mode even when blocking.
+    exit_code: i32,
+    blocking_count: usize,
+    warning_count: usize,
+}
+
+/// Decide what to print, log, and exit with — without doing any of it.
+///
+/// never-break-a-turn invariant: under SessionEnd this is called with
+/// `fail_exit == 0` (see `run`). Claude Code reports a non-zero hook exit as a
+/// *failed hook*, which would break the turn, so a blocking finding must NEVER
+/// raise the exit code in advisory mode. The advisory contract is
+/// "visualize + record, never block": we therefore still surface the finding
+/// prominently on stderr AND record a `"block"` verdict + marker in the audit
+/// log, while keeping `exit_code == 0`. Blocking findings are never swallowed.
+fn plan_emission(
+    blocking: &[model::Issue],
+    warnings: &[model::Issue],
+    fail_exit: i32,
+    mode: &str,
+) -> Emission {
+    let mut out = String::new();
+
+    // Advisory warnings always print, never affect the exit code.
+    if !warnings.is_empty() {
+        let body = warnings
+            .iter()
+            .map(|w| w.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        out.push_str("=== pre-commit audit WARNING (non-blocking) ===\n\n");
+        out.push_str(&body);
+    }
+
+    if blocking.is_empty() {
+        return Emission {
+            stderr: out,
+            verdict: "pass",
+            categories: Vec::new(),
+            set_marker: false,
+            exit_code: 0,
+            blocking_count: 0,
+            warning_count: warnings.len(),
+        };
+    }
+
+    let mut categories: Vec<String> = blocking.iter().map(|i| i.category.clone()).collect();
+    categories.sort();
+    categories.dedup();
+
+    let body = blocking
+        .iter()
+        .map(|i| i.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let header = if fail_exit == 0 {
+        // SessionEnd: advisory only. never-break-a-turn means the non-zero exit
+        // that would normally block is suppressed here — but the finding is NOT
+        // silently dropped: it is printed prominently and logged as a "block"
+        // verdict below, so the user and the audit log both still see it.
+        "=== pre-commit audit found BLOCKING issues (advisory; session ended -- NOT suppressed) ==="
+    } else if mode == "precommit" {
+        "=== pre-commit audit BLOCKED the git commit ==="
+    } else {
+        "=== pre-commit audit BLOCKED the auto-commit ==="
+    };
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(header);
+    out.push_str("\n\n");
+    out.push_str(&body);
+    out.push_str(
+        "\n\n\
+Required actions:\n  1. Fix the code or add the missing test for each issue above.\n  2. Or suppress with a reasoned marker (reason REQUIRED):\n       Per-line:  append  '# audit-ignore: <reason>'  (use // for JS/TS)\n       Per-file:  add     'audit-ignore-file: <reason>'  in the first 20 lines\n  3. Re-run to re-check.",
+    );
+
+    Emission {
+        stderr: out,
+        verdict: "block",
+        categories,
+        set_marker: true,
+        exit_code: fail_exit,
+        blocking_count: blocking.len(),
+        warning_count: warnings.len(),
+    }
+}
+
 fn emit_and_exit(
     root: &Path,
     cfg: &Config,
@@ -256,67 +356,32 @@ fn emit_and_exit(
         .into_iter()
         .partition(|i| i.severity == Severity::Block);
 
-    // Advisory warnings always print, never affect the exit code.
-    if !warnings.is_empty() {
-        let body = warnings
-            .iter()
-            .map(|w| w.message.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        eprintln!("=== pre-commit audit WARNING (non-blocking) ===\n\n{body}");
+    let plan = plan_emission(&blocking, &warnings, fail_exit, mode);
+
+    if !plan.stderr.is_empty() {
+        eprintln!("{}", plan.stderr);
+    }
+
+    if plan.set_marker {
+        hookio::set_block_marker(root, &cfg.audit_dir);
+    } else {
+        hookio::clear_block_marker(root, &cfg.audit_dir);
     }
 
     let ts = now_iso8601();
-    if blocking.is_empty() {
-        hookio::clear_block_marker(root, &cfg.audit_dir);
-        hookio::write_audit_log(
-            root,
-            &cfg.audit_dir,
-            mode,
-            "pass",
-            0,
-            &[],
-            warnings.len(),
-            files.len(),
-            &ts,
-        );
-        exit(0);
-    }
-
-    hookio::set_block_marker(root, &cfg.audit_dir);
-    let mut cats: Vec<String> = blocking.iter().map(|i| i.category.clone()).collect();
-    cats.sort();
-    cats.dedup();
     hookio::write_audit_log(
         root,
         &cfg.audit_dir,
         mode,
-        "block",
-        blocking.len(),
-        &cats,
-        warnings.len(),
+        plan.verdict,
+        plan.blocking_count,
+        &plan.categories,
+        plan.warning_count,
         files.len(),
         &ts,
     );
 
-    let body = blocking
-        .iter()
-        .map(|i| i.message.clone())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let header = if fail_exit == 0 {
-        // SessionEnd: advisory only — a non-zero exit can't block here.
-        "=== pre-commit audit found blocking issues (advisory; session ended) ==="
-    } else if mode == "precommit" {
-        "=== pre-commit audit BLOCKED the git commit ==="
-    } else {
-        "=== pre-commit audit BLOCKED the auto-commit ==="
-    };
-    eprintln!(
-        "{header}\n\n{body}\n\n\
-Required actions:\n  1. Fix the code or add the missing test for each issue above.\n  2. Or suppress with a reasoned marker (reason REQUIRED):\n       Per-line:  append  '# audit-ignore: <reason>'  (use // for JS/TS)\n       Per-file:  add     'audit-ignore-file: <reason>'  in the first 20 lines\n  3. Re-run to re-check."
-    );
-    exit(fail_exit);
+    exit(plan.exit_code);
 }
 
 /// UTC ISO-8601 timestamp (e.g. 2026-06-12T10:30:00Z) without pulling in a date
@@ -343,6 +408,90 @@ fn now_iso8601() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
     format!("{year:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+#[cfg(test)]
+mod advisory_emission_tests {
+    use super::model::Issue;
+    use super::plan_emission;
+
+    // SessionEnd runs the audit with fail_exit == 0. A blocking finding must be
+    // surfaced (stderr) and recorded (log verdict "block") without ever raising
+    // the exit code — the never-break-a-turn invariant. The bug this guards was
+    // advisory mode silently swallowing blocking findings.
+    #[test]
+    fn advisory_surfaces_blocking_but_never_exits_nonzero() {
+        let blocking = vec![Issue::block(
+            "SECRET",
+            "hardcoded API token in src/foo.rs:12".to_string(),
+        )];
+        let warnings: Vec<Issue> = Vec::new();
+
+        let plan = plan_emission(&blocking, &warnings, 0, "stop");
+
+        // never-break-a-turn: exit stays 0 even though a block was found.
+        assert_eq!(plan.exit_code, 0);
+        // but the finding is NOT swallowed: it is on stderr...
+        assert!(
+            plan.stderr.contains("hardcoded API token in src/foo.rs:12"),
+            "blocking message must reach stderr in advisory mode"
+        );
+        assert!(
+            plan.stderr.to_lowercase().contains("advisory"),
+            "advisory header must make the non-blocking nature explicit"
+        );
+        // ...and it is recorded in the audit log as a real block.
+        assert_eq!(plan.verdict, "block");
+        assert!(plan.set_marker);
+        assert_eq!(plan.blocking_count, 1);
+        assert_eq!(plan.categories, vec!["SECRET".to_string()]);
+    }
+
+    // With zero findings the reporter must stay completely silent.
+    #[test]
+    fn no_findings_is_silent() {
+        let none: Vec<Issue> = Vec::new();
+
+        let plan = plan_emission(&none, &none, 0, "stop");
+
+        assert!(plan.stderr.is_empty(), "no findings must produce no output");
+        assert_eq!(plan.verdict, "pass");
+        assert!(!plan.set_marker);
+        assert_eq!(plan.exit_code, 0);
+        assert_eq!(plan.blocking_count, 0);
+    }
+
+    // Non-advisory modes (Stop=2, precommit=1) must still block via exit code.
+    #[test]
+    fn blocking_modes_still_exit_nonzero() {
+        let blocking = vec![Issue::block("SECRET", "boom".to_string())];
+        let none: Vec<Issue> = Vec::new();
+
+        let stop = plan_emission(&blocking, &none, 2, "stop");
+        assert_eq!(stop.exit_code, 2);
+        assert!(stop.stderr.contains("BLOCKED the auto-commit"));
+        assert_eq!(stop.verdict, "block");
+
+        let pc = plan_emission(&blocking, &none, 1, "precommit");
+        assert_eq!(pc.exit_code, 1);
+        assert!(pc.stderr.contains("BLOCKED the git commit"));
+    }
+
+    // Advisory warnings alone print but never block and log a pass verdict.
+    #[test]
+    fn warnings_alone_print_without_blocking() {
+        let none: Vec<Issue> = Vec::new();
+        let warnings = vec![Issue::warn("STYLE", "trailing whitespace".to_string())];
+
+        let plan = plan_emission(&none, &warnings, 0, "stop");
+
+        assert!(plan.stderr.contains("trailing whitespace"));
+        assert!(plan.stderr.contains("WARNING (non-blocking)"));
+        assert_eq!(plan.verdict, "pass");
+        assert!(!plan.set_marker);
+        assert_eq!(plan.exit_code, 0);
+        assert_eq!(plan.warning_count, 1);
+    }
 }
 
 #[cfg(test)]

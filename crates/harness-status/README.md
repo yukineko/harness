@@ -15,6 +15,14 @@ step in:
 It is **read-only** — it never writes, only aggregates other plugins' stores. No
 hooks, no API key: a single binary you (or a `/status` command) run on demand.
 
+**Activation scope: manual (CLI-only), by design.** harness-status is the unified
+manual human-on-the-loop inspection dashboard. It registers **no hooks** — not
+even a `SessionStart` one — because auto-injecting a dashboard every session would
+grow the always-on injection/hook budget that this very tool (`hooks` / `inject`)
+and [ADR 0001](../ctxrot/docs/adr/0001-cross-harness-injection-budget.md) exist to
+curb. See [`docs/plugin-activation-scopes.md`](../../docs/plugin-activation-scopes.md)
+for the full three-scope taxonomy and the current classification of every plugin.
+
 ## Output
 
 ```
@@ -60,13 +68,25 @@ harness-status                       # full dashboard
 harness-status budget                # today's spend only
 harness-status sessions --sessions 10  # recent sessions (limit N)
 harness-status progress              # progress file only
+harness-status hooks                 # Stop-hook latency aggregation (budget monitor)
+harness-status inject                # UserPromptSubmit injection-size aggregation (budget monitor)
+harness-status plugins               # classify every plugin by activation scope
 harness-status --json                # machine-readable output (any subcommand)
 ```
+
+The `plugins` subcommand scans the monorepo and groups every plugin as
+**always-on** / **event-scoped** / **manual** (see
+[`docs/plugin-activation-scopes.md`](../../docs/plugin-activation-scopes.md)). It
+is a dev/HOTL tool: it classifies from the repo layout, so run it from a checkout.
 
 ## Notes
 
 - A section that reports "not installed" just means that plugin's store is
   absent — not an error.
+- `harness-status hooks` flags any Stop-hook whose latency exceeds
+  `HARNESS_HOOK_LATENCY_BUDGET_MS` (default `30000`).
+- `harness-status inject` flags any UserPromptSubmit injection larger than
+  `HARNESS_INJECT_BUDGET_CHARS` (default `20000`).
 - The date is derived without a clock dependency; override with `HARNESS_DATE=YYYY-MM-DD`
   for testing.
 

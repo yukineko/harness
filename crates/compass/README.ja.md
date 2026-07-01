@@ -14,7 +14,7 @@ compass は、プロジェクトの方向（北極星）と完成定義（defini
 | `definition_of_done` | 観測可能な完成条件（condukt の `done_criteria` と同じ語彙） |
 | `measuring_stick` | 次の一手をどう測るか（既定: 防御可能性 × ゴールへの近さ ÷ コスト） |
 | `current_gap` | ゴール − 現状の要約（毎ラウンド再計算） |
-| `next_action` | 再開時の最初の物理的な一歩（Stop の breadcrumb が書く） |
+| `next_action` | 再開時の最初の物理的な一歩（SessionEnd の breadcrumb が書く） |
 | `parked` | 保留した仕事へのポインタ（本体は taskprog の progress.md に置く） |
 
 判定（ゴールを彫る・gap を読む・一手を選ぶ）は Claude Code セッション内の LLM 労働であり、バイナリは状態維持と決定論的な context 生成のみを担う。バイナリ自身は LLM も `AskUserQuestion` も呼ばない。**subscription で完結**し、API キーは不要。
@@ -65,14 +65,14 @@ evaluate ─► carve ループ ─► charter ─► gap ─► (condukt 分解
 どちらも決定的・非ブロッキングで、エラー時も exit 0（再接地 hook はターンを壊してはならない）:
 
 - **SessionStart = `compass nudge`** — C1/C2 の決定的 floor のみ（LLM 不使用）。charter が無い/霞む/drift 疑いなら「`/compass` で再接地を」と一行 nudge する。
-- **Stop = `compass breadcrumb`** — 本体の最終応答から明示的な ```` ```compass-next ```` ブロックを抽出し `charter.next_action` へ書き戻す。推測はせず、ブロックが無ければ何もしない。
+- **SessionEnd = `compass breadcrumb`** — 本体の最終応答から明示的な ```` ```compass-next ```` ブロックを抽出し `charter.next_action` へ書き戻す。推測はせず、ブロックが無ければ何もしない。
 
 ### サブコマンド
 
 | サブコマンド | 目的 |
 |---|---|
-| `compass nudge` | SessionStart 鮮度 nudge（C1/C2 floor） |
-| `compass breadcrumb` | Stop hook: 次の物理的な一歩を charter へ書く |
+| `compass nudge [--json]` | SessionStart 鮮度 nudge（C1/C2 floor）。`--json` は `{fresh, reason}` を出力し、下流 driver（例: flow）が同じ floor で gate できる |
+| `compass breadcrumb` | SessionEnd hook: 次の物理的な一歩を charter へ書く |
 | `compass evaluate` | C1/C2 の open questions を JSON 出力し carve 状態を init/load |
 | `compass apply --answer <JSON>` | 人間の回答を 1 つ畳み込み、C1/C2 再評価、永続化 |
 | `compass carve-reset` | 永続化された carve 状態をクリア |
@@ -80,6 +80,9 @@ evaluate ─► carve ループ ─► charter ─► gap ─► (condukt 分解
 | `compass route [--file <path>]` | 分解を size triage し、残りを park |
 | `compass charter` / `--write <JSON>` | charter＋config の表示 / 彫れた charter の永続化 |
 | `compass outcome --verdict <…> --evidence <text>` | 完了した一手の verdict を記録（証拠必須） |
+| `compass pivot-check` | 直近 outcome ストリークから pivot/persevere シグナルを `{recommendation, streak, threshold, reason}` で出力（常に exit 0、flow の gate 用） |
+| `compass opportunity add --title <T> [--outcome <ref>] [--weight <f>]` | active outcome（既定は charter `north_star`）配下に named bet（PDO OST）を記録 |
+| `compass opportunity list [--json] [--outcome <ref>]` | active outcome 配下の named bet を一覧。`--json` は JSON 配列で出力 |
 
 ### config（`.compass/config.toml`、すべて任意・既定値）
 

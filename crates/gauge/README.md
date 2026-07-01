@@ -20,6 +20,12 @@ latest write holds the whole session to date:
 - first/last timestamp → session duration
 - **estimated cost**, from a built-in price table (overridable per model)
 
+`gauge report` then rolls these up by project, model, and day; `gauge subagents`
+instead reads each sub-agent (`Task`) transcript **live**
+(`<session>/subagents/agent-<id>.jsonl`) and attributes cost per `Task`
+invocation, so a caller like condukt can record real per-task cost rather than
+one lumped session total.
+
 The hook only *observes*: it runs panic-guarded and always exits 0, so bad
 stdin, a missing transcript, or an unwritable store record nothing rather than
 break the turn. `GAUGE_DISABLE=1` turns recording off entirely.
@@ -41,6 +47,7 @@ gauge report                       # totals + breakdown by project / model / day
 gauge report --project myrepo      # filter by project
 gauge report --since 2026-06-01    # filter by day
 gauge session                      # details for the most recent session
+gauge subagents                    # per-sub-agent (Task) cost, read live from transcripts
 gauge status                       # resolved config, store path, session count
 gauge init                         # write a starter ./gauge.toml
 ```

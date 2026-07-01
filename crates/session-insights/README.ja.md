@@ -40,6 +40,7 @@ session-insights は、1 セッションで「実際に何が起きたか」を 
 session-insights report          # 最新セッション
 session-insights report --session <id-prefix>
 session-insights report --all    # 記録済みセッションを 1 行ずつ
+session-insights report --context # context-governor の台帳健全性も併記する
 ```
 
 ```
@@ -58,6 +59,33 @@ session a1b2c3d4  [2026-06-20T18:00:00+09:00]
 
 `/record` のステップ 5 では、独立 `backlog` クレートと突き合わせて、このセッションで片付いた項目を `backlog done <id>` で閉じ、`## 残課題` の未了項目を `backlog add` で登録する。
 
+### backlog（セッション横断の未了課題）
+
+セッションをまたぐ永続キューは、独立した [`backlog`](../backlog) クレート（`~/.backlog/tasks.toml`）が単一の正典として担う。SessionStart で pending タスクを注入するのも backlog 自身のフックだ。session-insights は独自の backlog ストアを持たず、旧 `session-insights backlog` サブコマンドと `<vault>/backlog.md` / `backlog.json` は削除済み。
+
+```sh
+backlog add --title "darwin-x86_64 を x86 Mac で再ビルド" --project harness
+backlog list --project harness --status pending
+backlog done <id>          # 完了項目を閉じる
+```
+
+旧 `session-insights backlog` を使っていて state ディレクトリに `backlog.json` が残っている場合は、その open 項目を一度だけ標準 `backlog` に移せばよい（`backlog add` は project+title で重複排除するため冪等）。
+
+```sh
+STATE_DIR="$HOME/.session-insights/state"
+BACKLOG_JSON="$STATE_DIR/backlog.json"
+if [ -s "$BACKLOG_JSON" ]; then
+  jq -r '.[] | select(.status=="open") | [.project, .text] | @tsv' "$BACKLOG_JSON" \
+    | while IFS=$'\t' read -r project text; do
+        [ -n "$text" ] && backlog add --title "$text" --project "${project:-default}"
+      done
+else
+  echo "no backlog.json to migrate (nothing to do)"
+fi
+```
+
+移行後は `backlog.json`（および session-insights が生成しなくなった `<vault>/backlog.md`）を削除してよい。
+
 ### Obsidian ログ（オプトイン）
 
 `obsidian_log = true` にして `obsidian_vault` を自分の vault に向けると、SessionEnd ごとにセッションが `<vault>/sessions/<date>-<id>.md` にフロントマター（`type: session`、size、category、turns…）つきで書き出される——ただし vault ディレクトリが既に存在する場合のみ（vault は決して作らない）。
@@ -66,7 +94,7 @@ session a1b2c3d4  [2026-06-20T18:00:00+09:00]
 
 ```sh
 cargo install --path .
-session-insights install      # PostToolUse + Stop（SessionEnd）フックをマージ
+session-insights install      # PostToolUse + SessionEnd フックをマージ
 session-insights report --all
 session-insights status        # 解決済み設定を表示
 session-insights uninstall
@@ -78,4 +106,11 @@ session-insights uninstall
 
 `./session-insights.toml`（プロジェクト）または `~/.session-insights/config.toml`（グローバル）を置く。最初に見つかったものが優先される。`size_thresholds`（XS–XL の下限）、`ignore_tools`、`obsidian_log` / `obsidian_vault`、`state_dir` などを調整できる。`SESSION_INSIGHTS_DISABLE=1` で無効化できる。
 
-同梱の `bin/session-insights-*` バイナリがプラグインの実体なので、エンドユーザーは cargo も API キーも不要だ。
+### ビルド
+
+```sh
+make bins     # bin/session-insights-darwin-<arch> と -linux-x86_64 を更新
+cargo test
+```
+
+コミット済みの `bin/session-insights-*` バイナリがプラグインの実体なので、エンドユーザーは cargo も API キーも不要だ。

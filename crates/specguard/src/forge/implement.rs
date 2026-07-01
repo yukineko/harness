@@ -77,8 +77,140 @@ struct ParsedImpl {
     evidence_note: Option<String>,
 }
 
+/// Result of the harness independently running a declared `test_cmd`.
+struct TestRun {
+    passed: bool,
+    /// Tail of combined stdout+stderr, for the evidence note on failure.
+    output_tail: String,
+}
+
+/// Run `test_cmd` via `sh -c` in `dir`, trusting its exit code. Returns `None`
+/// only if the command could not be spawned at all (treated as unverifiable — a
+/// non-zero exit is a *ran-and-failed*, which is verified evidence, not None).
+fn run_test_cmd(dir: &Path, test_cmd: &str) -> Option<TestRun> {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(test_cmd)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    Some(TestRun {
+        passed: out.status.success(),
+        output_tail: tail_lines(&combined, 40),
+    })
+}
+
+/// Keep the last `n` non-empty-trimmed lines of `s` (for compact evidence notes).
+fn tail_lines(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n").trim_end().to_string()
+}
+
+/// Join an optional agent-supplied note with a harness-supplied note.
+fn compose_note(agent: Option<&str>, harness: &str) -> String {
+    match agent {
+        Some(a) if !a.trim().is_empty() => format!("{a}\n[harness] {harness}"),
+        _ => format!("[harness] {harness}"),
+    }
+}
+
+/// The harness's authoritative verdict after independently checking the agent's
+/// self-reported result.
+struct Reconciled {
+    status: String,
+    test_result: Option<String>,
+    evidence_note: Option<String>,
+}
+
+/// Reconcile the agent's *claimed* result with the harness's independent test
+/// run. This is the gate: a self-reported `done`/`test_result:pass` is NOT
+/// accepted on the agent's word — only the harness's own exit code makes a
+/// requirement `done`. Pure (no I/O) so it is unit-testable.
+///
+/// - non-`done` claims pass through untouched (they are not claiming success).
+/// - `done` + harness run passed → stays `done`, `test_result` = harness-verified.
+/// - `done` + harness run failed → downgraded to `failed` (self-report refuted).
+/// - `done` + no runnable `test_cmd` → fail-closed: downgraded to `partial`
+///   (`unverified`) so it cannot auto-merge, unless `require_verification` is
+///   off (escape hatch), in which case the self-report is trusted but labelled.
+fn reconcile(
+    base_status: &str,
+    test_cmd: Option<&str>,
+    run: Option<&TestRun>,
+    agent_test_result: Option<&str>,
+    agent_note: Option<&str>,
+    require_verification: bool,
+) -> Reconciled {
+    if base_status != "done" {
+        return Reconciled {
+            status: base_status.to_string(),
+            test_result: agent_test_result.map(|s| s.to_string()),
+            evidence_note: agent_note.map(|s| s.to_string()),
+        };
+    }
+    match run {
+        Some(r) if r.passed => Reconciled {
+            status: "done".to_string(),
+            test_result: Some("pass (harness-verified)".to_string()),
+            evidence_note: agent_note.map(|s| s.to_string()),
+        },
+        Some(r) => {
+            let note = compose_note(
+                agent_note,
+                &format!(
+                    "ハーネスが test_cmd を worktree で独立実行したが FAIL — 自己申告の \
+                     test_result:pass を棄却し done にしない。\n--- test output (tail) ---\n{}",
+                    r.output_tail
+                ),
+            );
+            Reconciled {
+                status: "failed".to_string(),
+                test_result: Some("fail (harness-verified)".to_string()),
+                evidence_note: Some(note),
+            }
+        }
+        None => {
+            if require_verification {
+                let why = match test_cmd {
+                    Some(cmd) if !cmd.trim().is_empty() => {
+                        format!("test_cmd `{cmd}` を独立実行できなかった")
+                    }
+                    _ => "test_cmd が未指定で独立検証できない".to_string(),
+                };
+                let note = compose_note(
+                    agent_note,
+                    &format!(
+                        "{why} — 証拠なしの自己申告 done は受理しない (fail-closed)。検証可能な \
+                         test_cmd を付けて再実行するか、どうしても人間の手動確認で前進するなら \
+                         config で [evidence] require_verification=false を設定 (escape hatch)。"
+                    ),
+                );
+                Reconciled {
+                    status: "partial".to_string(),
+                    test_result: Some("unverified".to_string()),
+                    evidence_note: Some(note),
+                }
+            } else {
+                let tr = agent_test_result.unwrap_or("(none)");
+                Reconciled {
+                    status: "done".to_string(),
+                    test_result: Some(format!("{tr} (self-reported, unverified)")),
+                    evidence_note: agent_note.map(|s| s.to_string()),
+                }
+            }
+        }
+    }
+}
+
 /// Run one impl task: create a worktree, run the agent, parse output, tear down
 /// the worktree if no changes were made (cheapest path).
+///
+/// `require_verification` fail-closes the evidence gate: when set, a self-reported
+/// `done` is only accepted if the harness re-runs the declared `test_cmd` here in
+/// the worktree and it passes (see [`reconcile`]).
 pub fn run_task(
     repo_root: &Path,
     spec_id: &str,
@@ -86,6 +218,7 @@ pub fn run_task(
     prompt: &str,
     worktree_base: &Path,
     cfg: &AgentConfig,
+    require_verification: bool,
 ) -> ImplResult {
     let wt_name = format!("{spec_id}-{req_id}");
     let wt_path = worktree_base.join(&wt_name);
@@ -117,17 +250,40 @@ pub fn run_task(
 
     let parsed = parse_impl_output(&out.stdout);
 
+    let base_status = if !parsed.found || parsed.status.is_empty() {
+        "no-marker".to_string()
+    } else {
+        parsed.status.clone()
+    };
+
+    // ⑥ evidence gate, first floor: do NOT accept a self-reported `done` on the
+    // agent's word. Independently re-run the declared test_cmd in the worktree
+    // and trust ITS exit code (reconcile decides the authoritative status).
+    let test_run = if base_status == "done" {
+        parsed
+            .test_cmd
+            .as_deref()
+            .filter(|c| !c.trim().is_empty())
+            .and_then(|cmd| run_test_cmd(&effective_root, cmd))
+    } else {
+        None
+    };
+    let verdict = reconcile(
+        &base_status,
+        parsed.test_cmd.as_deref(),
+        test_run.as_ref(),
+        parsed.test_result.as_deref(),
+        parsed.evidence_note.as_deref(),
+        require_verification,
+    );
+
     let result = ImplResult {
         spec_id: spec_id.to_string(),
         req_id: req_id.to_string(),
-        status: if !parsed.found || parsed.status.is_empty() {
-            "no-marker".to_string()
-        } else {
-            parsed.status
-        },
+        status: verdict.status,
         test_cmd: parsed.test_cmd,
-        test_result: parsed.test_result,
-        evidence_note: parsed.evidence_note,
+        test_result: verdict.test_result,
+        evidence_note: verdict.evidence_note,
         worktree: if worktree_created {
             Some(wt_path.to_string_lossy().to_string())
         } else {
@@ -173,6 +329,7 @@ pub fn run_parallel(
     tasks: Vec<TaskInput>,
     worktree_base: &Path,
     cfg: &AgentConfig,
+    require_verification: bool,
 ) -> Vec<ImplResult> {
     // Fan-out in chunks of MAX_PARALLEL.
     let repo_root = repo_root.to_path_buf();
@@ -185,7 +342,17 @@ pub fn run_parallel(
             let rr = repo_root.clone();
             let wb = worktree_base.clone();
             let cfg2 = cfg.clone();
-            thread::spawn(move || run_task(&rr, &t.spec_id, &t.req_id, &t.prompt, &wb, &cfg2))
+            thread::spawn(move || {
+                run_task(
+                    &rr,
+                    &t.spec_id,
+                    &t.req_id,
+                    &t.prompt,
+                    &wb,
+                    &cfg2,
+                    require_verification,
+                )
+            })
         })
         .collect();
 
@@ -276,5 +443,165 @@ mod tests {
         assert_eq!(p.status, "partial");
         assert!(p.test_result.is_none());
         assert_eq!(p.evidence_note.as_deref(), Some("blocked on missing canon"));
+    }
+
+    // ── ⑥ evidence gate: no self-reported `done` without harness evidence ──────
+
+    #[test]
+    fn self_reported_done_without_test_cmd_is_not_accepted() {
+        // Agent claims done + pass but gave no runnable test_cmd → fail-closed:
+        // the harness refuses `done` and downgrades to a non-mergeable `partial`.
+        let r = reconcile("done", None, None, Some("pass"), None, true);
+        assert_eq!(r.status, "partial", "unverified done must not stay done");
+        assert_eq!(r.test_result.as_deref(), Some("unverified"));
+        let note = r.evidence_note.unwrap();
+        assert!(
+            note.contains("fail-closed"),
+            "note explains refusal: {note}"
+        );
+        assert!(
+            note.contains("require_verification=false"),
+            "note points at the escape hatch: {note}"
+        );
+    }
+
+    #[test]
+    fn self_reported_done_with_unrunnable_test_cmd_is_not_accepted() {
+        // A test_cmd was declared but could not be run (run == None) → still
+        // unverifiable, still refused.
+        let r = reconcile(
+            "done",
+            Some("cargo test clamp"),
+            None,
+            Some("pass"),
+            None,
+            true,
+        );
+        assert_eq!(r.status, "partial");
+        assert_eq!(r.test_result.as_deref(), Some("unverified"));
+        assert!(r.evidence_note.unwrap().contains("cargo test clamp"));
+    }
+
+    #[test]
+    fn independent_pass_keeps_done_and_relabels_evidence() {
+        let run = TestRun {
+            passed: true,
+            output_tail: "test result: ok".into(),
+        };
+        let r = reconcile(
+            "done",
+            Some("cargo test"),
+            Some(&run),
+            Some("pass"),
+            None,
+            true,
+        );
+        assert_eq!(r.status, "done");
+        assert_eq!(
+            r.test_result.as_deref(),
+            Some("pass (harness-verified)"),
+            "test_result reflects the harness run, not the agent's claim"
+        );
+    }
+
+    #[test]
+    fn independent_fail_refutes_self_reported_pass() {
+        // Agent lied: claimed pass, but the harness run failed. Must not be done.
+        let run = TestRun {
+            passed: false,
+            output_tail: "assertion failed: boom".into(),
+        };
+        let r = reconcile(
+            "done",
+            Some("cargo test"),
+            Some(&run),
+            Some("pass"),
+            None,
+            true,
+        );
+        assert_eq!(r.status, "failed", "refuted claim is not mergeable");
+        assert_eq!(r.test_result.as_deref(), Some("fail (harness-verified)"));
+        let note = r.evidence_note.unwrap();
+        assert!(note.contains("棄却"), "note records the refutation: {note}");
+        assert!(note.contains("boom"), "captured test output: {note}");
+    }
+
+    #[test]
+    fn escape_hatch_trusts_self_report_but_labels_it() {
+        // require_verification=false: the project opted out of harness runs. The
+        // self-report is honoured but clearly marked as unverified.
+        let r = reconcile("done", None, None, Some("pass"), None, false);
+        assert_eq!(r.status, "done");
+        assert!(
+            r.test_result.as_deref().unwrap().contains("self-reported"),
+            "escape-hatch pass is labelled: {:?}",
+            r.test_result
+        );
+    }
+
+    #[test]
+    fn non_done_statuses_pass_through_untouched() {
+        for s in ["partial", "failed", "no-marker"] {
+            let r = reconcile(s, Some("cargo test"), None, Some("skip"), Some("n"), true);
+            assert_eq!(r.status, s, "{s} must not be altered");
+            assert_eq!(r.test_result.as_deref(), Some("skip"));
+            assert_eq!(r.evidence_note.as_deref(), Some("n"));
+        }
+    }
+
+    #[test]
+    fn agent_note_is_preserved_alongside_harness_note() {
+        let run = TestRun {
+            passed: false,
+            output_tail: "err".into(),
+        };
+        let r = reconcile(
+            "done",
+            Some("cargo test"),
+            Some(&run),
+            Some("pass"),
+            Some("実装メモ"),
+            true,
+        );
+        let note = r.evidence_note.unwrap();
+        assert!(note.contains("実装メモ"), "agent note kept: {note}");
+        assert!(note.contains("[harness]"), "harness note appended: {note}");
+    }
+
+    #[test]
+    fn run_test_cmd_true_passes_false_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ok = run_test_cmd(tmp.path(), "true").expect("sh spawns");
+        assert!(ok.passed);
+        let bad = run_test_cmd(tmp.path(), "false").expect("sh spawns");
+        assert!(!bad.passed);
+    }
+
+    #[test]
+    fn run_test_cmd_captures_output_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run = run_test_cmd(tmp.path(), "echo boom-marker; exit 1").expect("sh spawns");
+        assert!(!run.passed);
+        assert!(
+            run.output_tail.contains("boom-marker"),
+            "tail: {}",
+            run.output_tail
+        );
+    }
+
+    #[test]
+    fn run_test_cmd_runs_in_the_given_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("sentinel.txt"), "x").unwrap();
+        // Passes only if cwd is the worktree dir where sentinel.txt exists.
+        let run = run_test_cmd(tmp.path(), "test -f sentinel.txt").expect("sh spawns");
+        assert!(run.passed, "test_cmd must run in the worktree dir");
+    }
+
+    #[test]
+    fn tail_lines_keeps_last_n() {
+        let s = "a\nb\nc\nd\ne";
+        assert_eq!(tail_lines(s, 2), "d\ne");
+        assert_eq!(tail_lines(s, 100), "a\nb\nc\nd\ne");
     }
 }

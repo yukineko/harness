@@ -1,5 +1,7 @@
 # budgetguard
 
+> 🌐 **English** ・ [日本語](README.ja.md)
+
 **Real-time cost budget gate for Claude Code**, written in Rust.
 
 gauge observes; budgetguard *controls*. On every Stop it reads the session
@@ -39,6 +41,18 @@ deterministically. Nothing leaves the machine.
 - A harness error (bad config, unreadable transcript, our own bug) → exits 0.
 - `BUDGETGUARD_DISABLE=1` → hook is a no-op.
 
+## Why
+
+Left running, an LLM agent's cost climbs quietly. An observation tool like
+gauge tells you *how much you spent* after the fact — but that is a post-hoc
+report; it does not stop the turn that is running. A runaway loop or an
+unexpectedly expensive session keeps growing until someone looks at a dashboard.
+
+budgetguard fills that gap. By turning cost into a Stop gate, it enforces
+**hard** per-session and per-day limits and hands the overage back to the agent
+itself so it can land safely. It is the harness for when you need control, not
+just observation.
+
 ## Install (plugin)
 
 Via the marketplace (the catalog lives at the root of this repo, `yukineko/claude-harnesses`):
@@ -47,6 +61,9 @@ Via the marketplace (the catalog lives at the root of this repo, `yukineko/claud
 /plugin marketplace add yukineko/claude-harnesses
 /plugin install budgetguard@yukineko
 ```
+
+**Subscription-native** — it runs on a single Stop hook plus the bundled Rust
+binary; no `ANTHROPIC_API_KEY`, no extra install.
 
 ## Manual install (from source)
 
@@ -74,11 +91,12 @@ block_usd = 20.00
 ## Commands
 
 ```sh
-budgetguard gate      # Stop hook (reads stdin JSON, emits decision)
-budgetguard status    # resolved config + today's spend
-budgetguard init      # write a starter budgetguard.toml
-budgetguard install   # merge the hook into ~/.claude/settings.json
-budgetguard uninstall # remove it
+budgetguard gate           # Stop hook (reads stdin JSON, emits decision)
+budgetguard status         # resolved config + today's spend
+budgetguard status --json  # machine-readable budget pressure (feeds fugu-router)
+budgetguard init           # write a starter budgetguard.toml
+budgetguard install        # merge the hook into ~/.claude/settings.json
+budgetguard uninstall      # remove it
 ```
 
 ## Pricing

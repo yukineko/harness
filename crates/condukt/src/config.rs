@@ -32,6 +32,23 @@ pub struct Config {
     pub deploy_command: Option<String>,
     /// Loop feature: max iterations before the loop gives up. Defaults to 10.
     pub loop_max_iters: usize,
+    /// Autonomy mode: when true, the /condukt skill downgrades its human gates
+    /// (e.g. the Phase 3 decomposition agreement) to deterministic defaults so the
+    /// loop can run with no user approval beyond genuinely-needed information.
+    /// Defaults to false (every existing AskUserQuestion still fires — fully
+    /// backward compatible). Read by `condukt state autonomy-check`.
+    pub autonomous: bool,
+    /// Multi-sample self-consistency (cost guard). When true, `condukt consensus
+    /// plan` fans a task out into N candidate implementations, verifies each, and
+    /// takes a majority vote. OFF by default: N-sample generation is N× the cost,
+    /// so it is opt-in per project (or per high-risk task via `--risk high`).
+    /// Read by `condukt consensus plan`. Overridable via `CONDUKT_CONSENSUS`.
+    pub consensus_enabled: bool,
+    /// Fan-out width when consensus is enabled. Defaults to 3; clamped to a
+    /// documented ceiling (`consensus::MAX_SAMPLES`) so it can never run away.
+    pub consensus_samples: usize,
+    /// Agreement threshold below which a task escalates to opus. Defaults to 0.5.
+    pub consensus_threshold: f64,
 }
 
 /// Which test-fix cycle sequence to use for a module type.
@@ -78,6 +95,13 @@ struct FileLoopConfig {
 }
 
 #[derive(Default, Deserialize)]
+struct FileConsensusConfig {
+    enabled: Option<bool>,
+    samples: Option<usize>,
+    threshold: Option<f64>,
+}
+
+#[derive(Default, Deserialize)]
 struct FileConfig {
     worktree_base: Option<String>,
     default_branch: Option<String>,
@@ -86,8 +110,21 @@ struct FileConfig {
     state_dir: Option<String>,
     test: Option<FileTestConfig>,
     stuck_ttl_secs: Option<u64>,
+    autonomous: Option<bool>,
     #[serde(rename = "loop")]
     loop_cfg: Option<FileLoopConfig>,
+    consensus: Option<FileConsensusConfig>,
+}
+
+/// Parse the `CONDUKT_AUTONOMOUS` env override. Accepts common truthy/falsy
+/// spellings so the switch can be forced either way from the environment
+/// (overriding config.toml). Unrecognized values leave config untouched.
+fn parse_autonomous_env(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 /// `~/.condukt` (falls back to `./.condukt` if there is no home dir). Thin
@@ -110,6 +147,10 @@ impl Config {
             build_command: None,
             deploy_command: None,
             loop_max_iters: 10,
+            autonomous: false,
+            consensus_enabled: false,
+            consensus_samples: crate::consensus::DEFAULT_SAMPLES,
+            consensus_threshold: crate::consensus::DEFAULT_THRESHOLD,
         };
 
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
@@ -135,6 +176,9 @@ impl Config {
                 if let Some(v) = fc.stuck_ttl_secs {
                     cfg.stuck_ttl_secs = v;
                 }
+                if let Some(v) = fc.autonomous {
+                    cfg.autonomous = v;
+                }
                 if let Some(lc) = fc.loop_cfg {
                     if let Some(v) = lc.build_command {
                         cfg.build_command = Some(v);
@@ -144,6 +188,17 @@ impl Config {
                     }
                     if let Some(v) = lc.max_iters {
                         cfg.loop_max_iters = v;
+                    }
+                }
+                if let Some(cc) = fc.consensus {
+                    if let Some(v) = cc.enabled {
+                        cfg.consensus_enabled = v;
+                    }
+                    if let Some(v) = cc.samples {
+                        cfg.consensus_samples = v;
+                    }
+                    if let Some(v) = cc.threshold {
+                        cfg.consensus_threshold = v;
                     }
                 }
             }
@@ -163,6 +218,18 @@ impl Config {
         if let Ok(v) = std::env::var("CONDUKT_STUCK_TTL_SECS") {
             if let Ok(n) = v.parse() {
                 cfg.stuck_ttl_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("CONDUKT_AUTONOMOUS") {
+            if let Some(b) = parse_autonomous_env(&v) {
+                cfg.autonomous = b;
+            }
+        }
+        // Reuses the generic truthy/falsy parser (despite its name) to force the
+        // self-consistency switch from the environment, overriding config.toml.
+        if let Ok(v) = std::env::var("CONDUKT_CONSENSUS") {
+            if let Some(b) = parse_autonomous_env(&v) {
+                cfg.consensus_enabled = b;
             }
         }
         cfg
@@ -222,5 +289,34 @@ max_iters = 5
         let toml = "";
         let fc: FileConfig = toml::from_str(toml).expect("should parse");
         assert!(fc.loop_cfg.is_none());
+    }
+
+    #[test]
+    fn autonomous_parses_from_toml() {
+        let fc: FileConfig = toml::from_str("autonomous = true").expect("should parse");
+        assert_eq!(fc.autonomous, Some(true));
+    }
+
+    #[test]
+    fn autonomous_defaults_none_when_absent() {
+        let fc: FileConfig = toml::from_str("").expect("should parse");
+        assert_eq!(fc.autonomous, None);
+    }
+
+    #[test]
+    fn autonomous_env_truthy_and_falsy() {
+        for v in ["1", "true", "TRUE", "yes", "on", " True "] {
+            assert_eq!(parse_autonomous_env(v), Some(true), "{v:?} should be true");
+        }
+        for v in ["0", "false", "No", "off"] {
+            assert_eq!(
+                parse_autonomous_env(v),
+                Some(false),
+                "{v:?} should be false"
+            );
+        }
+        for v in ["", "maybe", "2", "enabled"] {
+            assert_eq!(parse_autonomous_env(v), None, "{v:?} should be None");
+        }
     }
 }
