@@ -1,0 +1,36 @@
+# propguard.example.toml — copy to ./propguard.toml (or ~/.propguard/config.toml).
+#
+# On Stop, propguard derives 3–5 semantic properties (invariants) from the current
+# task's done_criteria and checks the generated code against them before the agent
+# can declare done. It blocks when fewer than `threshold` properties hold.
+#
+#   mode = "inject"     block once per new diff and inject the property checklist;
+#                       the running agent self-verifies its code (no API key).
+#   mode = "subprocess" run `checker_cmd` as an independent checker that reports
+#                       one `PROP <id>: PASS|FAIL` line per property.
+#
+# done_criteria is sourced (in priority order) from: the PROPGUARD_CRITERIA env
+# var, the `criteria_file` below (condukt / the agent writes it), then the inline
+# `done_criteria` value. With no source, every stop is allowed.
+
+enabled = true
+mode = "inject"
+
+min_properties = 3        # floor: pad with baseline invariants if criteria is thin
+max_properties = 5        # cap (the task formalizes 3–5 properties)
+threshold = 3             # block when fewer than this many properties hold
+max_attempts = 2          # consecutive rounds before giving up (allow stop)
+reset_after_secs = 600    # per-session counter resets after this idle gap
+min_changed_files = 1     # don't check fewer than this many changed files
+max_diff_bytes = 200000   # cap the diff handed to the hasher / checker
+
+criteria_file = ".propguard-criteria"
+
+# include = ["**/*.rs", "**/*.ts", "**/*.py"]
+# exclude = ["**/*.lock", "**/node_modules/**", "**/target/**"]
+
+# done_criteria = "冪等に再実行でき、失敗時は panic せずエラーを返し、出力スキーマを壊さないこと"
+
+# subprocess mode only:
+# checker_cmd = "claude -p"
+# checker_timeout_secs = 300

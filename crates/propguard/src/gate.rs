@@ -1,0 +1,819 @@
+//! The gate proper: source the task's done_criteria, derive its semantic
+//! properties, gather the generated-code diff, and decide whether to block the
+//! stop. Two modes:
+//!
+//!   * `inject` — block once per new diff state and inject the property checklist;
+//!     the running subscription agent self-verifies its own code against each
+//!     property (no API key, no extra process). Because the hook itself can't
+//!     count how many properties actually hold, the first pass treats the diff as
+//!     *unverified* (satisfied = 0), which is below any threshold ≥ 1, so it
+//!     blocks; once the agent has addressed the checklist the same diff is
+//!     allowed.
+//!   * `subprocess` — run an independent checker over the properties + diff. The
+//!     checker reports one `PROP <id>: PASS|FAIL` line per property; propguard
+//!     counts the PASSes and blocks when that count is below `threshold`.
+//!
+//! The single place the numeric block threshold is enforced is
+//! [`below_threshold`]: the stop is blocked iff `satisfied < threshold`.
+//!
+//! Fail-closed, but bounded and escapable. Environment errors that predate any
+//! check (no git repo, no done_criteria, nothing checkable) always allow — the
+//! gate never invents a finding. A checker that itself fails (crash / timeout /
+//! unparseable output) does NOT allow silently: it blocks up to `max_attempts`
+//! with a loud, escapable reason, then gives up loudly, so a broken checker can
+//! never become a bypass. A truncated diff (unchecked tail) is treated the same
+//! way. A genuine *tool* error still exits 0 via the panic guard in `main`.
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use globset::{Glob, GlobSetBuilder};
+use wait_timeout::ChildExt;
+
+use crate::config::{Config, Mode};
+use crate::derive::{derive_properties, source_criteria, Property};
+
+/// **The block threshold.** The stop is blocked iff fewer than `threshold` of
+/// the derived properties are satisfied. This is the one enforcement point the
+/// task asks for ("閾値未満でブロックする経路"): both modes route through it.
+pub fn below_threshold(satisfied: usize, threshold: usize) -> bool {
+    satisfied < threshold
+}
+
+/// What the gate decided. `tag` is a short label for the JSONL log.
+pub enum Decision {
+    Allow {
+        tag: &'static str,
+        attempts: u32,
+        last_hash: String,
+    },
+    Block {
+        reason: String,
+        tag: &'static str,
+        files: Vec<String>,
+        properties: Vec<&'static str>,
+        attempts: u32,
+        last_hash: String,
+    },
+}
+
+/// Files that changed *and* are worth checking (match include, not exclude).
+pub fn checkable_files(cfg: &Config, changed: &[String]) -> Vec<String> {
+    let inc = build_set(&cfg.include);
+    let exc = build_set(&cfg.exclude);
+    changed
+        .iter()
+        .filter(|f| {
+            inc.as_ref().map(|s| s.is_match(f)).unwrap_or(true)
+                && !exc.as_ref().map(|s| s.is_match(f)).unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
+fn build_set(globs: &[String]) -> Option<globset::GlobSet> {
+    let mut b = GlobSetBuilder::new();
+    let mut any = false;
+    for g in globs {
+        if let Ok(glob) = Glob::new(g) {
+            b.add(glob);
+            any = true;
+        }
+    }
+    if !any {
+        return None;
+    }
+    b.build().ok()
+}
+
+fn hash_props(diff: &str, props: &[Property]) -> String {
+    let mut h = DefaultHasher::new();
+    diff.hash(&mut h);
+    for p in props {
+        p.id.hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+fn now() -> i64 {
+    chrono::Local::now().timestamp()
+}
+
+/// Effective threshold: the configured threshold, clamped to the number of
+/// properties actually derived so it can never be permanently unsatisfiable.
+fn effective_threshold(cfg: &Config, n_props: usize) -> usize {
+    cfg.threshold.min(n_props).max(1)
+}
+
+/// Core decision. `st` is the loaded prior session state.
+pub fn evaluate(cfg: &Config, root: &Path, st: &crate::state::SessionState) -> Decision {
+    // 1. Source the task's done_criteria. No criteria ⇒ nothing to formalize.
+    let Some(criteria) = source_criteria(cfg, root) else {
+        return allow("no-criteria", st);
+    };
+
+    // 2. Derive the semantic properties (deterministic, capped 3–5).
+    let props = derive_properties(&criteria, cfg.min_properties, cfg.max_properties);
+    if props.is_empty() {
+        return allow("no-properties", st);
+    }
+    let threshold = effective_threshold(cfg, props.len());
+
+    // 3. Gather the generated-code diff to check the properties against.
+    let Some(changed) = crate::git::changed_files(root) else {
+        return allow("no-git", st);
+    };
+    let files = checkable_files(cfg, &changed);
+    if files.len() < cfg.min_changed_files {
+        return allow("no-code-changes", st);
+    }
+    let crate::git::DiffText {
+        text: diff,
+        truncated,
+    } = crate::git::diff_text(root, &files, cfg.max_diff_bytes);
+    if diff.trim().is_empty() {
+        return allow("empty-diff", st);
+    }
+
+    // Attempt counter resets after an idle gap (a fresh turn).
+    let prior_attempts = if now() - st.last_ts > cfg.reset_after_secs {
+        0
+    } else {
+        st.attempts
+    };
+
+    // Truncation guard (fail closed, bounded): the tail was dropped and is
+    // unchecked, so neither the checker nor the "already-verified" convergence
+    // can honestly certify the whole change. Block rather than let it slip.
+    if truncated {
+        return decide_truncated(cfg, &props, files, prior_attempts);
+    }
+
+    let hash = hash_props(&diff, &props);
+
+    // Same (diff, properties) we already forced a check of → already verified.
+    if !st.last_hash.is_empty() && st.last_hash == hash {
+        return allow("already-verified", st);
+    }
+
+    match cfg.mode {
+        Mode::Inject => {
+            // The hook can't itself judge whether each property holds, so a new
+            // diff is unverified: satisfied = 0, which is below any threshold ≥ 1.
+            decide_from_count(
+                cfg,
+                CheckOutcome::Verified {
+                    satisfied: 0,
+                    findings: None,
+                },
+                &props,
+                threshold,
+                files,
+                hash,
+                prior_attempts,
+                &criteria,
+            )
+        }
+        Mode::Subprocess => {
+            let outcome = run_checker(cfg, &criteria, &props, &diff);
+            decide_from_count(
+                cfg,
+                outcome,
+                &props,
+                threshold,
+                files,
+                hash,
+                prior_attempts,
+                &criteria,
+            )
+        }
+    }
+}
+
+/// The outcome of trying to establish how many properties hold.
+pub enum CheckOutcome {
+    /// A count of satisfied properties was established (0 in inject mode's first
+    /// pass; a parsed PASS count in subprocess mode). `findings` carries the
+    /// checker's per-property verdict text, if any.
+    Verified {
+        satisfied: usize,
+        findings: Option<String>,
+    },
+    /// The checker itself failed (crash / timeout / unusable output). Never the
+    /// same as "checked and satisfied" — must not become a silent bypass.
+    Error(String),
+}
+
+/// Turn a `CheckOutcome` into a `Decision`, enforcing the block threshold.
+/// Split out from `evaluate` so the threshold logic is unit-testable without
+/// git or a real checker subprocess.
+#[allow(clippy::too_many_arguments)]
+pub fn decide_from_count(
+    cfg: &Config,
+    outcome: CheckOutcome,
+    props: &[Property],
+    threshold: usize,
+    files: Vec<String>,
+    hash: String,
+    prior_attempts: u32,
+    criteria: &str,
+) -> Decision {
+    let prop_ids: Vec<&'static str> = props.iter().map(|p| p.id).collect();
+    match outcome {
+        CheckOutcome::Error(e) => {
+            // Fail closed but bounded: block up to max_attempts, then give up
+            // loudly so a permanently broken checker can't trap the turn.
+            let attempts = prior_attempts + 1;
+            if attempts > cfg.max_attempts {
+                eprintln!(
+                    "propguard: WARNING checker still unavailable after {max} attempt(s) \
+                     ({e}) — allowing the stop with properties UNVERIFIED. Fix checker_cmd \
+                     (see `propguard status`) or set PROPGUARD_DISABLE=1.",
+                    max = cfg.max_attempts,
+                );
+                return Decision::Allow {
+                    tag: "checker-error-giveup",
+                    attempts: 0,
+                    last_hash: String::new(),
+                };
+            }
+            Decision::Block {
+                reason: checker_unavailable_reason(&e, attempts, cfg.max_attempts),
+                tag: "checker-unavailable",
+                files,
+                properties: prop_ids,
+                attempts,
+                last_hash: String::new(),
+            }
+        }
+        CheckOutcome::Verified {
+            satisfied,
+            findings,
+        } => {
+            // ---- THE THRESHOLD ENFORCEMENT POINT ----
+            if !below_threshold(satisfied, threshold) {
+                // Enough properties hold: allow, and record the hash so the same
+                // (diff, properties) is not re-checked.
+                return Decision::Allow {
+                    tag: "properties-satisfied",
+                    attempts: 0,
+                    last_hash: hash,
+                };
+            }
+            // Below threshold → block (bounded by max_attempts).
+            let attempts = prior_attempts + 1;
+            if attempts > cfg.max_attempts {
+                return Decision::Allow {
+                    tag: "giveup",
+                    attempts: 0,
+                    last_hash: String::new(),
+                };
+            }
+            let reason = block_reason(
+                cfg,
+                criteria,
+                props,
+                satisfied,
+                threshold,
+                &files,
+                findings.as_deref(),
+                attempts,
+            );
+            Decision::Block {
+                reason,
+                tag: "below-threshold",
+                files,
+                properties: prop_ids,
+                attempts,
+                last_hash: hash,
+            }
+        }
+    }
+}
+
+fn allow(tag: &'static str, st: &crate::state::SessionState) -> Decision {
+    Decision::Allow {
+        tag,
+        attempts: 0,
+        last_hash: st.last_hash.clone(),
+    }
+}
+
+/// A truncated diff has an unchecked tail. Fail closed but bounded, then give up
+/// loudly — same shape as reviewgate's truncation guard.
+fn decide_truncated(
+    cfg: &Config,
+    props: &[Property],
+    files: Vec<String>,
+    prior_attempts: u32,
+) -> Decision {
+    let prop_ids: Vec<&'static str> = props.iter().map(|p| p.id).collect();
+    let attempts = prior_attempts + 1;
+    if attempts > cfg.max_attempts {
+        eprintln!(
+            "propguard: WARNING diff still exceeds max_diff_bytes ({max_bytes} B) after \
+             {max} attempt(s) — allowing the stop with the truncated tail UNCHECKED. Split the \
+             change, raise max_diff_bytes, or set PROPGUARD_DISABLE=1.",
+            max_bytes = cfg.max_diff_bytes,
+            max = cfg.max_attempts,
+        );
+        return Decision::Allow {
+            tag: "truncated-giveup",
+            attempts: 0,
+            last_hash: String::new(),
+        };
+    }
+    Decision::Block {
+        reason: truncated_reason(cfg, &files, attempts, cfg.max_attempts),
+        tag: "diff-truncated",
+        files,
+        properties: prop_ids,
+        attempts,
+        last_hash: String::new(),
+    }
+}
+
+fn file_list(files: &[String]) -> String {
+    let mut s = String::new();
+    for f in files.iter().take(40) {
+        s.push_str("  ");
+        s.push_str(f);
+        s.push('\n');
+    }
+    if files.len() > 40 {
+        s.push_str(&format!("  … (+{} more)\n", files.len() - 40));
+    }
+    s
+}
+
+fn property_list(props: &[Property]) -> String {
+    let mut s = String::new();
+    for (i, p) in props.iter().enumerate() {
+        s.push_str(&format!(
+            "  {}. [{}] {}\n     → {}\n",
+            i + 1,
+            p.id,
+            p.title,
+            p.check_hint
+        ));
+    }
+    s
+}
+
+/// The block reason handed back to the agent when fewer than `threshold`
+/// properties are (known to be) satisfied. In inject mode `findings` is None and
+/// `satisfied` is 0 (the diff is unverified); in subprocess mode `findings`
+/// carries the checker's per-property verdicts.
+#[allow(clippy::too_many_arguments)]
+fn block_reason(
+    _cfg: &Config,
+    criteria: &str,
+    props: &[Property],
+    satisfied: usize,
+    threshold: usize,
+    files: &[String],
+    findings: Option<&str>,
+    attempt: u32,
+) -> String {
+    let findings_block = match findings {
+        Some(f) if !f.trim().is_empty() => {
+            format!(
+                "--- チェッカーの判定 ---\n{}\n------------------------\n\n",
+                f.trim()
+            )
+        }
+        _ => String::new(),
+    };
+    format!(
+        "🧪 propguard: 生成コードが満たすべき semantic property が閾値に達していません \
+         (round {attempt}). satisfied={satisfied} < threshold={threshold}.\n\n\
+         done_criteria から導出した検査対象プロパティ:\n{props}\n\
+         対象ファイル ({n} files):\n{list}\n\
+         {findings}\
+         各プロパティについて自分の生成コードを検証し、成り立たないものを修正してから完了してください。\
+         少なくとも {threshold} 個が成り立つことを確認し、結果を簡潔に報告すること \
+         (誤検知だと判断したものは理由を述べて構いません)。\n\n\
+         元の done_criteria:\n  {criteria}\n\n\
+         このチェックを1回だけスキップ: project root に `.propguard-skip` を作成 (理由を1行)。\
+         完全に無効化: 環境変数 PROPGUARD_DISABLE=1。",
+        attempt = attempt,
+        satisfied = satisfied,
+        threshold = threshold,
+        props = property_list(props),
+        n = files.len(),
+        list = file_list(files),
+        findings = findings_block,
+        criteria = criteria.trim(),
+    )
+}
+
+fn checker_unavailable_reason(err: &str, attempt: u32, max: u32) -> String {
+    format!(
+        "🚧 propguard: 独立プロパティチェッカーを実行できませんでした (round {attempt}/{max}).\n\n\
+         checker_cmd がエラー / タイムアウト / 解析不能でした:\n  {err}\n\n\
+         これは「プロパティ充足」ではありません。壊れたチェッカーを無言で通過させると gate が\
+         バイパスになるため、この停止を一時的にブロックしています。{max}回連続で失敗した場合は\
+         警告を出して通過を許可します (永久にはブロックしません)。\n\n\
+         前に進むには次のいずれか:\n\
+         - checker_cmd を修正する (`propguard status` で解決済みコマンドを確認)。\n\
+         - このチェックを1回だけスキップ: project root に `.propguard-skip` を作成 (理由を1行)。\n\
+         - propguard を完全に無効化: 環境変数 PROPGUARD_DISABLE=1。",
+        attempt = attempt,
+        max = max,
+        err = err.trim(),
+    )
+}
+
+fn truncated_reason(cfg: &Config, files: &[String], attempt: u32, max: u32) -> String {
+    format!(
+        "🚧 propguard: 変更差分が大きすぎてプロパティ検査用に切り詰められました (round {attempt}/{max}).\n\n\
+         diff が max_diff_bytes ({max_bytes} B) を超えたため末尾が検査対象から欠落しています。\
+         欠落分は検査されていないため、この停止を無言で許可すると未検査の変更が gate をすり抜けます。\
+         {max}回連続で解消しなければ警告を出して通過を許可します (永久にはブロックしません)。\n\n\
+         対象ファイル ({n} files):\n{list}\
+         前に進むには次のいずれか:\n\
+         - 変更を小さく分割し、それぞれが max_diff_bytes に収まるようにする。\n\
+         - max_diff_bytes を引き上げる (現在 {max_bytes} B)。\n\
+         - このチェックを1回だけスキップ: `.propguard-skip` を作成。完全に無効化: PROPGUARD_DISABLE=1。",
+        attempt = attempt,
+        max = max,
+        max_bytes = cfg.max_diff_bytes,
+        n = files.len(),
+        list = file_list(files),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// subprocess mode: an independent checker reports per-property PASS/FAIL.
+// ---------------------------------------------------------------------------
+
+/// Run `checker_cmd`, feeding it the properties + diff on stdin and reading a
+/// `PROP <id>: PASS|FAIL` verdict per property on stdout.
+fn run_checker(cfg: &Config, criteria: &str, props: &[Property], diff: &str) -> CheckOutcome {
+    let prompt = format!(
+        "あなたは独立したプロパティ検査官です。以下の done_criteria から導出された semantic property が、\
+         提示された git diff の生成コードで成り立つかを 1 つずつ判定してください。\n\n\
+         done_criteria:\n{criteria}\n\n\
+         プロパティ:\n{props}\n\
+         各プロパティについて、次の形式で厳密に1行ずつ出力してください (他の行は無視されます):\n\
+         PROP <id>: PASS   または   PROP <id>: FAIL — 理由\n\n\
+         --- diff ---\n{diff}\n",
+        criteria = criteria.trim(),
+        props = property_list(props),
+        diff = diff,
+    );
+
+    let mut cmd = build_command(&cfg.checker_cmd);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return CheckOutcome::Error(format!("spawn: {e}")),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prompt.as_bytes());
+    }
+
+    let timeout = Duration::from_secs(cfg.checker_timeout_secs);
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => {
+            let mut out = String::new();
+            if let Some(mut so) = child.stdout.take() {
+                use std::io::Read;
+                let _ = so.read_to_string(&mut out);
+            }
+            if !status.success() && out.trim().is_empty() {
+                return CheckOutcome::Error(format!("exit {:?}", status.code()));
+            }
+            parse_checker_output(&out, props)
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            CheckOutcome::Error("timed out".to_string())
+        }
+        Err(e) => CheckOutcome::Error(format!("wait: {e}")),
+    }
+}
+
+/// Parse `PROP <id>: PASS|FAIL` lines. A property is counted satisfied only when
+/// its id is explicitly reported PASS. Output that mentions none of the derived
+/// property ids is unusable → Error (fail closed), never silently "all pass".
+pub fn parse_checker_output(out: &str, props: &[Property]) -> CheckOutcome {
+    let lower = out.to_lowercase();
+    let mut satisfied = 0usize;
+    let mut seen_any = false;
+    for p in props {
+        // Find a line naming this property id and read its PASS/FAIL verdict.
+        for line in lower.lines() {
+            if line.contains("prop") && line.contains(&p.id.to_lowercase()) {
+                seen_any = true;
+                // PASS only if the verdict is PASS and not FAIL.
+                if line.contains("pass") && !line.contains("fail") {
+                    satisfied += 1;
+                }
+                break;
+            }
+        }
+    }
+    if !seen_any {
+        return CheckOutcome::Error(format!(
+            "checker output named none of the {} derived properties",
+            props.len()
+        ));
+    }
+    CheckOutcome::Verified {
+        satisfied,
+        findings: Some(out.trim().to_string()),
+    }
+}
+
+fn build_command(cmdline: &str) -> Command {
+    let needs_shell = cmdline.contains(|c| "|&;<>(){}$`\\\"'*?".contains(c));
+    if needs_shell {
+        harness_core::shell::command(cmdline)
+    } else {
+        let mut parts = cmdline.split_whitespace();
+        let prog = parts.next().unwrap_or("claude");
+        let mut c = Command::new(prog);
+        c.args(parts);
+        c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::derive::CATALOG;
+
+    fn props_by_ids(ids: &[&str]) -> Vec<Property> {
+        ids.iter()
+            .map(|id| *CATALOG.iter().find(|p| p.id == *id).unwrap())
+            .collect()
+    }
+
+    fn cfg_default() -> Config {
+        Config::default() // threshold 3, max_attempts 2
+    }
+
+    // ── include/exclude filtering ──────────────────────────────────────────
+    #[test]
+    fn include_exclude_filtering() {
+        let cfg = Config {
+            include: vec!["**/*.rs".to_string()],
+            exclude: vec!["**/target/**".to_string()],
+            ..Config::default()
+        };
+        let changed = vec![
+            "src/main.rs".to_string(),
+            "README.md".to_string(),
+            "target/x.rs".to_string(),
+        ];
+        assert_eq!(
+            checkable_files(&cfg, &changed),
+            vec!["src/main.rs".to_string()]
+        );
+    }
+
+    // ── the threshold enforcement point ────────────────────────────────────
+
+    /// At or above the threshold → ALLOW, and the hash is recorded.
+    #[test]
+    fn at_threshold_allows_and_records_hash() {
+        let cfg = cfg_default();
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let d = decide_from_count(
+            &cfg,
+            CheckOutcome::Verified {
+                satisfied: 3,
+                findings: None,
+            },
+            &props,
+            3,
+            vec!["src/x.rs".to_string()],
+            "hashabc".to_string(),
+            0,
+            "dc",
+        );
+        match d {
+            Decision::Allow { tag, last_hash, .. } => {
+                assert_eq!(tag, "properties-satisfied");
+                assert_eq!(
+                    last_hash, "hashabc",
+                    "a satisfied check must record the hash"
+                );
+            }
+            Decision::Block { .. } => panic!("satisfied >= threshold must allow"),
+        }
+    }
+
+    /// Below the threshold → BLOCK, naming the properties.
+    #[test]
+    fn below_threshold_blocks() {
+        let cfg = cfg_default();
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let d = decide_from_count(
+            &cfg,
+            CheckOutcome::Verified {
+                satisfied: 1,
+                findings: Some("PROP error-path: FAIL — panics".to_string()),
+            },
+            &props,
+            3,
+            vec!["src/x.rs".to_string()],
+            "hashabc".to_string(),
+            0,
+            "handle errors",
+        );
+        match d {
+            Decision::Block {
+                tag,
+                reason,
+                properties,
+                ..
+            } => {
+                assert_eq!(tag, "below-threshold");
+                assert!(properties.contains(&"error-path"));
+                assert!(reason.contains("threshold=3"));
+                assert!(
+                    reason.contains("PROPGUARD_DISABLE"),
+                    "must name an escape hatch"
+                );
+            }
+            Decision::Allow { .. } => panic!("satisfied < threshold must block"),
+        }
+    }
+
+    /// Inject mode's first pass (satisfied = 0) is below any threshold ≥ 1 → block.
+    #[test]
+    fn inject_first_pass_blocks_as_unverified() {
+        let cfg = cfg_default();
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let d = decide_from_count(
+            &cfg,
+            CheckOutcome::Verified {
+                satisfied: 0,
+                findings: None,
+            },
+            &props,
+            3,
+            vec!["src/x.rs".to_string()],
+            "h".to_string(),
+            0,
+            "dc",
+        );
+        assert!(matches!(d, Decision::Block { .. }));
+    }
+
+    /// Bounded: after max_attempts consecutive below-threshold stops, give up.
+    #[test]
+    fn below_threshold_gives_up_after_max_attempts() {
+        let cfg = cfg_default(); // max_attempts = 2
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let d = decide_from_count(
+            &cfg,
+            CheckOutcome::Verified {
+                satisfied: 0,
+                findings: None,
+            },
+            &props,
+            3,
+            vec!["src/x.rs".to_string()],
+            "h".to_string(),
+            cfg.max_attempts,
+            "dc",
+        );
+        match d {
+            Decision::Allow { tag, .. } => assert_eq!(tag, "giveup"),
+            Decision::Block { .. } => panic!("must give up so the turn is never trapped"),
+        }
+    }
+
+    // ── checker error must not become a silent bypass ──────────────────────
+    #[test]
+    fn checker_error_blocks_it_does_not_allow() {
+        let cfg = cfg_default();
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let d = decide_from_count(
+            &cfg,
+            CheckOutcome::Error("spawn: boom".to_string()),
+            &props,
+            3,
+            vec!["src/x.rs".to_string()],
+            "h".to_string(),
+            0,
+            "dc",
+        );
+        match d {
+            Decision::Block { tag, reason, .. } => {
+                assert_eq!(tag, "checker-unavailable");
+                assert!(reason.contains("PROPGUARD_DISABLE"));
+            }
+            Decision::Allow { .. } => panic!("checker error must block (fail-closed), not allow"),
+        }
+    }
+
+    #[test]
+    fn checker_error_gives_up_after_max_attempts_but_never_traps() {
+        let cfg = cfg_default();
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let d = decide_from_count(
+            &cfg,
+            CheckOutcome::Error("still broken".to_string()),
+            &props,
+            3,
+            vec!["src/x.rs".to_string()],
+            "h".to_string(),
+            cfg.max_attempts,
+            "dc",
+        );
+        match d {
+            Decision::Allow { tag, .. } => assert_eq!(tag, "checker-error-giveup"),
+            Decision::Block { .. } => panic!("must give up after max_attempts"),
+        }
+    }
+
+    // ── checker output parsing ─────────────────────────────────────────────
+    #[test]
+    fn parse_counts_only_explicit_pass() {
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let out = "PROP error-path: PASS\nPROP output-schema: FAIL — schema changed\nPROP determinism: PASS";
+        match parse_checker_output(out, &props) {
+            CheckOutcome::Verified { satisfied, .. } => assert_eq!(satisfied, 2),
+            CheckOutcome::Error(e) => panic!("should parse: {e}"),
+        }
+    }
+
+    #[test]
+    fn parse_unrelated_output_is_error_not_all_pass() {
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        // Output that names none of the property ids must fail closed, not be
+        // mistaken for "everything passed".
+        match parse_checker_output("looks good to me!", &props) {
+            CheckOutcome::Error(_) => {}
+            CheckOutcome::Verified { .. } => {
+                panic!("unusable checker output must be an Error (fail closed), not all-pass")
+            }
+        }
+    }
+
+    #[test]
+    fn unspawnable_checker_is_error() {
+        let cfg = Config {
+            checker_cmd: "propguard-no-such-binary-xyzzy".to_string(),
+            ..Config::default()
+        };
+        let props = props_by_ids(&["error-path"]);
+        match run_checker(&cfg, "dc", &props, "diff") {
+            CheckOutcome::Error(_) => {}
+            CheckOutcome::Verified { .. } => panic!("an unspawnable checker must be an Error"),
+        }
+    }
+
+    // ── truncation guard ───────────────────────────────────────────────────
+    #[test]
+    fn truncated_diff_blocks_then_gives_up() {
+        let cfg = cfg_default();
+        let props = props_by_ids(&["error-path", "output-schema", "determinism"]);
+        let d = decide_truncated(&cfg, &props, vec!["src/x.rs".to_string()], 0);
+        match d {
+            Decision::Block {
+                tag,
+                last_hash,
+                reason,
+                ..
+            } => {
+                assert_eq!(tag, "diff-truncated");
+                assert!(last_hash.is_empty(), "must not certify an unchecked tail");
+                assert!(reason.contains("max_diff_bytes"));
+            }
+            Decision::Allow { .. } => panic!("a truncated diff must block, not silently allow"),
+        }
+        let g = decide_truncated(&cfg, &props, vec!["src/x.rs".to_string()], cfg.max_attempts);
+        assert!(matches!(g, Decision::Allow { tag, .. } if tag == "truncated-giveup"));
+    }
+
+    #[test]
+    fn effective_threshold_is_clamped_to_property_count() {
+        let cfg = Config {
+            threshold: 5,
+            ..Config::default()
+        };
+        // Only 2 properties derived → threshold can't exceed 2.
+        assert_eq!(effective_threshold(&cfg, 2), 2);
+    }
+
+    #[test]
+    fn below_threshold_is_the_single_comparison() {
+        assert!(below_threshold(0, 3));
+        assert!(below_threshold(2, 3));
+        assert!(!below_threshold(3, 3));
+        assert!(!below_threshold(4, 3));
+    }
+}
