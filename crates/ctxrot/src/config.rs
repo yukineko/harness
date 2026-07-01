@@ -126,13 +126,20 @@ pub struct Config {
     // ---- Stop-hook auto-compact (feature ⑤) ------------------------------------
     /// Master switch for the Stop-hook-driven auto-compact trigger.
     /// When true, the `ctxrot stop` handler returns `{"decision":"block"}` when
-    /// context usage exceeds `auto_compact_at_percentage`, asking Claude to run
-    /// `/compact`. Requires `ctxrot stop` to be wired in hooks.json.
+    /// the budget-meter usage crosses into a new band at/above
+    /// `auto_compact_at_percentage`, asking Claude to run `/compact`. Requires
+    /// `ctxrot stop` to be wired in hooks.json. The block is bounded (once per
+    /// band crossing) so it can never permanently trap a turn.
     /// Default false (opt-in). env: `CTXROT_AUTO_COMPACT=1`
     pub auto_compact_enabled: bool,
-    /// Context-usage fraction (0.0–1.0) at which the Stop hook triggers the
-    /// auto-compact nudge. Default 0.90 (90 %). Only meaningful when
-    /// `auto_compact_enabled` is true. env: `CTXROT_AUTO_COMPACT_AT_PERCENTAGE`
+    /// Fraction (0.0–1.0) at which the Stop hook triggers the auto-compact nudge.
+    /// SEMANTIC (changed in 0.5.0): interpreted against ctxrot's OWN budget meter
+    /// — `est_tokens / context_window`, the same estimate `ctxrot guard` /
+    /// `ctxrot usage` band from (which can read >100%) — NOT the raw model-window
+    /// `context_window.used_percentage`. So 0.90 means "90 % of the configured
+    /// budget", which fires far earlier (and correctly) versus the true ~1M
+    /// window. Default 0.90. Only meaningful when `auto_compact_enabled` is true.
+    /// env: `CTXROT_AUTO_COMPACT_AT_PERCENTAGE`
     pub auto_compact_at_percentage: f64,
 }
 
