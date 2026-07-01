@@ -125,6 +125,7 @@ fn gate_command() -> ! {
 }
 
 fn gate_run(hook: Option<HookInput>) -> ! {
+    let __start = std::time::Instant::now();
     let interactive = hook.is_none();
     let input = hook.unwrap_or_default();
     let root = input.cwd_or_current();
@@ -133,6 +134,7 @@ fn gate_run(hook: Option<HookInput>) -> ! {
         if interactive {
             eprintln!("donegate: disabled (DONEGATE_DISABLE)");
         }
+        harness_core::hook_latency::record("donegate", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -151,6 +153,7 @@ fn gate_run(hook: Option<HookInput>) -> ! {
                 }
             );
         }
+        harness_core::hook_latency::record("donegate", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -161,6 +164,11 @@ fn gate_run(hook: Option<HookInput>) -> ! {
         state::reset(&cfg.state_dir, &session);
         log_event(&cfg, &session, "skip", &[], 0);
         eprintln!("donegate: .donegate-skip consumed — allowing stop ({reason})");
+        harness_core::hook_latency::record(
+            "donegate",
+            &session,
+            __start.elapsed().as_millis() as u64,
+        );
         std::process::exit(0);
     }
 
@@ -172,6 +180,11 @@ fn gate_run(hook: Option<HookInput>) -> ! {
         if interactive {
             println!("{}", gate::human_report(&verdict));
         }
+        harness_core::hook_latency::record(
+            "donegate",
+            &session,
+            __start.elapsed().as_millis() as u64,
+        );
         std::process::exit(0);
     }
 
@@ -189,6 +202,11 @@ fn gate_run(hook: Option<HookInput>) -> ! {
             cfg.max_attempts,
             failing.join(", ")
         );
+        harness_core::hook_latency::record(
+            "donegate",
+            &session,
+            __start.elapsed().as_millis() as u64,
+        );
         std::process::exit(0);
     }
 
@@ -198,10 +216,16 @@ fn gate_run(hook: Option<HookInput>) -> ! {
     if interactive {
         eprintln!("{}", gate::human_report(&verdict));
         eprintln!("\n{reason}");
+        harness_core::hook_latency::record(
+            "donegate",
+            &session,
+            __start.elapsed().as_millis() as u64,
+        );
         std::process::exit(1);
     }
     // Stop hook: JSON decision blocks the stop; exit 0.
     println!("{}", json!({ "decision": "block", "reason": reason }));
+    harness_core::hook_latency::record("donegate", &session, __start.elapsed().as_millis() as u64);
     std::process::exit(0);
 }
 

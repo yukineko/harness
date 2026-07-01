@@ -1,6 +1,7 @@
 //! Terminal-friendly display of the full HOTL status.
 
 use crate::budget::BudgetStatus;
+use crate::hooks::{sess8, HookLatencyReport};
 use crate::progress::ProgressStatus;
 use crate::sessions::SessionSummary;
 
@@ -9,6 +10,7 @@ pub fn print_status(
     budget: &BudgetStatus,
     sessions: &[SessionSummary],
     progress: &ProgressStatus,
+    hooks: &HookLatencyReport,
     cwd_display: &str,
 ) {
     println!("╔══════════════════════════════════════════════╗");
@@ -65,6 +67,29 @@ pub fn print_status(
         println!("  Run `taskprog init` or `/taskprog` to create one.");
     }
     println!();
+
+    // Stop-hook latency (only the 3 heavy 600s gates record; see the contract).
+    println!("── Stop-hook latency (donegate/reviewgate/propguard) ──");
+    if hooks.sessions.is_empty() {
+        println!("  [no Stop-hook latency recorded]");
+    } else {
+        println!("  budget: {}ms", hooks.budget_ms);
+        for s in &hooks.sessions {
+            let flag = if s.over_budget {
+                "  ⚠ OVER BUDGET"
+            } else {
+                ""
+            };
+            println!(
+                "  {} | {}ms across {} hooks{}",
+                sess8(&s.session),
+                s.total_ms,
+                s.per_hook.len(),
+                flag
+            );
+        }
+    }
+    println!();
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -80,12 +105,14 @@ pub fn print_json(
     budget: &BudgetStatus,
     sessions: &[SessionSummary],
     progress: &ProgressStatus,
+    hooks: &HookLatencyReport,
 ) {
     let out = serde_json::json!({
         "date": today,
         "budget": budget,
         "recent_sessions": sessions,
         "progress": progress,
+        "hook_latency": hooks,
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
 }

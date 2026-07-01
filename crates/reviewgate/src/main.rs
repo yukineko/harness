@@ -121,6 +121,7 @@ fn review_command() -> ! {
 }
 
 fn review_run(hook: Option<HookInput>) -> ! {
+    let __start = std::time::Instant::now();
     let interactive = hook.is_none();
     let input = hook.unwrap_or_default();
     let root = input.cwd_or_current();
@@ -129,6 +130,7 @@ fn review_run(hook: Option<HookInput>) -> ! {
         if interactive {
             eprintln!("reviewgate: disabled (REVIEWGATE_DISABLE)");
         }
+        harness_core::hook_latency::record("reviewgate", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -137,6 +139,7 @@ fn review_run(hook: Option<HookInput>) -> ! {
         if interactive {
             eprintln!("reviewgate: disabled in config");
         }
+        harness_core::hook_latency::record("reviewgate", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -147,6 +150,11 @@ fn review_run(hook: Option<HookInput>) -> ! {
         state::reset(&cfg.state_dir, &session);
         log_event(&cfg, &session, "skip", &[], 0);
         eprintln!("reviewgate: .reviewgate-skip consumed — allowing stop ({reason})");
+        harness_core::hook_latency::record(
+            "reviewgate",
+            &session,
+            __start.elapsed().as_millis() as u64,
+        );
         std::process::exit(0);
     }
 
@@ -176,6 +184,11 @@ fn review_run(hook: Option<HookInput>) -> ! {
             if interactive {
                 println!("reviewgate: allow ({tag})");
             }
+            harness_core::hook_latency::record(
+                "reviewgate",
+                &session,
+                __start.elapsed().as_millis() as u64,
+            );
             std::process::exit(0);
         }
         Decision::Block {
@@ -197,9 +210,19 @@ fn review_run(hook: Option<HookInput>) -> ! {
             log_event(&cfg, &session, tag, &files, attempts);
             if interactive {
                 eprintln!("{reason}");
+                harness_core::hook_latency::record(
+                    "reviewgate",
+                    &session,
+                    __start.elapsed().as_millis() as u64,
+                );
                 std::process::exit(1);
             }
             println!("{}", json!({ "decision": "block", "reason": reason }));
+            harness_core::hook_latency::record(
+                "reviewgate",
+                &session,
+                __start.elapsed().as_millis() as u64,
+            );
             std::process::exit(0);
         }
     }
