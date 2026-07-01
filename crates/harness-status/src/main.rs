@@ -2,6 +2,7 @@ mod budget;
 mod display;
 mod hooks;
 mod inject;
+mod plugins;
 mod progress;
 mod sessions;
 
@@ -37,6 +38,8 @@ enum Command {
     Hooks,
     /// Show UserPromptSubmit injection-size aggregation only
     Inject,
+    /// Classify all plugins by activation scope
+    Plugins,
 }
 
 fn today() -> String {
@@ -200,6 +203,24 @@ fn main() {
                         );
                     }
                 }
+            }
+        }
+        Some(Command::Plugins) => {
+            let root = plugins::find_repo_root(&cwd);
+            let r = plugins::report(&root);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+            } else {
+                let section = |title: &str, items: &[plugins::PluginInfo]| {
+                    println!("{} ({})", title, items.len());
+                    for p in items {
+                        println!("  {}  —  {}", p.name, p.trigger);
+                    }
+                    println!();
+                };
+                section("ALWAYS-ON", &r.always_on);
+                section("EVENT-SCOPED", &r.event_scoped);
+                section("MANUAL", &r.manual);
             }
         }
         None => {
