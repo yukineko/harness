@@ -260,6 +260,11 @@ enum StateAction {
         #[arg(long)]
         task: String,
     },
+    /// Report whether condukt is in autonomous mode (config.toml `autonomous` +
+    /// `CONDUKT_AUTONOMOUS` env). Prints `{"autonomous":<bool>}` and exits 0 when
+    /// autonomous, 1 when not — so the /condukt skill can branch on the exit code
+    /// to skip human gates (e.g. the Phase 3 agreement) only when autonomous.
+    AutonomyCheck,
 }
 
 fn main() {
@@ -811,6 +816,13 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                     );
                     std::process::exit(1);
                 }
+            }
+        }
+        StateAction::AutonomyCheck => {
+            let autonomous = cfg.autonomous;
+            println!("{{\"autonomous\":{autonomous}}}");
+            if !autonomous {
+                std::process::exit(1);
             }
         }
     }

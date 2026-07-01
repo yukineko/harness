@@ -223,6 +223,19 @@ condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 - `warnings` (shared_glob により serial 降格 等) はユーザーに見せる。以降 `<json.routed>` を正とする。
 
 ### Phase 3 — 合意 (main loop / AskUserQuestion)
+
+**autonomy ゲート判定 (合意 Ask の要否)**: 合意提示の前に autonomy モードを決定論的に確認する:
+```bash
+condukt state autonomy-check   # autonomous なら exit 0 + {"autonomous":true}、そうでなければ exit 1 + {"autonomous":false}
+```
+- **exit 1 (非 autonomous・既定)** → 従来どおり。下記の `AskUserQuestion` で合意を取る（後方互換。既定では必ず合意 Ask が出る）。
+- **exit 0 (autonomous)** → 合意の `AskUserQuestion` を**省略**し、`schedule` 結果 (並列バッチ / serial / gated) を
+  **そのまま採用**して Phase 3.5 へ進む。ただし次は autonomy でも縮退させない（安全側の不変）:
+  - `--dry-run` は autonomy でも**必ずここで停止**する（合意省略は「停止しない」ではない）。
+  - `class: "gated"` タスク (deploy/push 等) は autonomy でも実装・承認の対象外のまま (Phase 8 でユーザー承認)。
+  - `confidence: low`/`medium` のタスクは合意を省略しても**ログに明示**し、後段の Phase 6 検証ゲートで担保する。
+
+合意を取る場合 (非 autonomous):
 `schedule` 結果 (並列バッチ / serial / gated) を `AskUserQuestion` で提示し合意を取る。割り直しが
 出たら Decomposition を直して Phase 2 へ戻る。`--dry-run` ならここで停止。
 
