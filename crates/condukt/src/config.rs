@@ -38,6 +38,17 @@ pub struct Config {
     /// Defaults to false (every existing AskUserQuestion still fires — fully
     /// backward compatible). Read by `condukt state autonomy-check`.
     pub autonomous: bool,
+    /// Multi-sample self-consistency (cost guard). When true, `condukt consensus
+    /// plan` fans a task out into N candidate implementations, verifies each, and
+    /// takes a majority vote. OFF by default: N-sample generation is N× the cost,
+    /// so it is opt-in per project (or per high-risk task via `--risk high`).
+    /// Read by `condukt consensus plan`. Overridable via `CONDUKT_CONSENSUS`.
+    pub consensus_enabled: bool,
+    /// Fan-out width when consensus is enabled. Defaults to 3; clamped to a
+    /// documented ceiling (`consensus::MAX_SAMPLES`) so it can never run away.
+    pub consensus_samples: usize,
+    /// Agreement threshold below which a task escalates to opus. Defaults to 0.5.
+    pub consensus_threshold: f64,
 }
 
 /// Which test-fix cycle sequence to use for a module type.
@@ -84,6 +95,13 @@ struct FileLoopConfig {
 }
 
 #[derive(Default, Deserialize)]
+struct FileConsensusConfig {
+    enabled: Option<bool>,
+    samples: Option<usize>,
+    threshold: Option<f64>,
+}
+
+#[derive(Default, Deserialize)]
 struct FileConfig {
     worktree_base: Option<String>,
     default_branch: Option<String>,
@@ -95,6 +113,7 @@ struct FileConfig {
     autonomous: Option<bool>,
     #[serde(rename = "loop")]
     loop_cfg: Option<FileLoopConfig>,
+    consensus: Option<FileConsensusConfig>,
 }
 
 /// Parse the `CONDUKT_AUTONOMOUS` env override. Accepts common truthy/falsy
@@ -129,6 +148,9 @@ impl Config {
             deploy_command: None,
             loop_max_iters: 10,
             autonomous: false,
+            consensus_enabled: false,
+            consensus_samples: crate::consensus::DEFAULT_SAMPLES,
+            consensus_threshold: crate::consensus::DEFAULT_THRESHOLD,
         };
 
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
@@ -168,6 +190,17 @@ impl Config {
                         cfg.loop_max_iters = v;
                     }
                 }
+                if let Some(cc) = fc.consensus {
+                    if let Some(v) = cc.enabled {
+                        cfg.consensus_enabled = v;
+                    }
+                    if let Some(v) = cc.samples {
+                        cfg.consensus_samples = v;
+                    }
+                    if let Some(v) = cc.threshold {
+                        cfg.consensus_threshold = v;
+                    }
+                }
             }
         }
 
@@ -190,6 +223,13 @@ impl Config {
         if let Ok(v) = std::env::var("CONDUKT_AUTONOMOUS") {
             if let Some(b) = parse_autonomous_env(&v) {
                 cfg.autonomous = b;
+            }
+        }
+        // Reuses the generic truthy/falsy parser (despite its name) to force the
+        // self-consistency switch from the environment, overriding config.toml.
+        if let Ok(v) = std::env::var("CONDUKT_CONSENSUS") {
+            if let Some(b) = parse_autonomous_env(&v) {
+                cfg.consensus_enabled = b;
             }
         }
         cfg

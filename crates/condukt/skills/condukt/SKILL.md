@@ -359,6 +359,49 @@ BASELINE_EXIT=$?
 | `peer_tasks` | 並列タスクがあれば必須 | 同バッチの他タスクの `[{id, title, touched_files}]` | スコープ衝突防止 (Devin peer-awareness 相当)。`title + touched_files` の要約のみ。`done_criteria` や diff は含めない |
 | `failure_context` | 再投入時のみ | verifier の `reason` + 失敗テスト出力 + `git diff` | `{reason, failed_tests, diff}` の形式。worker が前回失敗を把握して別アプローチを取る |
 
+#### Phase 5.5 — Self-consistency 合意形成 (opt-in・高リスクタスク限定)
+
+単一サンプル生成は「そのタスク固有の hallucination」を verifier がすり抜けやすい (worker が書いた
+唯一の候補を verifier が見るだけなので、共有盲点が生き残る)。**高リスクタスクに限り**、同一タスクを
+**N 個の独立実装**として生成し、各々を検証し、**多数決 (self-consistency 投票)** で採用候補を選ぶ。
+合意率が閾値を下回れば opus へエスカレーションする。
+
+**コストガード (既定は単一サンプル)**: N-sample 生成は N 倍のコストになるため **既定では発動しない**。
+発動可否は語感で決めず、**バイナリの決定論ゲート**に委ねる (autonomy-check と同じ exit-code 契約):
+```bash
+# risk はタスクの confidence / class から導く: confidence:"low" もしくは class:"serial"(設計判断) の
+# 高リスクタスクにだけ --risk high を渡す。それ以外は --risk を省略する。
+PLAN=$(condukt consensus plan ${RISK:+--risk "$RISK"})   # → {"enabled":bool,"samples":N,"threshold":T,...}
+PLAN_EXIT=$?
+```
+- **exit 1 (enabled:false・既定)** → 従来どおり **単一実装** (Phase 5 の 1 worker → Phase 6)。追加コストなし。
+- **exit 0 (enabled:true)** → config `[consensus] enabled=true` か `CONDUKT_CONSENSUS=1`、または当該タスクが
+  `--risk high`。このタスクだけ以下の fan-out を回す。`samples` (既定 3・上限 5) と `threshold` (既定 0.5) は
+  `$PLAN` から読む。**全 condukt タスクを既定で fan-out しない** (発動は opt-in の高リスクのみ)。
+
+**fan-out 手順** (enabled のタスクのみ):
+1. `samples` 個の候補実装を作る。各候補 `k` に専用 worktree を切り (`condukt worktree create
+   --topic <t.id>-c<k> --branch condukt/<t.id>-c<k>`)、Phase 5 と同じ worker プロンプトで **並列に**
+   起動する (1 メッセージで複数 `Task`)。Task の `description` は `"<t.id>-c<k>: <title>"`。
+2. 各候補を Phase 6 の verifier で検証し (`state check-criteria` → verifier-model 解決 → verifier agent)、
+   `{candidate:"<t.id>-c<k>", pass:<bool>}` の verdict を集める。候補が明確に別アプローチを取っている場合は
+   `group:"<手法の要約>"` を添えると、投票が手法バケット単位の self-consistency になる (省略時は pass 一括投票)。
+3. verdict を `condukt consensus vote` に渡して**決定論的に集計**する:
+   ```bash
+   printf '%s' "$VERDICTS_JSON" | condukt consensus vote   # → {winner, agreement_rate, escalate, escalate_to, ...}
+   CONSENSUS_EXIT=$?   # 0 = 合意成立 (winner 採用) / 1 = 要エスカレーション
+   ```
+   - **exit 0 (escalate:false)** → `winner` の候補 branch を採用する。その候補を `done` に set して
+     Phase 6 の最終記録 (fugu-router 実績) に進み、**採用しなかった候補の worktree は Phase 7 の
+     cleanup で破棄**する (merge しない)。
+   - **exit 1 (escalate:true)** → 全候補 fail・同票 tie・合意率 < threshold のいずれか。**opus へ
+     エスカレーション**する: `escalate_to` (=`opus`) を worker model に指定し、下記
+     「カスケードエスカレーション」に合流して 1 本を再実装させる (tie-break / redo)。合意率が低いこと自体が
+     「タスクが未特定 or 本質的に難しい」というシグナルなので、より強いモデルで解き直す。
+4. 投票・合意率・エスカレーション判定は**すべて `condukt consensus` バイナリが決定論的に**行う
+   (LLM は候補生成と検証という生成/意味判断に専念する)。この fan-out はユーザー承認を挟まず自動で回す
+   (autonomy 不変条件を変えない — 追加の停止点は作らない)。
+
 ### Phase 6 — 検証 (verifier agent) + 実績の記録
 
 **機械的 vs 振る舞い的 done_criteria の分類（verifier スキップ判定はバイナリが強制）**:

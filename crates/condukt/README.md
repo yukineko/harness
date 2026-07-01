@@ -32,6 +32,7 @@ SessionStart hook.
 | `condukt state init/set/show/gate/list` | persist a run's task statuses; `gate` exits non-zero until every task is verified and no worktree is left dirty or unremoved. |
 | `condukt state conflict-check/abandon/list-tasks/cancel/pause` | cross-session safety + run editing: detect file/goal conflicts before `init`, return stuck `running` tasks to `pending` (`--all-stuck`), list/cancel a run's tasks, pause a conflicting run (see the skill's Phase 0/3.5 and the cancel utility). |
 | `condukt knowledge` | emit project-specific conventions/pitfalls injected into the interpreter/worker prompt (soft; empty when none). |
+| `condukt consensus plan/vote` | multi-sample self-consistency (opt-in cost guard). `plan` decides whether a task should fan out into N candidate implementations (exit 0 = fan out, 1 = single sample); `vote` tallies N verifier verdicts into a deterministic majority winner + agreement rate, escalating to opus on all-fail, a tie, or agreement below threshold. |
 | `condukt state stats` | aggregate all runs (complete and incomplete): completion rate, task count, status distribution — useful as a before/after benchmark. |
 | `condukt state reconcile --run <id> [--dry-run]` | auto-promote tasks to `verified` when their branch is already merged into the default branch or has been deleted with its worktree. Fixes stale state after a session crash without manual `state set` calls. |
 | `condukt state resume-context --run <id>` | emit pending/failed/done tasks as JSON for resuming a stopped run across sessions (see Phase 0-alt in the skill). |
@@ -95,6 +96,16 @@ shared_globs   = []                       # globs that force a touching task to 
 # Omit to auto-detect (cargo test / npm test / pytest).
 # [test]
 # command = "cargo test"
+
+# Multi-sample self-consistency (OPT-IN cost guard; OFF by default). When
+# enabled, a high-risk task is implemented N times, verified, and a majority
+# vote picks the winner; low agreement escalates to opus. N-sample generation
+# is N x the cost. A per-task `consensus plan --risk high` forces fan-out even
+# when enabled = false. samples is clamped to a ceiling of 5.
+# [consensus]
+# enabled   = false
+# samples   = 3
+# threshold = 0.5
 ```
 
 `shared_globs` is how you keep workers off project-wide files without hardcoding
@@ -112,6 +123,7 @@ All config file keys can be overridden at runtime with environment variables.
 | `CONDUKT_DEFAULT_BRANCH` | `main` | Branch completed work is merged back into. |
 | `CONDUKT_MAX_PARALLEL` | `4` | Advisory soft cap on concurrent workers. |
 | `CONDUKT_DISABLE` | _(unset)_ | Set to `1` to make the SessionStart/statusline hooks no-op (useful in CI). |
+| `CONDUKT_CONSENSUS` | `false` | Set to `1`/`true` to enable multi-sample self-consistency fan-out (overrides `[consensus] enabled`). Opt-in cost guard; off by default. |
 
 ### `condukt loop` — test-fix cycle
 
