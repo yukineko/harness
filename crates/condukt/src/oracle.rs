@@ -127,8 +127,7 @@ mod tests {
     /// path deterministically.
     #[test]
     fn spawn_failure_falls_back() {
-        let bogus_dir =
-            std::env::temp_dir().join("condukt-oracle-test-nonexistent-dir-zzz-987654");
+        let bogus_dir = std::env::temp_dir().join("condukt-oracle-test-nonexistent-dir-zzz-987654");
         let _ = std::fs::remove_dir_all(&bogus_dir);
         assert!(!bogus_dir.exists());
 

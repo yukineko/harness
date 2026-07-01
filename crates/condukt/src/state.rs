@@ -1987,10 +1987,7 @@ mod tests {
             "fallback": false,
             "valid_fp_oracle": true,
         });
-        assert_eq!(
-            enforce_fp_gate(&verdict),
-            FpGateDecision::Allow(Some(true))
-        );
+        assert_eq!(enforce_fp_gate(&verdict), FpGateDecision::Allow(Some(true)));
     }
 
     #[test]
