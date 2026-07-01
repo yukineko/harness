@@ -495,7 +495,19 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             }
             if clear_branch {
                 t.branch = None;
+                t.branch_sha = None;
             } else if branch.is_some() {
+                // Record the SHA at assignment time so reconcile can detect
+                // force-push false-positives by checking the original commit.
+                if let Some(ref b) = branch {
+                    if t.branch_sha.is_none() {
+                        let repo = worktree::toplevel(cwd).ok();
+                        t.branch_sha = repo
+                            .as_deref()
+                            .and_then(|r| worktree::git(r, &["rev-parse", b]).ok())
+                            .map(|s| s.trim().to_string());
+                    }
+                }
                 t.branch = branch;
             }
             rs.save(cfg, cwd)?;
@@ -937,6 +949,7 @@ mod state_set_tests {
                 status: Status::Pending,
                 worktree: worktree.map(str::to_string),
                 branch: branch.map(str::to_string),
+                branch_sha: None,
                 updated_at: None,
                 model: None,
                 cost_usd: None,

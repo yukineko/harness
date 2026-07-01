@@ -52,6 +52,12 @@ pub struct TaskState {
     pub worktree: Option<String>,
     #[serde(default)]
     pub branch: Option<String>,
+    /// The git SHA recorded at the time the branch was first assigned.
+    /// Used by reconcile to detect force-push false-positives: we check
+    /// whether the *original* tip commit is an ancestor of the default branch,
+    /// rather than the current (possibly rewritten) branch ref.
+    #[serde(default)]
+    pub branch_sha: Option<String>,
     /// Unix timestamp (seconds) when this task's status was last changed.
     /// `None` for tasks loaded from older run-state files (backward-compatible).
     #[serde(default)]
@@ -266,8 +272,18 @@ pub fn reconcile_run(
             .unwrap_or(true); // no worktree recorded → treat as gone
 
         let branch_merged = t.branch.as_deref().map(|b| {
-            // `git merge-base --is-ancestor <b> <default>` exits 0 if b is an ancestor.
-            crate::worktree::git(&repo, &["merge-base", "--is-ancestor", b, default_branch]).is_ok()
+            // Prefer the recorded SHA over the current branch ref so that a
+            // force-push that resets the branch to a commit already in the
+            // default branch does not produce a false positive. If branch_sha
+            // was recorded, we check whether that exact commit is an ancestor
+            // of the default branch; otherwise we fall back to the branch name
+            // (which may have been rewritten by a force-push).
+            let ref_to_check = t.branch_sha.as_deref().unwrap_or(b);
+            crate::worktree::git(
+                &repo,
+                &["merge-base", "--is-ancestor", ref_to_check, default_branch],
+            )
+            .is_ok()
         });
 
         let branch_exists = t.branch.as_deref().map(|b| {
@@ -934,6 +950,7 @@ mod tests {
                     updated_at: None,
                     model: None,
                     cost_usd: None,
+                    branch_sha: None,
                 },
                 TaskState {
                     id: "b".into(),
@@ -943,6 +960,7 @@ mod tests {
                     updated_at: None,
                     model: None,
                     cost_usd: None,
+                    branch_sha: None,
                 },
             ],
             paused: false,
@@ -966,6 +984,7 @@ mod tests {
                     updated_at: None,
                     model: None,
                     cost_usd: None,
+                    branch_sha: None,
                 },
                 TaskState {
                     id: "b".into(),
@@ -975,6 +994,7 @@ mod tests {
                     updated_at: None,
                     model: None,
                     cost_usd: None,
+                    branch_sha: None,
                 },
                 TaskState {
                     id: "c".into(),
@@ -984,6 +1004,7 @@ mod tests {
                     updated_at: None,
                     model: None,
                     cost_usd: None,
+                    branch_sha: None,
                 },
             ],
             paused: false,
@@ -1099,6 +1120,7 @@ mod tests {
                 updated_at: None,
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             }],
             paused: false,
             terminal_label: None,
@@ -1180,6 +1202,7 @@ mod tests {
                 updated_at: None,
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             }],
             paused: false,
             terminal_label: None,
@@ -1232,6 +1255,7 @@ mod tests {
             updated_at: Some(old_ts),
             model: None,
             cost_usd: None,
+            branch_sha: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert_eq!(ids, vec!["stuck-task".to_string()]);
@@ -1251,6 +1275,7 @@ mod tests {
             updated_at: Some(recent_ts),
             model: None,
             cost_usd: None,
+            branch_sha: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert!(ids.is_empty(), "recent Running task must not be stuck");
@@ -1268,6 +1293,7 @@ mod tests {
             updated_at: None,
             model: None,
             cost_usd: None,
+            branch_sha: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert!(
@@ -1292,6 +1318,7 @@ mod tests {
             updated_at: Some(now_secs()),
             model: None,
             cost_usd: None,
+            branch_sha: None,
         }]);
         let t = run.tasks.iter_mut().find(|t| t.id == "t1").unwrap();
         t.status = Status::Pending;
@@ -1319,6 +1346,7 @@ mod tests {
             updated_at: Some(now_secs() - 100),
             model: None,
             cost_usd: None,
+            branch_sha: None,
         }]);
         let t = run.tasks.iter_mut().find(|t| t.id == "t-fail").unwrap();
         t.status = Status::Pending;
@@ -1345,6 +1373,7 @@ mod tests {
                 updated_at: None,
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
             TaskState {
                 id: "verified-task".into(),
@@ -1354,6 +1383,7 @@ mod tests {
                 updated_at: None,
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
         ]);
         for t in &run.tasks {
@@ -1381,6 +1411,7 @@ mod tests {
                 updated_at: Some(old_ts),
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
             TaskState {
                 id: "stuck-2".into(),
@@ -1390,6 +1421,7 @@ mod tests {
                 updated_at: Some(old_ts),
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
             TaskState {
                 id: "active".into(),
@@ -1399,6 +1431,7 @@ mod tests {
                 updated_at: Some(recent_ts),
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
         ]);
 
@@ -1440,6 +1473,7 @@ mod tests {
             updated_at: Some(now_secs()),
             model: None,
             cost_usd: None,
+            branch_sha: None,
         }]);
         let found = run.tasks.iter().find(|t| t.id == "no-such-task");
         assert!(found.is_none(), "non-existent task id must not be found");
@@ -1517,6 +1551,7 @@ mod tests {
                 updated_at: Some(ancient_ts),
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
             TaskState {
                 id: "done-old".into(),
@@ -1526,6 +1561,7 @@ mod tests {
                 updated_at: Some(ancient_ts),
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
             TaskState {
                 id: "verified-old".into(),
@@ -1535,6 +1571,7 @@ mod tests {
                 updated_at: Some(ancient_ts),
                 model: None,
                 cost_usd: None,
+                branch_sha: None,
             },
         ]);
         let ids = stuck_task_ids(&run, ttl);
