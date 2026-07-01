@@ -130,7 +130,14 @@ fn inject() {
         return;
     }
     // UserPromptSubmit: plain stdout is injected as additional context.
-    println!("{}", retrieve::render_injection(&chosen));
+    let injected = retrieve::render_injection(&chosen);
+    harness_core::inject_metrics::record(
+        "playbook",
+        &input.session_id,
+        &input.prompt,
+        injected.chars().count(),
+    );
+    println!("{injected}");
 }
 
 fn split_csv(s: &str) -> Vec<String> {

@@ -312,6 +312,12 @@ fn main() {
             }
             let eps = store::load(&cfg.store_path());
             if let Some(ctx) = inject::summary(&eps, cfg.inject_limit) {
+                harness_core::inject_metrics::record(
+                    "fugu-router",
+                    &input.session_id,
+                    &input.prompt,
+                    ctx.chars().count(),
+                );
                 println!("{}", json!({ "additionalContext": ctx }));
             }
         }),

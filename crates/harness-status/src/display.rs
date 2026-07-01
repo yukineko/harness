@@ -2,6 +2,7 @@
 
 use crate::budget::BudgetStatus;
 use crate::hooks::{sess8, HookLatencyReport};
+use crate::inject::{key8, InjectReport};
 use crate::progress::ProgressStatus;
 use crate::sessions::SessionSummary;
 
@@ -11,6 +12,7 @@ pub fn print_status(
     sessions: &[SessionSummary],
     progress: &ProgressStatus,
     hooks: &HookLatencyReport,
+    inject: &InjectReport,
     cwd_display: &str,
 ) {
     println!("╔══════════════════════════════════════════════╗");
@@ -90,6 +92,31 @@ pub fn print_status(
         }
     }
     println!();
+
+    // UserPromptSubmit injection size (ADR 0001 Phase 2): the five injectors
+    // (playbook/run-book/ctxrot/context-governor/fugu-router) record post-cap
+    // injected char size per turn; warn when the combined size exceeds budget.
+    println!("── UserPromptSubmit injection (aggregate budget) ──");
+    if inject.turns.is_empty() {
+        println!("  [no UserPromptSubmit injections recorded]");
+    } else {
+        println!("  budget: {} chars", inject.budget_chars);
+        for t in &inject.turns {
+            let flag = if t.over_budget {
+                "  ⚠ OVER BUDGET"
+            } else {
+                ""
+            };
+            println!(
+                "  {} | {} chars across {} injectors{}",
+                key8(&t.turn_key),
+                t.total_chars,
+                t.per_plugin.len(),
+                flag
+            );
+        }
+    }
+    println!();
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -106,6 +133,7 @@ pub fn print_json(
     sessions: &[SessionSummary],
     progress: &ProgressStatus,
     hooks: &HookLatencyReport,
+    inject: &InjectReport,
 ) {
     let out = serde_json::json!({
         "date": today,
@@ -113,6 +141,7 @@ pub fn print_json(
         "recent_sessions": sessions,
         "progress": progress,
         "hook_latency": hooks,
+        "inject": inject,
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
 }

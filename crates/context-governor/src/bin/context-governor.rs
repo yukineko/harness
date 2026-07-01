@@ -61,6 +61,23 @@ fn main() -> ! {
 
         match dispatch(&input) {
             Dispatch::Emit(out) => {
+                // Cross-harness injection-budget observability (ADR 0001 Phase 2):
+                // record the post-cap injected `additionalContext` size for the
+                // UserPromptSubmit turn. Other events carry no additionalContext.
+                if input.hook_event_name == "UserPromptSubmit" {
+                    if let Some(ctx) = out
+                        .specific
+                        .as_ref()
+                        .and_then(|s| s.additional_context.as_deref())
+                    {
+                        harness_core::inject_metrics::record(
+                            "context-governor",
+                            &input.session_id,
+                            &input.prompt,
+                            ctx.chars().count(),
+                        );
+                    }
+                }
                 // `{}` (the default) is a valid "proceed, no-op" response.
                 let _ = writeln!(std::io::stdout(), "{}", out.to_json());
             }
