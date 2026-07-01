@@ -15,6 +15,7 @@ mod schedule;
 mod state;
 mod status;
 mod store;
+mod verify;
 mod worktree;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -254,6 +255,8 @@ enum StateAction {
     },
     /// Run the mechanical gate for a task's done_criteria and print JSON.
     /// Exits 0 if the criteria is met (or non-mechanical), exits 1 if it fails.
+    /// The JSON `skip_verifier` field is true ONLY for purely mechanical criteria
+    /// that pass; behavioral criteria always report `skip_verifier:false`.
     CheckCriteria {
         #[arg(long)]
         run: String,
@@ -265,6 +268,17 @@ enum StateAction {
     /// autonomous, 1 when not — so the /condukt skill can branch on the exit code
     /// to skip human gates (e.g. the Phase 3 agreement) only when autonomous.
     AutonomyCheck,
+    /// Resolve the verifier model so it never equals the worker model (shared
+    /// blind-spot guard). Prints the chosen model on stdout. A distinct
+    /// --suggested is honoured; otherwise a distinct tier is picked.
+    VerifierModel {
+        /// The model the worker used / will use for this task.
+        #[arg(long)]
+        worker: String,
+        /// The verifier_model from route.json, if any (may equal --worker).
+        #[arg(long)]
+        suggested: Option<String>,
+    },
 }
 
 fn main() {
@@ -772,13 +786,11 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .find(|t| t.id == task)
                 .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
             let Some(dc) = &t.done_criteria else {
-                println!("{{\"mechanical\":false}}");
+                // No criteria to check → nothing mechanical, verifier still runs.
+                println!("{{\"mechanical\":false,\"behavioral\":false,\"skip_verifier\":false}}");
                 return Ok(());
             };
-            let Some(cmd) = criteria_mechanical_cmd(dc) else {
-                println!("{{\"mechanical\":false}}");
-                return Ok(());
-            };
+            let cls = verify::classify_criteria(dc);
             let run_dir = rs
                 .tasks
                 .iter()
@@ -786,37 +798,49 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .and_then(|s| s.worktree.as_deref())
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| cwd.to_path_buf());
-            match std::process::Command::new(&cmd[0])
-                .args(&cmd[1..])
-                .current_dir(&run_dir)
-                .output()
-            {
-                Ok(out) => {
-                    let passed = out.status.success();
-                    let combined = format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&out.stdout),
-                        String::from_utf8_lossy(&out.stderr)
-                    );
-                    println!(
-                        "{{\"mechanical\":true,\"passed\":{passed},\"cmd\":{},\"output\":{}}}",
-                        serde_json::to_string(&cmd)?,
-                        serde_json::to_string(&combined)?
-                    );
-                    if !passed {
-                        std::process::exit(1);
-                    }
-                }
-                Err(e) => {
-                    let err = e.to_string();
-                    println!(
-                        "{{\"mechanical\":true,\"passed\":false,\"cmd\":{},\"error\":{}}}",
-                        serde_json::to_string(&cmd)?,
-                        serde_json::to_string(&err)?
-                    );
-                    std::process::exit(1);
-                }
+
+            // Behavioral (or non-runnable) criteria: the LLM verifier MUST run.
+            // Any embedded command is run only to attach evidence — never to
+            // skip the verifier, and never to fail this gate.
+            if !cls.skip_eligible {
+                let evidence = cls.mechanical_cmd.as_ref().map(|cmd| {
+                    let (passed, output) = run_mechanical(cmd, &run_dir);
+                    serde_json::json!({ "cmd": cmd, "passed": passed, "output": output })
+                });
+                let out = serde_json::json!({
+                    "mechanical": cls.mechanical_cmd.is_some(),
+                    "behavioral": cls.behavioral,
+                    "skip_verifier": false,
+                    "evidence": evidence,
+                });
+                println!("{}", serde_json::to_string(&out)?);
+                return Ok(());
             }
+
+            // Purely mechanical criteria: the verifier may be skipped iff the
+            // command passes. A failing mechanical check fails this gate.
+            let cmd = cls
+                .mechanical_cmd
+                .expect("skip_eligible implies a mechanical command");
+            let (passed, output) = run_mechanical(&cmd, &run_dir);
+            let out = serde_json::json!({
+                "mechanical": true,
+                "behavioral": false,
+                "passed": passed,
+                "skip_verifier": passed,
+                "cmd": cmd,
+                "output": output,
+            });
+            println!("{}", serde_json::to_string(&out)?);
+            if !passed {
+                std::process::exit(1);
+            }
+        }
+        StateAction::VerifierModel { worker, suggested } => {
+            let chosen = verify::resolve_verifier_model(&worker, suggested.as_deref());
+            // Invariant guard: never emit a verifier model equal to the worker.
+            debug_assert!(!verify::same_model(&chosen, &worker));
+            println!("{chosen}");
         }
         StateAction::AutonomyCheck => {
             let autonomous = cfg.autonomous;
@@ -829,60 +853,24 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
     Ok(())
 }
 
-/// Extract a runnable command from a done_criteria string for mechanical gate checking.
-/// Returns None if no mechanical check can be derived (LLM verifier needed).
-fn criteria_mechanical_cmd(done_criteria: &str) -> Option<Vec<String>> {
-    // Prefer an explicit backtick command: `cargo test -p condukt`
-    let re = regex::Regex::new(r"`([^`]+)`").ok()?;
-    for caps in re.captures_iter(done_criteria) {
-        let inner = caps.get(1)?.as_str().trim();
-        let argv: Vec<String> = inner.split_whitespace().map(String::from).collect();
-        if argv.first().is_some_and(|p| is_criteria_runner(p)) {
-            return Some(argv);
+/// Run a mechanical check command in `run_dir`, returning (passed, combined output).
+/// A spawn failure counts as not-passed with the error text as output.
+fn run_mechanical(cmd: &[String], run_dir: &Path) -> (bool, String) {
+    match std::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .current_dir(run_dir)
+        .output()
+    {
+        Ok(out) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            (out.status.success(), combined)
         }
+        Err(e) => (false, e.to_string()),
     }
-    // Fall back to recognised test-runner prose
-    let lower = done_criteria.to_lowercase();
-    if lower.contains("cargo test") {
-        let mut cmd = vec!["cargo".to_string(), "test".to_string()];
-        if let Ok(re2) = regex::Regex::new(r"-p\s+([A-Za-z0-9_-]+)") {
-            if let Some(c) = re2.captures(done_criteria).and_then(|c| c.get(1)) {
-                cmd.push("-p".to_string());
-                cmd.push(c.as_str().to_string());
-            }
-        }
-        return Some(cmd);
-    }
-    if lower.contains("npm test") {
-        return Some(vec!["npm".to_string(), "test".to_string()]);
-    }
-    if lower.contains("pytest") {
-        return Some(vec!["pytest".to_string()]);
-    }
-    if lower.contains("go test") {
-        return Some(vec!["go".to_string(), "test".to_string()]);
-    }
-    None
-}
-
-fn is_criteria_runner(tok: &str) -> bool {
-    matches!(
-        tok,
-        "cargo"
-            | "npm"
-            | "npx"
-            | "pytest"
-            | "go"
-            | "make"
-            | "bash"
-            | "sh"
-            | "python"
-            | "python3"
-            | "node"
-            | "yarn"
-            | "pnpm"
-            | "just"
-    )
 }
 
 /// Probe whether the `fugu-router` binary is on PATH and, if so, return its

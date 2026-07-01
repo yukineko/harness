@@ -361,28 +361,50 @@ BASELINE_EXIT=$?
 
 ### Phase 6 — 検証 (verifier agent) + 実績の記録
 
-**機械的 done_criteria の早期判定（verifier スキップ）**:
-`done_criteria` が以下のような観察可能な事実の確認のみで構成される場合、verifier agent を省略して `Bash` で直接判定する:
-- 特定の文字列が特定のファイルに存在する (`grep`)
-- 特定のファイル/ディレクトリが存在する (`ls`, `test -f`)
-- `cargo test` / `npm test` などのコマンドが exit 0 で終わる
+**機械的 vs 振る舞い的 done_criteria の分類（verifier スキップ判定はバイナリが強制）**:
+verifier を省略してよいかは **プロンプトの語感で判断しない**。`condukt state check-criteria
+--run $RID --task <id>` が決定論的に分類し、JSON を返す（この判定は SKILL.md ではなくバイナリ側で
+固定されており、プロンプト側の解釈でドリフトしない）:
+```bash
+CC=$(condukt state check-criteria --run "$RID" --task "<id>")
+# → {"mechanical":bool,"behavioral":bool,"skip_verifier":bool, ...}
+```
+- **`skip_verifier: true`** の場合のみ verifier agent を省略できる。これは done_criteria が
+  **純粋に機械的**（`cargo test`/`npm test`/`pytest`/backtick コマンド等、観察可能な事実の確認のみ）で、
+  かつその機械チェックが **exit 0 で pass** したときに限る。この場合 `verified` に set してよい。
+- **`skip_verifier: false`** なら **必ず verifier agent を起動する**。特に done_criteria に「実装」
+  「ロジック」「設計」「コード」「振る舞い」「検証」「正しく」等（英語 implement/logic/design/behavior/
+  correct/prove/enforce 等）の**判断を要する語**が含まれる場合は `behavioral: true` となり、
+  たとえ埋め込まれたテストコマンドが通っていても **スキップしない**。通ったテストは verifier に
+  渡す **証拠 (`evidence`)** であって、verifier の**代替ではない**。
+- 分類が曖昧なとき（コマンドが取れない・判定不能）は `skip_verifier: false` に倒れる（安全側 =
+  verifier を回す）。ターンを壊さない原則により、迷ったら必ず verifier を走らせる。
 
-判断基準: `done_criteria` に「実装」「ロジック」「設計」「コード」「振る舞い」等の語が無く、コマンド 1 ～ 3 本で完結するなら機械判定。shell チェックが pass → verified に set、fail → 通常 verifier フローへ（shell 判定は verifier の前段最適化であり、境界は厳しめに取る）。
-
-**`reproduction_tests` の決定論先行実行（LLM verifier 起動前）**:
-タスクに `reproduction_tests` がある場合、verifier agent を起動する**前に** main が worktree 内で
-そのコマンドを直接 `Bash` 実行する（これは LLM 判断ではなく exit code を見るだけの機械処理）:
-- **exit 非 0** → `failed` に set し、**verifier agent を起動しない**（落ちることが決定論で確定済み）。
+**`reproduction_tests` の決定論先行実行（LLM verifier 起動前の証拠収集）**:
+タスクに `reproduction_tests` がある場合、main が worktree 内でそのコマンドを直接 `Bash` 実行する
+（LLM 判断ではなく exit code を見るだけの機械処理）:
+- **exit 非 0** → `failed` に set し、verifier agent を起動しない（落ちることが決定論で確定済み）。
   そのままカスケードエスカレーション（失敗テスト出力を `failure_context.failed_tests` に入れて再投入）へ。
-- **exit 0** → 「テストが通る」型の done_criteria はこの時点で機械的に満たされたとみなし `verified` に set
-  （上の機械判定スキップと同じ扱い）。done_criteria に振る舞い/設計判断の語が残る場合のみ、
-  この exit 0 を**証拠として添えて** verifier agent に渡し最終判定させる。
+- **exit 0** → これは合格の **証拠**にすぎない。`state check-criteria` が `skip_verifier: true`
+  を返したタスク（純粋に機械的な done_criteria）のみ `verified` に set できる。それ以外
+  （`behavioral: true` 等）は exit 0 を **証拠として添えて** verifier agent に渡し最終判定させる
+  ——テスト緑は verifier の代替にならない。
 
-これにより「テストで赤確定」のタスクは LLM verifier 1 本分を丸ごと省け、
-「テスト緑＋機械的合格条件」のタスクも verifier を起動せず確定できる（正確性は同一の決定論コマンドで不変）。
+これにより「テストで赤確定」のタスクは LLM verifier 1 本分を省けつつ、振る舞い的な done_criteria が
+「テストが通ったから正しい」で verifier を素通りする穴（generation と verification の共有盲点の一種）を
+バイナリ側で塞ぐ。
 
 done の各タスクを `condukt-verifier` 相当で done_criteria 照合する。検証する子の **model は
-`<route.json>` の `verifier_model`**(worker と別ティアの独立検証。無ければ既定 sonnet)を使う。
+worker と必ず別モデルにする**（同一モデルだと generation と verification が同じ盲点を共有するため）。
+モデルは語感で選ばず **バイナリに解決させる**:
+```bash
+# worker が実際に使ったモデル（escalation 後の実モデル）を --worker に渡す。
+# --suggested は route.json の verifier_model（あれば）。無ければ省略でよい。
+VM=$(condukt state verifier-model --worker "<worker_model>" --suggested "<route.json.verifier_model>")
+```
+`state verifier-model` は **`verifier_model != worker_model` を保証**する: 別ティアの `--suggested`
+はそのまま採用し、`--suggested` が空 or worker と同一なら worker より 1 ティア上（worker が最上位なら
+1 ティア下）の独立モデルを返す。fugu-router が無く両者が sonnet に落ちる従来の共有盲点はこれで塞がる。
 verifier 起動プロンプトには以下を渡す:
 - `done_criteria`: タスクの合格条件
 - `worktree`: 対象 worktree パス
