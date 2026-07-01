@@ -8,10 +8,14 @@
 //! the "is this good code?" complement to donegate's "does it actually run?".
 //!
 //! Failure modes are split deliberately:
-//!   * a *harness* error (bad config, no git, reviewer crash, our own bug) →
-//!     exit 0, allow the stop. We must never trap a turn because reviewgate broke.
+//!   * a *harness* error (bad config, no git, our own bug) → exit 0, allow the
+//!     stop. We must never trap a turn because reviewgate itself broke.
 //!   * a real review finding (subprocess) or a not-yet-reviewed diff (inject) →
 //!     block on purpose, with an actionable reason.
+//!   * a *reviewer* that fails (subprocess crash / timeout / unusable output) is
+//!     NOT treated as a harness error: it blocks (bounded by max_attempts, with
+//!     an escapable reason) rather than silently allowing, so a broken reviewer
+//!     can't become a bypass. See `review::decide_subprocess`.
 
 mod config;
 mod git;
