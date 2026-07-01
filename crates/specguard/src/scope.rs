@@ -445,7 +445,7 @@ mod prop_tests {
         fn matching_file_in_hit(f in "[a-z]{3,6}") {
             let file = format!("src/{f}.rs");
             let areas = vec![mk_area("a0", vec!["src/**".into()])];
-            let (hits, oob) = classify(&[file.clone()], &areas).unwrap();
+            let (hits, oob) = classify(std::slice::from_ref(&file), &areas).unwrap();
             prop_assert!(oob.is_empty(), "file {file} should be in-scope");
             prop_assert!(!hits.is_empty());
             prop_assert!(hits[0].matched_files.contains(&file));
@@ -456,7 +456,7 @@ mod prop_tests {
         fn non_matching_file_not_in_hits(f in "[a-z]{3,6}") {
             let file = format!("other/{f}.rs");
             let areas = vec![mk_area("a0", vec!["src/**".into()])];
-            let (hits, _oob) = classify(&[file.clone()], &areas).unwrap();
+            let (hits, _oob) = classify(std::slice::from_ref(&file), &areas).unwrap();
             for h in &hits {
                 prop_assert!(!h.matched_files.contains(&file),
                     "non-matching file {file} should not appear in any hit");

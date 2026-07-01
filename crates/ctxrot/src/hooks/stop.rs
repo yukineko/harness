@@ -33,10 +33,11 @@ mod tests {
     use super::*;
 
     fn cfg(enabled: bool, threshold: f64) -> Config {
-        let mut c = Config::default();
-        c.auto_compact_enabled = enabled;
-        c.auto_compact_at_percentage = threshold;
-        c
+        Config {
+            auto_compact_enabled: enabled,
+            auto_compact_at_percentage: threshold,
+            ..Default::default()
+        }
     }
 
     fn input_at(pct: f64, stop_hook_active: bool) -> HookInput {
