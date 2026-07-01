@@ -14,6 +14,7 @@ mod hooks;
 mod install;
 mod model;
 mod oracle;
+mod policy;
 mod schedule;
 mod state;
 mod status;

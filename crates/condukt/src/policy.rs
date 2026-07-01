@@ -1,0 +1,238 @@
+//! `condukt policy decide` — the central graded autonomy policy engine.
+//!
+//! Graduates condukt's autonomy from one flat `cfg.autonomous` bool to a
+//! per-decision policy: a decision's `risk` × `reversibility` × `confidence`
+//! deterministically maps to `Auto` (proceed unattended), `Escalate` (ask the
+//! human — the one surviving 質疑 channel) or `Block` (hard stop; never even
+//! ask). Judgment — what risk/reversibility a concrete decision carries — stays
+//! LLM-side; this module owns only the deterministic mapping, so it is a pure,
+//! fully unit-testable core (mirrors `oracle.rs` / `editgate.rs`). No panics.
+
+use std::fmt;
+
+/// A three-valued level for each policy dimension. `Low < Medium < High` as a
+/// magnitude (higher risk = more dangerous, higher reversibility = easier to
+/// undo, higher confidence = surer it is correct).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Low,
+    Medium,
+    High,
+}
+
+impl Level {
+    /// Numeric magnitude used by the scoring rule (Low=0, Medium=1, High=2).
+    fn rank(self) -> i32 {
+        match self {
+            Level::Low => 0,
+            Level::Medium => 1,
+            Level::High => 2,
+        }
+    }
+}
+
+/// Parse a level from a case-insensitive token. Accepts `low`, `medium`/`med`,
+/// `high`. Returns `None` for anything else — callers surface that as an input
+/// error rather than panicking.
+pub fn parse_level(raw: &str) -> Option<Level> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "low" | "l" => Some(Level::Low),
+        "medium" | "med" | "m" => Some(Level::Medium),
+        "high" | "h" => Some(Level::High),
+        _ => None,
+    }
+}
+
+/// The policy verdict. Ordered by restrictiveness: `Auto` (least) < `Escalate`
+/// < `Block` (most).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Auto,
+    Escalate,
+    Block,
+}
+
+impl Decision {
+    /// Restrictiveness rank (Auto=0, Escalate=1, Block=2). Used to state and
+    /// test the monotonicity invariant.
+    pub fn restrictiveness(self) -> i32 {
+        match self {
+            Decision::Auto => 0,
+            Decision::Escalate => 1,
+            Decision::Block => 2,
+        }
+    }
+}
+
+impl fmt::Display for Decision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Decision::Auto => "auto",
+            Decision::Escalate => "escalate",
+            Decision::Block => "block",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Map a decision's `risk`, `reversibility` and `confidence` to a [`Decision`].
+///
+/// Total over all 27 inputs. Guarantees (each pinned by a unit test):
+/// - **Monotonicity**: raising `risk`, lowering `reversibility`, or lowering
+///   `confidence` never yields a *less* restrictive decision.
+/// - **Hard stop**: a high-risk *and* irreversible action is always `Block`,
+///   regardless of confidence — you cannot be confident enough to auto-run an
+///   irreversible catastrophe.
+/// - Otherwise a `risk − reversibility − confidence` score thresholds into
+///   `Auto` (comfortably safe), `Escalate` (ambiguous middle) or `Block`.
+pub fn decide(risk: Level, reversibility: Level, confidence: Level) -> Decision {
+    // Hard stop: high risk AND irreversible is never automatable, and asking a
+    // human to approve an irreversible catastrophe is not a real choice either.
+    if risk == Level::High && reversibility == Level::Low {
+        return Decision::Block;
+    }
+
+    let score = risk.rank() - reversibility.rank() - confidence.rank();
+    if score <= -2 {
+        Decision::Auto
+    } else if score >= 1 {
+        Decision::Block
+    } else {
+        // score ∈ {-1, 0}: the ambiguous middle asks the human.
+        Decision::Escalate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: [Level; 3] = [Level::Low, Level::Medium, Level::High];
+
+    #[test]
+    fn parse_level_accepts_case_insensitive_synonyms() {
+        assert_eq!(parse_level("low"), Some(Level::Low));
+        assert_eq!(parse_level("LOW"), Some(Level::Low));
+        assert_eq!(parse_level("Medium"), Some(Level::Medium));
+        assert_eq!(parse_level("med"), Some(Level::Medium));
+        assert_eq!(parse_level("  High  "), Some(Level::High));
+        assert_eq!(parse_level("h"), Some(Level::High));
+    }
+
+    #[test]
+    fn parse_level_rejects_garbage_without_panic() {
+        assert_eq!(parse_level(""), None);
+        assert_eq!(parse_level("critical"), None);
+        assert_eq!(parse_level("2"), None);
+    }
+
+    #[test]
+    fn decision_display_is_exact() {
+        assert_eq!(Decision::Auto.to_string(), "auto");
+        assert_eq!(Decision::Escalate.to_string(), "escalate");
+        assert_eq!(Decision::Block.to_string(), "block");
+    }
+
+    #[test]
+    fn anchor_block_high_risk_irreversible_regardless_of_confidence() {
+        for c in ALL {
+            assert_eq!(
+                decide(Level::High, Level::Low, c),
+                Decision::Block,
+                "high risk + irreversible must block at confidence {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn anchor_auto_trivially_safe_and_reversible() {
+        assert_eq!(decide(Level::Low, Level::High, Level::High), Decision::Auto);
+        assert_eq!(
+            decide(Level::Low, Level::High, Level::Medium),
+            Decision::Auto
+        );
+    }
+
+    #[test]
+    fn anchor_escalate_ambiguous_middle() {
+        assert_eq!(
+            decide(Level::Medium, Level::Medium, Level::Medium),
+            Decision::Escalate
+        );
+    }
+
+    #[test]
+    fn delegation_profile_flips_with_confidence() {
+        // The routine gate `state autonomy-check` delegates to: autonomous flag
+        // supplies confidence on a (Medium, Medium) baseline. High -> Auto,
+        // Low -> Escalate (non-Auto). This backs the byte-compat contract.
+        assert_eq!(
+            decide(Level::Medium, Level::Medium, Level::High),
+            Decision::Auto
+        );
+        assert_eq!(
+            decide(Level::Medium, Level::Medium, Level::Low),
+            Decision::Escalate
+        );
+    }
+
+    #[test]
+    fn decide_is_total_and_never_panics() {
+        for r in ALL {
+            for v in ALL {
+                for c in ALL {
+                    let d = decide(r, v, c);
+                    assert!(matches!(
+                        d,
+                        Decision::Auto | Decision::Escalate | Decision::Block
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn monotone_restrictiveness_in_risk() {
+        // Raising risk (holding reversibility, confidence) never lowers restrictiveness.
+        for v in ALL {
+            for c in ALL {
+                let lo = decide(Level::Low, v, c).restrictiveness();
+                let mid = decide(Level::Medium, v, c).restrictiveness();
+                let hi = decide(Level::High, v, c).restrictiveness();
+                assert!(lo <= mid && mid <= hi, "risk not monotone at v={v:?} c={c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn monotone_restrictiveness_as_reversibility_falls() {
+        // Lowering reversibility (High -> Low) never lowers restrictiveness.
+        for r in ALL {
+            for c in ALL {
+                let high = decide(r, Level::High, c).restrictiveness();
+                let med = decide(r, Level::Medium, c).restrictiveness();
+                let low = decide(r, Level::Low, c).restrictiveness();
+                assert!(
+                    high <= med && med <= low,
+                    "reversibility not monotone at r={r:?} c={c:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn monotone_restrictiveness_as_confidence_falls() {
+        // Lowering confidence (High -> Low) never lowers restrictiveness.
+        for r in ALL {
+            for v in ALL {
+                let high = decide(r, v, Level::High).restrictiveness();
+                let med = decide(r, v, Level::Medium).restrictiveness();
+                let low = decide(r, v, Level::Low).restrictiveness();
+                assert!(
+                    high <= med && med <= low,
+                    "confidence not monotone at r={r:?} v={v:?}"
+                );
+            }
+        }
+    }
+}
