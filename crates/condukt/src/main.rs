@@ -12,6 +12,7 @@ mod consensus;
 mod hooks;
 mod install;
 mod model;
+mod oracle;
 mod schedule;
 mod state;
 mod status;
@@ -295,6 +296,19 @@ enum StateAction {
     /// The JSON `skip_verifier` field is true ONLY for purely mechanical criteria
     /// that pass; behavioral criteria always report `skip_verifier:false`.
     CheckCriteria {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        task: String,
+    },
+    /// Deterministically ask `tdd oracle` whether a fix/feature task's RED→GREEN
+    /// proofs form a valid Fail→Pass reproduction oracle. Fail-soft: no `tdd` on
+    /// PATH, a spawn failure, a gone worktree, or corrupt/missing stdout all
+    /// degrade to `fallback:true` ("use the legacy gate instead") rather than
+    /// panicking. Tasks that don't require an oracle (not fix/feature, or no
+    /// `reproduction_tests`) also report `required:false, fallback:true`.
+    /// Always prints JSON and exits 0 — this is an advisory signal, not a gate.
+    CheckOracle {
         #[arg(long)]
         run: String,
         #[arg(long)]
@@ -938,6 +952,30 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             if !passed {
                 std::process::exit(1);
             }
+        }
+        StateAction::CheckOracle { run, task } => {
+            let rs = state::RunState::load(cfg, cwd, &run)?;
+            let dec_raw = state::load_decomposition(cfg, cwd, &run)?;
+            let dec: model::Decomposition = serde_json::from_str(&dec_raw)?;
+            let t = dec
+                .tasks
+                .iter()
+                .find(|t| t.id == task)
+                .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
+            let run_dir = rs
+                .tasks
+                .iter()
+                .find(|s| s.id == task)
+                .and_then(|s| s.worktree.as_deref())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| cwd.to_path_buf());
+            let out = oracle::check_oracle(
+                t.requires_fp_oracle(),
+                t.reproduction_tests.as_deref(),
+                &task,
+                &run_dir,
+            );
+            println!("{}", serde_json::to_string(&out)?);
         }
         StateAction::VerifierModel { worker, suggested } => {
             let chosen = verify::resolve_verifier_model(&worker, suggested.as_deref());
