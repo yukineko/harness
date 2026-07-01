@@ -25,3 +25,4 @@ chrono = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { version = "1", default-features = false, features = ["std"] }
+serde_json = { workspace = true }
