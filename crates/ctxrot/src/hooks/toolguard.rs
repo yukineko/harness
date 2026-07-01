@@ -6,8 +6,11 @@
 //!   1. Truncate the response (head + tail, with an omission header) so the
 //!      live context load is bounded (`updated`).
 //!   2. Inject a short nudge to route the next heavy read through a sub-agent
-//!      (`nudge`).
+//!      (`nudge`). The nudge is gated by per-key seen-state (each tool is
+//!      nudged at most once per session) and a session-level nudge cap.
 //!
+//! Observation (tooldump metric) always fires. The nudge is the *act* on top
+//! of the observation, and is suppressed once seen-state or cap is exhausted.
 //! We do NOT block the tool — the output is already in context this turn; the
 //! goal is to steer the *next* heavy read.
 
@@ -61,14 +64,9 @@ pub fn run(input: &HookInput, cfg: &Config) -> ToolguardOutput {
         };
     }
 
-    // Read session's existing tooldump count BEFORE emitting, so we count how
-    // many nudges have already been sent (not including this turn).
-    let existing_dumps = crate::metrics::summarize(cfg)
-        .into_iter()
-        .find(|s| s.session == input.session_id)
-        .map(|s| s.tooldumps)
-        .unwrap_or(0);
-
+    // Observation always fires: record that a big payload landed, independent of
+    // whether we go on to advise about it. The `tooldump` metric is the size
+    // signal; the `nudge` decision below is the *act* on top of it.
     crate::metrics::emit(
         cfg,
         &input.session_id,
@@ -76,13 +74,28 @@ pub fn run(input: &HookInput, cfg: &Config) -> ToolguardOutput {
         serde_json::json!({ "tool": input.tool_name, "bytes": size }),
     );
 
-    // Extract text from response for truncation.
+    // Always truncate, regardless of nudge gating.
     let text = response_text(resp);
     let limit = cfg.huge_tool_output_bytes as usize;
     let updated = truncate_response(&text, limit);
 
-    // Suppress the advisory nudge once the cap is reached; truncation continues.
-    let nudge = if existing_dumps < u64::from(cfg.toolguard_nudge_cap) {
+    // Gate the *advice* on per-session seen-state + a nudge cap so the rot
+    // detector does not itself become a rot source. Skip a rot-source key
+    // already nudged this session, and stop once the session's nudge budget
+    // (`toolguard_nudge_cap`, 0 = never advise) is spent.
+    let (seen, total) = crate::metrics::nudge_state(cfg, &input.session_id);
+    let nudge = if total >= cfg.toolguard_nudge_cap
+        || seen.contains(&input.tool_name)
+    {
+        None
+    } else {
+        // Committing to a nudge: record it so the next invocation sees this key.
+        crate::metrics::emit(
+            cfg,
+            &input.session_id,
+            "nudge",
+            serde_json::json!({ "tool": input.tool_name }),
+        );
         let kb = size as f64 / 1024.0;
         let tok = size / 4;
         Some(format!(
@@ -91,8 +104,6 @@ pub fn run(input: &HookInput, cfg: &Config) -> ToolguardOutput {
              必要な該当行・結論だけ受け取ること。今回ぶんは用が済んだら蒸留/退避を検討。",
             input.tool_name, kb, tok
         ))
-    } else {
-        None
     };
 
     ToolguardOutput {
@@ -245,54 +256,133 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Config with an isolated, real-on-disk state dir so the seen-state reader
+    /// and the `nudge`/`tooldump` writes round-trip deterministically without
+    /// touching the user's `~/.ctxrot` state. Metrics default on.
+    fn temp_cfg(name: &str) -> Config {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ctxrot-toolguard-{name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
+        Config {
+            state_dir: dir,
+            ..Config::default()
+        }
+    }
+
     fn input(tool: &str, resp: Value) -> HookInput {
         HookInput {
             tool_name: tool.to_string(),
             tool_response: Some(resp),
+            session_id: "S1".to_string(),
             ..Default::default()
         }
     }
 
-    /// Config suitable for unit tests: metrics writes disabled and state_dir
-    /// pointed at a nonexistent path so summarize() always returns an empty
-    /// list, keeping tooldump counts at zero regardless of the developer's
-    /// local ctxrot state.
-    fn test_cfg() -> Config {
-        let mut cfg = Config::default();
-        cfg.metrics = false;
-        cfg.state_dir = std::path::PathBuf::from("/nonexistent-ctxrot-test-state");
-        cfg
+    fn big_for(tool: &str) -> HookInput {
+        input(tool, json!({ "content": "x".repeat(60_000) }))
     }
 
+    /// (1) first occurrence of a rot-source key → nudge + truncation.
     #[test]
-    fn warns_on_big_read() {
-        let cfg = test_cfg();
-        let big = "x".repeat(60_000);
-        let out = run(&input("Read", json!({ "content": big })), &cfg);
-        assert!(out.nudge.unwrap().contains("Read"));
+    fn first_occurrence_nudges() {
+        let cfg = temp_cfg("first");
+        let out = run(&big_for("Read"), &cfg);
+        assert!(out.nudge.as_ref().unwrap().contains("Read"));
         assert!(out.updated.is_some());
+        let (seen, total) = crate::metrics::nudge_state(&cfg, "S1");
+        assert!(seen.contains("Read"));
+        assert_eq!(total, 1);
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
     }
 
+    /// (2) immediate repeat of the same key → nudge suppressed, truncation continues.
+    #[test]
+    fn repeat_same_key_suppresses_nudge_keeps_truncation() {
+        let cfg = temp_cfg("repeat");
+        assert!(run(&big_for("Read"), &cfg).nudge.is_some());
+        let second = run(&big_for("Read"), &cfg);
+        assert!(second.nudge.is_none(), "nudge suppressed on repeat");
+        assert!(second.updated.is_some(), "truncation continues");
+        let (_, total) = crate::metrics::nudge_state(&cfg, "S1");
+        assert_eq!(total, 1);
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    /// (3) distinct keys keep nudging until the cap, then (4) every key is
+    /// suppressed once the cap is reached — but truncation always continues.
+    #[test]
+    fn distinct_keys_nudge_until_cap_then_all_suppressed() {
+        let mut cfg = temp_cfg("cap");
+        cfg.toolguard_nudge_cap = 2;
+        assert!(run(&big_for("Read"), &cfg).nudge.is_some());
+        assert!(run(&big_for("Bash"), &cfg).nudge.is_some());
+        let third = run(&big_for("Grep"), &cfg);
+        assert!(third.nudge.is_none(), "cap reached — nudge suppressed");
+        assert!(third.updated.is_some(), "truncation still occurs");
+        let (seen, total) = crate::metrics::nudge_state(&cfg, "S1");
+        assert_eq!(total, 2);
+        assert!(seen.contains("Read") && seen.contains("Bash"));
+        assert!(!seen.contains("Grep"));
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    /// A cap of 0 means "never advise" — truncation still occurs.
+    #[test]
+    fn cap_zero_never_nudges_but_keeps_truncation() {
+        let mut cfg = temp_cfg("cap0");
+        cfg.toolguard_nudge_cap = 0;
+        let out = run(&big_for("Read"), &cfg);
+        assert!(out.nudge.is_none(), "nudge suppressed when cap is 0");
+        assert!(out.updated.is_some(), "truncation still occurs");
+        let (_, total) = crate::metrics::nudge_state(&cfg, "S1");
+        assert_eq!(total, 0);
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    /// tooldump is always observed even when nudge is suppressed.
+    #[test]
+    fn tooldump_observed_even_when_nudge_suppressed() {
+        let cfg = temp_cfg("observe");
+        assert!(run(&big_for("Read"), &cfg).nudge.is_some());
+        assert!(run(&big_for("Read"), &cfg).nudge.is_none()); // suppressed
+        let dumps = crate::metrics::summarize(&cfg)
+            .into_iter()
+            .find(|s| s.session == "S1")
+            .map(|s| s.tooldumps)
+            .unwrap_or(0);
+        assert_eq!(dumps, 2);
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    /// Sub-threshold and unwatched tools stay silent.
     #[test]
     fn silent_on_small_and_unwatched() {
-        let cfg = test_cfg();
-        let small_out = run(&input("Read", json!({ "content": "small" })), &cfg);
-        assert!(small_out.updated.is_none());
-        assert!(small_out.nudge.is_none());
-
-        let big = "x".repeat(60_000);
-        let edit_out = run(&input("Edit", json!({ "content": big })), &cfg);
-        assert!(edit_out.updated.is_none());
-        assert!(edit_out.nudge.is_none());
+        let cfg = temp_cfg("silent");
+        let small = run(&input("Read", json!({ "content": "small" })), &cfg);
+        assert!(small.updated.is_none());
+        assert!(small.nudge.is_none());
+        let big_edit = run(&big_for("Edit"), &cfg);
+        assert!(big_edit.updated.is_none());
+        assert!(big_edit.nudge.is_none());
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
     }
 
+    /// Big output on stdout is measured and nudged.
     #[test]
     fn measures_stdout() {
-        let cfg = test_cfg();
-        let big = "y".repeat(60_000);
-        let out = run(&input("Bash", json!({ "stdout": big, "stderr": "" })), &cfg);
+        let cfg = temp_cfg("stdout");
+        let out = run(
+            &input(
+                "Bash",
+                json!({ "stdout": "y".repeat(60_000), "stderr": "" }),
+            ),
+            &cfg,
+        );
         assert!(out.updated.is_some());
         assert!(out.nudge.is_some());
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
     }
 
     #[test]
@@ -304,19 +394,12 @@ mod tests {
 
     #[test]
     fn truncate_long_text_has_header() {
-        // Build a text that is well over the limit.
         let lines: Vec<String> = (0..1000).map(|i| format!("line {:04}", i)).collect();
         let text = lines.join("\n");
         let limit = 200;
         let result = truncate_response(&text, limit);
-        assert!(
-            result.contains("[toolguard:"),
-            "should have omission header"
-        );
-        assert!(
-            result.contains("行省略"),
-            "header should mention skipped lines"
-        );
+        assert!(result.contains("[toolguard:"), "should have omission header");
+        assert!(result.contains("行省略"), "header should mention skipped lines");
         assert!(
             result.chars().count() <= limit + 128,
             "result should be close to limit ({}), got {}",
@@ -329,18 +412,11 @@ mod tests {
     fn truncate_contains_head_and_tail() {
         let lines: Vec<String> = (0..200).map(|i| format!("line {:03}", i)).collect();
         let text = lines.join("\n");
-        // Use a modest limit so truncation kicks in.
         let limit = 100;
         let result = truncate_response(&text, limit);
-        // The first line should appear.
         assert!(result.contains("line 000"), "should contain head");
-        // The last line should appear.
         assert!(result.contains("line 199"), "should contain tail");
-        // Middle lines should be omitted.
-        assert!(
-            !result.contains("line 100"),
-            "middle lines should be omitted"
-        );
+        assert!(!result.contains("line 100"), "middle lines should be omitted");
     }
 
     #[test]
@@ -351,7 +427,6 @@ mod tests {
         let text = lines.join("\n");
         let limit = 512;
         let result = truncate_response(&text, limit);
-        // Allow a small slack for the header line itself (which can be ~50 chars).
         let result_len = result.chars().count();
         assert!(
             result_len <= limit + 128,
@@ -364,18 +439,5 @@ mod tests {
     #[test]
     fn nudge_cap_default_is_3() {
         assert_eq!(Config::default().toolguard_nudge_cap, 3);
-    }
-
-    #[test]
-    fn nudge_cap_zero_suppresses_nudge_but_keeps_truncation() {
-        let mut cfg = test_cfg();
-        cfg.toolguard_nudge_cap = 0; // cap=0 means never nudge
-        let big = "x".repeat(60_000);
-        let out = run(&input("Read", json!({ "content": big })), &cfg);
-        assert!(out.updated.is_some(), "truncation should still occur");
-        assert!(
-            out.nudge.is_none(),
-            "nudge must be suppressed when cap is 0"
-        );
     }
 }

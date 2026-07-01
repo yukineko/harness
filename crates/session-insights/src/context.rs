@@ -81,7 +81,12 @@ fn ledger_path(cwd: &Path) -> PathBuf {
         .map(|s| safe_session(&s))
         .unwrap_or_else(|| safe_session("default"));
 
-    base.join(project_key(cwd))
+    // Canonicalize cwd before the project key so this reader and the
+    // context-governor writer (backing::open) derive the *same* key for the same
+    // logical repo even when their cwd strings differ (symlinks, trailing slash,
+    // relative vs absolute). Both sides apply the identical canonicalize→key step.
+    let cwd_canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    base.join(project_key(&cwd_canonical))
         .join(session)
         .join("ledger.jsonl")
 }

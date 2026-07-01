@@ -300,6 +300,44 @@ fn seen_injected_in(sink: &Path, item_id: u64) -> bool {
     false
 }
 
+/// Snapshot-lever seen-state reader (the `snapshot` half of observe→act): returns
+/// the `resident_tokens` of this session's most recent `snapshotted` row, or
+/// `None` when the ledger holds no such row. The snapshot's resident size is a
+/// monotone proxy for transcript growth, so it is the control input that gates
+/// redundant same-band re-snapshots. A missing/corrupt file yields `None`, so the
+/// caller treats "unknown" as "nothing snapshotted yet" and falls back to the
+/// plain threshold gate — the ledger becomes a control input without ever breaking
+/// a turn.
+pub fn last_snapshotted_resident(cwd: &str) -> Option<u64> {
+    let (state_dir, _session) = resolve_state(cwd);
+    last_snapshotted_in(&state_dir.join("ledger.jsonl"))
+}
+
+/// Path-pinned core of [`last_snapshotted_resident`]: pure function of `sink` (no
+/// env), so it is deterministic and unit-testable. Scans for the LAST `snapshotted`
+/// row and returns its `resident_tokens`. Fail-soft: a missing/corrupt file or an
+/// absence of any `snapshotted` row yields `None`.
+fn last_snapshotted_in(sink: &Path) -> Option<u64> {
+    let contents = std::fs::read_to_string(sink).ok()?;
+    let mut latest = None;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let is_snapshotted = value.get("event").and_then(|v| v.as_str()) == Some("snapshotted");
+        if is_snapshotted {
+            if let Some(resident) = value.get("resident_tokens").and_then(|v| v.as_u64()) {
+                latest = Some(resident);
+            }
+        }
+    }
+    latest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +463,66 @@ mod tests {
             !seen_injected_in(&sink, 7),
             "a different item id must not match"
         );
+    }
+
+    /// `last_snapshotted_in` (the env-free core of `last_snapshotted_resident`)
+    /// returns the resident of the LAST `snapshotted` row, ignores non-snapshot
+    /// rows, and fail-softs to `None` on an absent file / no snapshot row.
+    #[test]
+    fn last_snapshotted_in_returns_latest_snapshot_resident() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sink = tmp.path().join("ledger.jsonl");
+
+        // Missing file → None (fail-soft).
+        assert_eq!(last_snapshotted_in(&sink), None);
+
+        let ledger = Ledger {
+            sink: sink.clone(),
+            session: "S1".to_string(),
+        };
+
+        // An injected row (not a snapshot) must not register.
+        ledger.append(
+            &LedgerNode {
+                session: "S1".to_string(),
+                hook: "UserPromptSubmit".to_string(),
+                item: Some(ItemId(1)),
+                action: Action::Injected,
+                reason: "reference-injection",
+            },
+            999,
+        );
+        assert_eq!(
+            last_snapshotted_in(&sink),
+            None,
+            "an injected row must not count as a snapshot"
+        );
+
+        // First snapshot row → its resident is returned.
+        ledger.append(
+            &LedgerNode {
+                session: "S1".to_string(),
+                hook: "Stop".to_string(),
+                item: Some(ItemId(StoreKey(1).0)),
+                action: Action::Snapshotted { to: StoreKey(1) },
+                reason: "stop-checkpoint",
+            },
+            4000,
+        );
+        assert_eq!(last_snapshotted_in(&sink), Some(4000));
+
+        // A later snapshot row supersedes the earlier one (LAST wins).
+        ledger.append(
+            &LedgerNode {
+                session: "S1".to_string(),
+                hook: "Stop".to_string(),
+                item: Some(ItemId(StoreKey(2).0)),
+                action: Action::Snapshotted { to: StoreKey(2) },
+                reason: "stop-checkpoint",
+            },
+            9500,
+        );
+        assert_eq!(last_snapshotted_in(&sink), Some(9500));
     }
 
     /// `prune_jsonl` (the env-free core of the GC) caps an over-cap ledger to its

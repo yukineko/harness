@@ -58,7 +58,17 @@ impl TranscriptBackingStore {
             .map(|s| safe_session(&s))
             .unwrap_or_else(|| safe_session("default"));
 
-        let state_dir = base.join(project_key(Path::new(cwd))).join(session);
+        // Canonicalize cwd before deriving the project key so the ledger path is
+        // stable regardless of the caller's path *string* form (symlinks like
+        // macOS /var→/private/var, trailing slash, relative vs absolute). The
+        // reader (session-insights) derives its key from std::env::current_dir(),
+        // which the OS already canonicalizes, so without this the writer (hook
+        // cwd) and reader could land in different dirs for the same logical repo.
+        let cwd_path = Path::new(cwd);
+        let cwd_canonical = cwd_path
+            .canonicalize()
+            .unwrap_or_else(|_| cwd_path.to_path_buf());
+        let state_dir = base.join(project_key(&cwd_canonical)).join(session);
 
         // Best-effort: never Err on a normal path (the bin .expect()s open()).
         let _ = std::fs::create_dir_all(&state_dir);
