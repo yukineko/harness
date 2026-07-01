@@ -16,6 +16,10 @@
 //!     NOT treated as a harness error: it blocks (bounded by max_attempts, with
 //!     an escapable reason) rather than silently allowing, so a broken reviewer
 //!     can't become a bypass. See `review::decide_subprocess`.
+//!   * a diff too large to review whole (truncated to `max_diff_bytes`) is NOT a
+//!     harness error: its dropped tail is unreviewed, so it blocks (bounded by
+//!     `max_attempts`, with an escapable reason) rather than silently allowing —
+//!     otherwise the tail would bypass the gate. See `review::decide_truncated`.
 
 mod config;
 mod git;

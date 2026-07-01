@@ -13,6 +13,14 @@
 //! fails (subprocess crash / timeout / unusable output) does NOT allow silently:
 //! it blocks up to `max_attempts` times with a loud, escapable reason, then
 //! gives up loudly — a broken reviewer must never become a bypass.
+//!
+//! Truncation guard: if the diff exceeds `max_diff_bytes` it is cut to fit and
+//! the tail is dropped. A dropped tail is *unreviewed* — the reviewer never saw
+//! it and the hash below can't cover it — so a truncated diff must NOT be
+//! silently allowed (that would let the tail bypass the gate). We block it up to
+//! `max_attempts` with a loud, escapable reason (split the change, raise
+//! `max_diff_bytes`, `.reviewgate-skip`, or `REVIEWGATE_DISABLE=1`), then give up
+//! loudly with a distinct tag so the turn is never permanently trapped.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -93,11 +101,13 @@ pub fn evaluate(cfg: &Config, root: &Path, st: &crate::state::SessionState) -> D
         return allow("no-reviewable-changes", st);
     }
 
-    let diff = crate::git::diff_text(root, &files, cfg.max_diff_bytes);
+    let crate::git::DiffText {
+        text: diff,
+        truncated,
+    } = crate::git::diff_text(root, &files, cfg.max_diff_bytes);
     if diff.trim().is_empty() {
         return allow("empty-diff", st);
     }
-    let hash = hash_diff(&diff);
 
     // attempt counter resets after an idle gap (a fresh turn).
     let prior_attempts = if now() - st.last_ts > cfg.reset_after_secs {
@@ -105,6 +115,19 @@ pub fn evaluate(cfg: &Config, root: &Path, st: &crate::state::SessionState) -> D
     } else {
         st.attempts
     };
+
+    // Truncation guard (fail closed, bounded): the diff was larger than
+    // max_diff_bytes and the tail was dropped. That tail is unreviewed, and the
+    // hash below can't cover it, so neither the subprocess reviewer nor the
+    // inject-mode "already-reviewed" convergence can honestly certify the whole
+    // change. Don't silently allow — block (bounded, escapable) so the tail can't
+    // slip through unreviewed. Checked before the hash short-circuit precisely
+    // because that short-circuit would otherwise wave a truncated diff through.
+    if truncated {
+        return decide_truncated(cfg, files, prior_attempts);
+    }
+
+    let hash = hash_diff(&diff);
 
     // Same diff we already forced a review of → the agent reviewed exactly this.
     if !st.last_hash.is_empty() && st.last_hash == hash {
@@ -225,6 +248,43 @@ fn allow(tag: &'static str, st: &crate::state::SessionState) -> Decision {
     }
 }
 
+/// The diff was truncated to fit `max_diff_bytes`, so its tail is unreviewed.
+/// Fail *closed* (but bounded): block the stop with a loud, escapable reason for
+/// up to `max_attempts` consecutive stops (giving the agent a chance to split the
+/// change so the diff fits), then give up *loudly* with a distinct tag so a
+/// permanently-too-large diff never traps the turn and is never mistaken for a
+/// clean review. Escape hatches (raise `max_diff_bytes`, `.reviewgate-skip`,
+/// `REVIEWGATE_DISABLE=1`) stay available throughout and are named in the reason,
+/// satisfying the never-break-a-turn invariant. Split out from `evaluate` so it
+/// is unit-testable without spawning git.
+fn decide_truncated(cfg: &Config, files: Vec<String>, prior_attempts: u32) -> Decision {
+    let attempts = prior_attempts + 1;
+    if attempts > cfg.max_attempts {
+        eprintln!(
+            "reviewgate: WARNING diff still exceeds max_diff_bytes ({max_bytes} B) after \
+             {max} attempt(s) — allowing the stop with the truncated tail UNREVIEWED. Split the \
+             change into smaller commits, raise max_diff_bytes, or set REVIEWGATE_DISABLE=1.",
+            max_bytes = cfg.max_diff_bytes,
+            max = cfg.max_attempts,
+        );
+        return Decision::Allow {
+            tag: "truncated-giveup",
+            attempts: 0,
+            last_hash: String::new(),
+        };
+    }
+    Decision::Block {
+        reason: truncated_reason(cfg, &files, attempts, cfg.max_attempts),
+        tag: "diff-truncated",
+        files,
+        attempts,
+        // Deliberately don't record a hash: the hash can't cover the dropped
+        // tail, so we must keep re-checking until the diff fits (or we give up
+        // above) rather than let the "already-reviewed" path certify it.
+        last_hash: String::new(),
+    }
+}
+
 fn file_list(files: &[String]) -> String {
     let mut s = String::new();
     for f in files.iter().take(40) {
@@ -292,6 +352,30 @@ fn reviewer_unavailable_reason(err: &str, attempt: u32, max: u32) -> String {
         attempt = attempt,
         max = max,
         err = err.trim(),
+    )
+}
+
+/// The diff was truncated: tell the agent the tail went unreviewed and hand it
+/// every way forward, so a too-large change can neither slip through unreviewed
+/// nor permanently trap the turn.
+fn truncated_reason(cfg: &Config, files: &[String], attempt: u32, max: u32) -> String {
+    format!(
+        "🚧 reviewgate: 変更差分が大きすぎてレビュー用に切り詰められました (round {attempt}/{max}).\n\n\
+         diff が max_diff_bytes ({max_bytes} B) を超えたため、末尾がレビュー対象から欠落しています。\
+         欠落した末尾は誰にもレビューされていないため、この停止を無言で許可すると未レビューの変更が\
+         gate をすり抜けてしまいます。全 diff がレビューされることを保証するため、この停止を一時的に\
+         ブロックしています。{max}回連続で解消しなければ警告を出して通過を許可します（永久にはブロックしません）。\n\n\
+         レビュー対象 ({n} files):\n{list}\n\
+         前に進むには次のいずれか:\n\
+         - 変更を小さなコミット / 差分に分割し、それぞれが max_diff_bytes に収まるようにする。\n\
+         - max_diff_bytes を引き上げる（reviewgate.toml の max_diff_bytes、現在 {max_bytes} B）。\n\
+         - このレビューを1回だけスキップ: project root に `.reviewgate-skip` を作成（理由を1行）。\n\
+         - reviewgate を完全に無効化: 環境変数 REVIEWGATE_DISABLE=1。",
+        attempt = attempt,
+        max = max,
+        max_bytes = cfg.max_diff_bytes,
+        n = files.len(),
+        list = file_list(files),
     )
 }
 
@@ -452,10 +536,6 @@ mod tests {
                     reason.contains("REVIEWGATE_DISABLE"),
                     "reason must name the disable escape hatch: {reason}"
                 );
-                assert!(
-                    reason.contains(".reviewgate-skip"),
-                    "reason must name the one-shot skip escape hatch: {reason}"
-                );
             }
         }
     }
@@ -514,6 +594,67 @@ mod tests {
                 panic!("an unspawnable reviewer must be an Error, not Clean (that would bypass)")
             }
             ReviewerResult::Issues(_) => panic!("an unspawnable reviewer must be an Error"),
+        }
+    }
+
+    // --- a truncated diff must not become a silent allow ---------------------
+
+    /// A diff truncated to fit max_diff_bytes has an unreviewed tail. It must
+    /// BLOCK the stop, never allow it — otherwise the dropped tail bypasses the
+    /// gate (the hole this fix closes). The reason must always hand the human a
+    /// way forward (never-break-a-turn), and no hash may be recorded (the hash
+    /// can't cover the tail, so "already-reviewed" must not later certify it).
+    #[test]
+    fn truncated_diff_blocks_it_does_not_allow() {
+        let cfg = Config::default(); // max_attempts = 2
+        let d = decide_truncated(&cfg, vec!["src/x.rs".to_string()], 0);
+        match d {
+            Decision::Allow { tag, .. } => {
+                panic!("a truncated diff must not be silently allowed (unreviewed-tail bypass); got allow tag={tag}")
+            }
+            Decision::Block {
+                tag,
+                reason,
+                last_hash,
+                ..
+            } => {
+                assert_eq!(tag, "diff-truncated");
+                assert!(
+                    last_hash.is_empty(),
+                    "must not record a hash for a truncated diff, else already-reviewed could certify the unreviewed tail"
+                );
+                // Override paths must be named so a too-large diff can't trap the turn.
+                assert!(
+                    reason.contains("max_diff_bytes"),
+                    "reason must name the raise-the-limit override: {reason}"
+                );
+                assert!(
+                    reason.contains(".reviewgate-skip"),
+                    "reason must name the one-shot skip escape hatch: {reason}"
+                );
+                assert!(
+                    reason.contains("REVIEWGATE_DISABLE"),
+                    "reason must name the disable escape hatch: {reason}"
+                );
+            }
+        }
+    }
+
+    /// Bounded, never trapped: after max_attempts consecutive truncated stops we
+    /// give up and allow — but via a *distinct* tag, so a permanently-too-large
+    /// diff is never mistaken for a clean review and never traps the turn.
+    #[test]
+    fn truncated_diff_gives_up_after_max_attempts_but_never_traps() {
+        let cfg = Config::default(); // max_attempts = 2
+        let d = decide_truncated(&cfg, vec!["src/x.rs".to_string()], cfg.max_attempts);
+        match d {
+            Decision::Allow { tag, last_hash, .. } => {
+                assert_eq!(tag, "truncated-giveup");
+                assert!(last_hash.is_empty());
+            }
+            Decision::Block { .. } => {
+                panic!("must give up after max_attempts so a too-large diff never permanently traps the turn")
+            }
         }
     }
 }
