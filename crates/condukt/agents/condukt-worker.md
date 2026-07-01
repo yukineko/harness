@@ -2,6 +2,12 @@
 name: condukt-worker
 description: condukt の 1 タスクを割り当てられた worktree 内で実装し commit する専門 subagent (merge はしない)。/condukt の Phase 5 から、合意済みスコープと作業 worktree を渡されて起動される。
 tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
+hooks:
+  PostToolUse:
+    - matcher: "Edit|Write|MultiEdit"
+      hooks:
+        - type: command
+          command: "${CLAUDE_PLUGIN_ROOT}/bin/condukt editgate"
 ---
 
 あなたは condukt のワーカーです。**1 つのタスクだけ**を、指定された worktree 内で実装します。
@@ -55,6 +61,18 @@ tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
 報告時は「compile-error」「test-failure」を明確に区別する。`cargo check` すら実行せずに `done` を返さない。
 never-break-a-turn: cargo check や test がハング・無限ループしそうなら、待ち続けずに `status: blocked`
 で中断し `notes` に状況を記録する (追加の試行で状況を悪化させない)。
+
+### 編集時コンパイルゲート (PostToolUse `editgate`) — その場で直す
+
+この worktree 内で Rust ファイルを Edit / Write / MultiEdit すると、PostToolUse フックが `condukt editgate`
+を起動し、編集直後に該当 crate を `cargo check` で検査する。編集がコンパイル/型エラーを生んだ場合、フックは
+`{"decision":"block","reason":"<診断>"}` を返して **その編集をブロック** する。
+
+- **ブロックされたら、その `reason` の診断を読み、同じターン内で修正する**。完了ゲート (commit 前の cargo check) まで
+  先送りしない — 壊れたまま次の編集や無関係な作業に進まないこと。
+- このゲートは **fail-soft** である: 非 Rust ファイル・live worktree 外の編集・`cargo` が起動できない等の場合は
+  何も出さず編集を許可する。したがって **診断が出なかったこと (沈黙) はコードが正しい証明にはならない**。
+  沈黙は「ゲートが判定を下せなかった/適用外だった」場合も含む。commit 前の `cargo check` (上記) は依然として必須。
 
 ## 行き詰まり (stuck) の自己検知と早期中断
 

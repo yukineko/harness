@@ -43,6 +43,14 @@ enum Command {
     Restore,
     /// One-line progress readout for the statusLine.
     Statusline,
+    /// PostToolUse hook: after a worker's Edit/Write/MultiEdit to a Rust file
+    /// inside a live condukt worktree, deterministically decide (via the
+    /// edit-time compile gate) whether the edit left the crate broken. On a real
+    /// non-fallback broken verdict it prints one line of JSON
+    /// `{"decision":"block","reason":<diagnostics>}` so the worker fixes it in
+    /// the same turn. Fail-soft everywhere else: any other outcome or error
+    /// prints nothing and exits 0 (a hook must never break a turn).
+    Editgate,
     /// Compute a schedule from a decomposition JSON (stdin or --file).
     Schedule {
         #[arg(long)]
@@ -351,6 +359,12 @@ fn main() {
             let input = model::HookInput::parse(&read_stdin());
             hooks::statusline::run(input.cwd.as_deref().unwrap_or(""));
         }),
+        Command::Editgate => run_hook(|| {
+            if Config::disabled() {
+                return;
+            }
+            run_editgate();
+        }),
         other => {
             if let Err(e) = run_user(other) {
                 eprintln!("condukt: {e:#}");
@@ -363,6 +377,60 @@ fn main() {
 fn run_hook<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> ! {
     let _ = std::panic::catch_unwind(f);
     std::process::exit(0);
+}
+
+/// PostToolUse edit-time compile gate. Reads a PostToolUse payload from stdin,
+/// and — only for an Edit/Write/MultiEdit to a Rust file inside a live condukt
+/// worktree that a real (non-fallback) `cargo check` finds broken — prints one
+/// line of JSON `{"decision":"block","reason":<diagnostics>}` so the worker
+/// fixes it in the same turn. Every other path (non-edit tool, no file, non-Rust
+/// file, out-of-worktree edit, clean build, fallback, empty/invalid stdin, or
+/// any error) prints nothing. Called under [`run_hook`], so it exits 0 and a
+/// panic is swallowed — it can never break a turn.
+fn run_editgate() {
+    // Parse the PostToolUse payload; empty/invalid stdin → stay silent.
+    let input = match harness_core::hook::HookInput::parse(&read_stdin()) {
+        Some(i) => i,
+        None => return,
+    };
+
+    // Only file-mutating edit tools are in scope. `HookInput::target()` also
+    // yields a path for Read/NotebookEdit, so gate on the tool name explicitly.
+    if !matches!(input.tool_name.as_str(), "Edit" | "Write" | "MultiEdit") {
+        return;
+    }
+    let file_path = match input.target() {
+        Some(p) => PathBuf::from(p),
+        None => return,
+    };
+
+    let cfg = Config::load();
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Resolve the project's run-state directory the same way CheckOracle does
+    // (Config.state_dir keyed by the repo root under `cwd`), then ask which
+    // live worktree — if any — this edited path falls under.
+    let run_dir = cfg
+        .state_dir
+        .join(store::project_key(&store::repo_root(&cwd)));
+    let wt = state::active_worktree_for_path(&file_path, &run_dir);
+
+    // BLOCK enforcement: only a real (non-fallback) broken verdict rejects.
+    let verdict = editgate::check_edit(&file_path, wt.as_deref(), true);
+    if let state::EditGateDecision::Reject = state::enforce_edit_gate(&verdict) {
+        let reason = verdict
+            .get("diagnostics")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("edit left the crate not compiling (see cargo check)");
+        let out = serde_json::json!({ "decision": "block", "reason": reason });
+        if let Ok(line) = serde_json::to_string(&out) {
+            println!("{line}");
+        }
+    }
 }
 
 fn run_user(cmd: Command) -> Result<()> {
@@ -435,8 +503,8 @@ fn run_user(cmd: Command) -> Result<()> {
         // These are dispatched as hooks in main() (via run_hook, which exits and
         // never returns here). Reaching this arm would be an internal dispatch
         // bug; return a clean error instead of panicking the process.
-        Command::Restore | Command::Statusline => {
-            bail!("internal: Restore/Statusline must be dispatched in main(), not run_user()")
+        Command::Restore | Command::Statusline | Command::Editgate => {
+            bail!("internal: hook subcommands must be dispatched in main(), not run_user()")
         }
     }
     Ok(())
