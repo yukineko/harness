@@ -18,6 +18,7 @@ mod model;
 mod proof;
 mod runner;
 mod state;
+mod transition;
 
 use std::io::Read;
 use std::path::Path;
@@ -63,6 +64,13 @@ enum Command {
         #[arg(long)]
         task: String,
     },
+    /// Classify the RED→GREEN transition for a task and print an oracle report as
+    /// JSON. Exit 0 only for a valid Fail→Pass oracle, else exit 1 (fail-soft:
+    /// missing/corrupt proofs report `unknown`, never panic).
+    Oracle {
+        #[arg(long)]
+        task: String,
+    },
     /// Write a starter ./tdd.toml.
     Init {
         #[arg(long)]
@@ -98,6 +106,7 @@ fn main() {
         Command::Red { task, cmd } => proof_command(&task, &cmd, true),
         Command::Green { task, cmd } => proof_command(&task, &cmd, false),
         Command::Verify { task } => verify_command(&task),
+        Command::Oracle { task } => oracle_command(&task),
         Command::Init { force } => exit_on_err(init(force)),
         Command::Install { dry_run } => exit_on_err(install::install(dry_run)),
         Command::Uninstall { dry_run } => exit_on_err(install::uninstall(dry_run)),
@@ -222,6 +231,27 @@ fn verify_command(task: &str) -> ! {
         "✗ tdd: `{task}` is missing a RED or GREEN proof. Run `tdd red --task {task}` then \
          `tdd green --task {task}`."
     );
+    std::process::exit(1);
+}
+
+/// `tdd oracle`: classify the task's RED→GREEN transition and print a JSON
+/// report. Fail-soft — a missing/unreadable/corrupt proof yields
+/// `has_red/has_green=false`, `transition="unknown"`, `valid_fp_oracle=false`
+/// and still prints valid JSON. Exit 0 only for a valid Fail→Pass oracle.
+fn oracle_command(task: &str) -> ! {
+    let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let cfg = Config::load(&root);
+    let pre = proof::read_passed(&root, &cfg, task, "red");
+    let post = proof::read_passed(&root, &cfg, task, "green");
+    let report = transition::oracle_report(pre, post);
+    let valid = report
+        .get("valid_fp_oracle")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    println!("{report}");
+    if valid {
+        std::process::exit(0);
+    }
     std::process::exit(1);
 }
 

@@ -149,6 +149,17 @@ pub fn verify(root: &Path, cfg: &Config, task: &str) -> bool {
         && artifact_path(root, cfg, task, "green").exists()
 }
 
+/// Fail-soft read of a proof artifact's `passed` field. Returns `None` if the
+/// artifact is missing, unreadable, not valid JSON, or lacks a boolean
+/// `passed` field — never panics, so an oracle can report `has_red/has_green`
+/// honestly instead of crashing a turn.
+pub fn read_passed(root: &Path, cfg: &Config, task: &str, kind: &str) -> Option<bool> {
+    let path = artifact_path(root, cfg, task, kind);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("passed")?.as_bool()
+}
+
 impl runner::Outcome {
     fn status_str(&self) -> String {
         if self.timed_out {
@@ -179,6 +190,44 @@ mod tests {
         assert!(judge_green(true, true).is_ok());
         assert!(judge_green(true, false).is_err()); // no RED proof
         assert!(judge_green(false, true).is_err()); // still failing
+    }
+
+    #[test]
+    fn read_passed_is_fail_soft() {
+        let base = std::env::temp_dir().join(format!("tdd-passed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cfg = Config {
+            proof_dir: ".tdd".to_string(),
+            ..Config::default()
+        };
+        std::fs::create_dir_all(&base).unwrap();
+
+        // missing artifact → None
+        assert_eq!(read_passed(&base, &cfg, "t1", "red"), None);
+
+        // well-formed proofs → the recorded `passed` value
+        write_artifact(
+            &artifact_path(&base, &cfg, "t1", "red"),
+            &json!({"passed": false}),
+        )
+        .unwrap();
+        write_artifact(
+            &artifact_path(&base, &cfg, "t1", "green"),
+            &json!({"passed": true}),
+        )
+        .unwrap();
+        assert_eq!(read_passed(&base, &cfg, "t1", "red"), Some(false));
+        assert_eq!(read_passed(&base, &cfg, "t1", "green"), Some(true));
+
+        // corrupt JSON → None (no panic)
+        std::fs::write(artifact_path(&base, &cfg, "t2", "red"), "{not json").unwrap();
+        assert_eq!(read_passed(&base, &cfg, "t2", "red"), None);
+
+        // valid JSON but no boolean `passed` → None
+        write_artifact(&artifact_path(&base, &cfg, "t3", "red"), &json!({"x": 1})).unwrap();
+        assert_eq!(read_passed(&base, &cfg, "t3", "red"), None);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
