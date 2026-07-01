@@ -31,6 +31,10 @@ pub struct Config {
     #[serde(default)]
     #[allow(dead_code)] // wired by a later (pre-flight/interrogate) slice.
     pub rigor: RigorConfig,
+    /// ⑥ evidence gate policy (DESIGN.md §6). Controls whether a self-reported
+    /// `done`/`test_result:pass` is accepted without the harness's own evidence.
+    #[serde(default)]
+    pub evidence: EvidenceConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -208,6 +212,30 @@ impl Default for RigorConfig {
             run_d2_audit: true,
             max_interrogation_rounds: default_max_rounds(),
             record_decisions: false,
+        }
+    }
+}
+
+/// ⑥ evidence gate policy (DESIGN.md §6). A self-reported `done` is only a
+/// *claim*; the harness must not accept `test_result: pass` on the agent's word
+/// alone. When `require_verification` is on (the default, fail-closed), the
+/// harness independently re-runs the declared `test_cmd` in the worktree and
+/// trusts its exit code, downgrading an unverifiable `done` so it cannot merge.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceConfig {
+    /// Refuse to accept a self-reported `done`/`test_result:pass` unless the
+    /// harness itself re-runs `test_cmd` and it passes. Set `false` only when the
+    /// harness cannot run tests in the worktree — an explicit escape hatch so a
+    /// turn is never permanently blocked (DESIGN.md §6, "never break a turn").
+    #[serde(default = "default_true")]
+    pub require_verification: bool,
+}
+
+impl Default for EvidenceConfig {
+    fn default() -> Self {
+        EvidenceConfig {
+            require_verification: default_true(),
         }
     }
 }

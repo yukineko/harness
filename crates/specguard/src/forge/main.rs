@@ -720,7 +720,13 @@ fn cmd_implement(l: &Loaded, id: &str) -> Result<u8> {
         })
         .collect();
 
-    let results = implement::run_parallel(&l.repo_root, tasks, &wb, &l.cfg.agent);
+    let results = implement::run_parallel(
+        &l.repo_root,
+        tasks,
+        &wb,
+        &l.cfg.agent,
+        l.cfg.evidence.require_verification,
+    );
 
     // Persist results and build evidence.
     let idir = impl_dir(l);

@@ -63,6 +63,16 @@ run_d2_audit             = true
 max_interrogation_rounds = 4
 record_decisions         = false
 
+# ── ⑥ evidence gate (DESIGN.md §6) ───────────────────────────────────────────
+# 実装 agent の自己申告 `status: done` / `test_result: pass` を鵜呑みにしない。
+# require_verification=true (既定, fail-closed) では、ハーネスが worktree 内で
+# 宣言された test_cmd を独立実行し、その exit code で done を判定する。証拠なしの
+# 自己申告 done は partial(unverified) に降格し merge させない。
+# ハーネスがテストを実行できない環境では false に (escape hatch)。false でも自己申告は
+# "self-reported, unverified" と明示ラベルされ、人間の evidence gate 判断に委ねられる。
+[evidence]
+require_verification = true
+
 # 使い方 (パイプライン全体):
 #
 #   # ① gather: 3ソースから素材を決定的に収集 (DESIGN-INTAKE.md)
