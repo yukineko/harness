@@ -413,9 +413,16 @@ pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     }
 
     // Any orphan worktree under the base is also a leak.
-    if let Ok(orphans) = worktree::orphans(&repo, &cfg.worktree_base) {
-        for o in orphans {
-            reasons.push(format!("orphan worktree on disk: {}", o.display()));
+    // If detection itself fails we cannot confirm the absence of orphans, so
+    // surface the error as a gate reason instead of passing silently.
+    match worktree::orphans(&repo, &cfg.worktree_base) {
+        Ok(orphans) => {
+            for o in orphans {
+                reasons.push(format!("orphan worktree on disk: {}", o.display()));
+            }
+        }
+        Err(e) => {
+            reasons.push(format!("orphan worktree detection failed: {e}"));
         }
     }
 
@@ -1171,6 +1178,53 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// branch_sha is persisted and reloaded correctly.
+    #[test]
+    fn branch_sha_roundtrip() {
+        let tmp = make_tmp_dir("branch-sha-rt");
+        let cfg = make_test_cfg(&tmp);
+        let rs = RunState {
+            run_id: "run-sha-rt".into(),
+            goal: "branch_sha roundtrip".into(),
+            tasks: vec![TaskState {
+                id: "t1".into(),
+                status: Status::Running,
+                branch: Some("feat/t1".into()),
+                branch_sha: Some("deadbeef1234".into()),
+                ..Default::default()
+            }],
+            paused: false,
+            terminal_label: None,
+            recorded_at: None,
+        };
+        rs.save(&cfg, &tmp).unwrap();
+        let loaded = RunState::load(&cfg, &tmp, "run-sha-rt").unwrap();
+        assert_eq!(
+            loaded.tasks[0].branch_sha.as_deref(),
+            Some("deadbeef1234"),
+            "branch_sha must survive save/load"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Backward-compat: JSON without branch_sha loads with branch_sha == None.
+    #[test]
+    fn backward_compat_no_branch_sha() {
+        let json = r#"{
+            "run_id": "run-legacy-sha",
+            "goal": "no branch_sha",
+            "tasks": [
+                {"id": "t1", "status": "running", "branch": "feat/old"}
+            ]
+        }"#;
+        let rs: RunState =
+            serde_json::from_str(json).expect("must deserialize JSON without branch_sha");
+        assert_eq!(
+            rs.tasks[0].branch_sha, None,
+            "branch_sha must default to None for old JSON"
+        );
+    }
+
     /// Backward-compat: JSON without updated_at must load successfully with updated_at == None.
     #[test]
     fn backward_compat_no_updated_at() {
@@ -1762,5 +1816,55 @@ mod tests {
         let run = make_run_with_tasks(vec![ts("a", Status::Cancelled)]);
         let specs = records_for_run(&run, &dec).expect("settled run must be Some");
         assert!(specs.is_empty());
+    }
+
+    // ── branch_sha field tests ─────────────────────────────────────────────
+
+    /// branch_sha round-trips through JSON so that persisted state files
+    /// written by `state set --branch` can be read back by reconcile.
+    #[test]
+    fn task_state_branch_sha_serde_roundtrip() {
+        let t = TaskState {
+            id: "t1".into(),
+            branch_sha: Some("abc1234def5678".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("branch_sha"), "branch_sha must appear in JSON");
+        let back: TaskState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.branch_sha.as_deref(), Some("abc1234def5678"));
+    }
+
+    /// When branch_sha is None the field must deserialise as None (not error),
+    /// preserving backwards-compat with state files written before the field existed.
+    #[test]
+    fn task_state_branch_sha_absent_in_json_is_none() {
+        let json = r#"{"id":"t1","status":"pending"}"#;
+        let t: TaskState = serde_json::from_str(json).unwrap();
+        assert!(t.branch_sha.is_none());
+    }
+
+    /// The fallback: branch_sha.as_deref().unwrap_or(branch) must return the SHA
+    /// when set and the branch name when not set — this mirrors the reconcile logic.
+    #[test]
+    fn branch_sha_takes_priority_over_branch_name() {
+        let branch = "feature/my-task";
+        let sha = "deadbeef";
+
+        let t_with_sha = TaskState {
+            branch: Some(branch.into()),
+            branch_sha: Some(sha.into()),
+            ..Default::default()
+        };
+        let ref_to_check = t_with_sha.branch_sha.as_deref().unwrap_or(branch);
+        assert_eq!(ref_to_check, sha, "SHA must win when branch_sha is set");
+
+        let t_without_sha = TaskState {
+            branch: Some(branch.into()),
+            branch_sha: None,
+            ..Default::default()
+        };
+        let ref_to_check = t_without_sha.branch_sha.as_deref().unwrap_or(branch);
+        assert_eq!(ref_to_check, branch, "branch name must be used when branch_sha is None");
     }
 }
