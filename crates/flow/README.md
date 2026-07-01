@@ -100,7 +100,7 @@ binary — so it runs entirely on your Claude **subscription**, no API key.
 
 ```text
 # in Claude Code:
-/plugin marketplace add yukineko/harness
+/plugin marketplace add yukineko/claude-harnesses
 /plugin install flow@yukineko
 ```
 

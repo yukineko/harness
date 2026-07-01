@@ -1,7 +1,7 @@
 # Contributing
 
 このモノレポは複数の Claude Code プラグインを 1 つの workspace で管理し、各プラグインを
-`git-subdir`（`yukineko/harness.git` の `crates/<plugin>`、`ref=main`）で配布する。配布の仕組みは
+`git-subdir`（`yukineko/claude-harnesses.git` の `crates/<plugin>`、`ref=main`）で配布する。配布の仕組みは
 [README の「配布」節](README.md) を参照。
 
 ## バージョン運用ポリシー

@@ -2,7 +2,7 @@
 
 - **Status:** Proposed (observation step landed in ctxrot; cross-harness aggregation + shared budget pending)
 - **Date:** 2026-06-22
-- **Scope:** the harness-plugin family (`ctxrot`, `playbook`, `gauge`, `session-insights`, …) — multiple plugins, distributed together from the `yukineko/harness` monorepo
+- **Scope:** the harness-plugin family (`ctxrot`, `playbook`, `gauge`, `session-insights`, …) — multiple plugins, distributed together from the `yukineko/claude-harnesses` monorepo
 - **Owner:** ctxrot maintainers (originating repo); requires buy-in from the sibling plugins
 
 ## Context

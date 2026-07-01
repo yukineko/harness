@@ -35,6 +35,55 @@ pub fn emit(cfg: &Config, session: &str, event: &str, extra: Value) {
     harness_core::metrics::emit(&path(cfg), session, event, extra);
 }
 
+/// Per-session toolguard nudge history, read from the metrics log (forward
+/// streaming, fail-soft). `toolguard` emits a `nudge` row (`{event:"nudge",
+/// tool}`) each time it actually injects a big-output nudge; this reader replays
+/// those rows so the toolguard can dedup an already-nudged rot-source key and cap
+/// its total per-session nudges — the seen-state that makes the detector
+/// observe→act instead of advising on every oversized output.
+///
+/// Returns `(seen_keys, total)`: `seen_keys` is the set of rot-source keys (tool
+/// names) this session has already been nudged about, and `total` is the
+/// session's total nudge count. A missing, empty, or corrupt log — or one with no
+/// `nudge` rows for `session` — yields an empty set and `0`. Never panics or
+/// unwraps: unreadable lines and malformed/incomplete JSON rows are skipped, so a
+/// truncated trailing write or a foreign line can't break the caller.
+pub fn nudge_state(cfg: &Config, session: &str) -> (std::collections::HashSet<String>, u64) {
+    use std::io::{BufRead, BufReader};
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut total: u64 = 0;
+
+    let file = match std::fs::File::open(path(cfg)) {
+        Ok(f) => f,
+        Err(_) => return (seen, total),
+    };
+    for line in BufReader::new(file).lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let o: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if o.get("event").and_then(Value::as_str) != Some("nudge") {
+            continue;
+        }
+        if o.get("session").and_then(Value::as_str) != Some(session) {
+            continue;
+        }
+        total += 1;
+        if let Some(tool) = o.get("tool").and_then(Value::as_str) {
+            seen.insert(tool.to_string());
+        }
+    }
+    (seen, total)
+}
+
 /// Per-session rollup for `ctxrot metrics`.
 #[derive(Default)]
 pub struct SessionStat {
@@ -359,6 +408,63 @@ mod tests {
         assert_eq!(g.band_prompts, vec![1, 1, 1, 1]);
         assert_eq!(fmt_dwell(&g.band_prompts), "b0=1 b1=1 b2=1 b3=1");
         assert_eq!(g.inject_chars, 800); // summed across the group
+
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    #[test]
+    fn nudge_state_missing_log_is_empty() {
+        // No metrics.jsonl on disk → empty seen-set and zero total, no panic.
+        let cfg = temp_cfg("nudge-missing");
+        let (seen, total) = nudge_state(&cfg, "S1");
+        assert!(seen.is_empty());
+        assert_eq!(total, 0);
+        assert!(!path(&cfg).exists());
+    }
+
+    #[test]
+    fn nudge_state_counts_keys_and_total_per_session() {
+        let cfg = temp_cfg("nudge-count");
+        emit(&cfg, "S1", "nudge", json!({"tool": "Read"}));
+        emit(&cfg, "S1", "nudge", json!({"tool": "Read"})); // repeat key
+        emit(&cfg, "S1", "nudge", json!({"tool": "Bash"}));
+        // Other sessions and other events must not leak into S1's state.
+        emit(&cfg, "S2", "nudge", json!({"tool": "Grep"}));
+        emit(&cfg, "S1", "tooldump", json!({"tool": "Glob", "bytes": 99}));
+
+        let (seen, total) = nudge_state(&cfg, "S1");
+        assert_eq!(total, 3); // three nudge rows for S1 (incl. the repeat)
+        assert_eq!(seen.len(), 2); // distinct keys: Read, Bash
+        assert!(seen.contains("Read"));
+        assert!(seen.contains("Bash"));
+        assert!(!seen.contains("Grep")); // belongs to S2
+        assert!(!seen.contains("Glob")); // a tooldump, not a nudge
+
+        let (s2_seen, s2_total) = nudge_state(&cfg, "S2");
+        assert_eq!(s2_total, 1);
+        assert!(s2_seen.contains("Grep"));
+
+        let _ = std::fs::remove_dir_all(&cfg.state_dir);
+    }
+
+    #[test]
+    fn nudge_state_skips_empty_and_corrupt_lines() {
+        // A log with blank lines, malformed JSON, and a nudge row missing its
+        // `tool` field must not panic: bad rows are skipped, the valid one counts,
+        // and a tool-less nudge bumps `total` without adding a key.
+        let cfg = temp_cfg("nudge-corrupt");
+        emit(&cfg, "S1", "nudge", json!({"tool": "Read"}));
+        let p = path(&cfg);
+        let mut existing = std::fs::read_to_string(&p).unwrap_or_default();
+        existing.push('\n'); // blank line
+        existing.push_str("{ this is not json }\n"); // corrupt
+        existing.push_str("{\"session\":\"S1\",\"event\":\"nudge\"}\n"); // no `tool`
+        std::fs::write(&p, existing).unwrap();
+
+        let (seen, total) = nudge_state(&cfg, "S1");
+        assert_eq!(total, 2); // the Read row + the tool-less nudge row
+        assert_eq!(seen.len(), 1); // only Read contributed a key
+        assert!(seen.contains("Read"));
 
         let _ = std::fs::remove_dir_all(&cfg.state_dir);
     }

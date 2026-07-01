@@ -168,6 +168,11 @@ fn render_decisions(cfg: &Config, scope: &Scope, date: &str) -> String {
         decisions.push_str(&format!("- `{f}`\n"));
     }
     if scope.decision_files.len() > MAX_DECISIONS {
+        eprintln!(
+            "specguard: decision files truncated to {MAX_DECISIONS} (total {}; {} omitted)",
+            scope.decision_files.len(),
+            scope.decision_files.len() - MAX_DECISIONS
+        );
         decisions.push_str(&format!(
             "- … ほか {} 件 (このランでは未掲載)\n",
             scope.decision_files.len() - MAX_DECISIONS
@@ -346,6 +351,12 @@ fn area_block_one(cfg: &Config, hit: &AreaHit) -> String {
         out.push_str(&format!("- `{f}`\n"));
     }
     if hit.matched_files.len() > MAX_SAMPLE_FILES {
+        eprintln!(
+            "specguard: matched files for area '{}' truncated to {MAX_SAMPLE_FILES} (total {}; {} omitted)",
+            cfg.areas[hit.area_index].name,
+            hit.matched_files.len(),
+            hit.matched_files.len() - MAX_SAMPLE_FILES
+        );
         out.push_str(&format!(
             "- … ほか {} 件\n",
             hit.matched_files.len() - MAX_SAMPLE_FILES

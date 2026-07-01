@@ -36,7 +36,7 @@ env:
   # Distributable plugins, by crate directory (the script reads the package name
   # from each Cargo.toml, so run-book → package runbook is handled).
   PLUGINS: >-
-    autoflow backlog beacon budgetguard compass condukt ctxrot curate daily
+    autoflow backlog beacon budgetguard compass context-governor condukt ctxrot curate daily
     deepwiki difflog donegate evalkit flow fugu-router gauge harness-status
     hypothesis playbook precommit-audit replaykit reviewgate run-book schemaguard
     session-insights stuckguard taskprog tdd tracekit trajectoryeval
@@ -55,6 +55,10 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/check-versions.sh
+      # Reject panic=abort builds: catch_unwind (never-break-a-turn) is a NO-OP
+      # under abort. Asserts [profile.release] pins unwind + the harness-core
+      # compile_error! backstop is intact, before the heavy release build below.
+      - run: ./scripts/check-unwind.sh
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build --workspace --release

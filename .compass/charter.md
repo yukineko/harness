@@ -1,19 +1,20 @@
 ## north_star
-outcome trend を load-bearing にする。単一 verdict を記録するだけの層から、蓄積した outcome 履歴（末尾の連続した unchanged または backward の streak）を決定論的に集計し、north_star レベルの pivot（方向転換）か persevere（継続）かの勧告を駆動する層へ。confidence や weight が順序を駆動したのと対称に、outcome trend が『方向転換するか継続するか』の決定を駆動し、その決定を記録して次サイクルに読み戻す。
+toolguard truncate 完了 → nudge-cap・dispatch-update の parked 残件を処理し、toolguard の full cycle を完成させる
 
 ## definition_of_done
-- crates/compass/src/outcome.rs が、記録済みの outcome 履歴から末尾の連続した unchanged または backward の streak を集計する決定論関数を持つ。streak が閾値（既定 3）以上なら pivot、さもなくば persevere を、集計理由（streak 長・対象 verdict 列・参照した最後の forward の seq）つきで返す。履歴が空、または末尾が forward なら persevere（後方互換）。
-- その勧告が CLI から観測できる。compass pivot-check が recommendation（persevere か pivot）と streak と reason を JSON で stdout に出し exit 0 で終わる。
-- streak 集計と閾値判定の unit test を crates/compass/src/outcome.rs に追加する。末尾 forward なら persevere、閾値マイナス1の連続 unchanged なら persevere、閾値ぶんの連続 backward なら pivot、途中に forward が挟まると streak がリセットされ persevere。cargo test --workspace 全 pass、clippy -D warnings clean、cargo fmt --check clean。
-- crates/flow/skills/flow/SKILL.md の Step 4（loop 終端）が compass pivot-check を consume し、pivot 勧告時は集計理由を引用して north_star を彫り直すか（再オリエンテーション）を promptし、persevere ならそのまま継続する手順が明記される。これで outcome trend が store から CLI そして flow の決定まで実際に流れ inert にならない。
+- nudge-cap: config.rs に toolguard_nudge_cap: u32 (default 3) が追加され、セッション内 tooldump 回数が上限を超えたら nudge を省略する
+- dispatch-update: main.rs の Toolguard ブランチが ToolguardOutput.updated を updatedToolOutput に、.nudge を additionalContext に正しくマッピングしている（実装済）
+- cargo test --workspace 全 pass
 
 ## measuring_stick
-私が今も擁護できるゴールに、測れるだけ近づくか(build より validate 寄り — 既存機能を壊さず、新機能は観測可能な改善として確認できること)。
+擁護可能性 × ゴールへの接近距離 ÷ コスト
 
 ## current_gap
-outcome 層は単一 verdict を記録するだけ(crates/compass/src/outcome.rs の record/latest は最新1件のみ、trend/集計なし)で、連続 unchanged/backward の streak が pivot 判断を駆動しない=inert。confidence/weight が順序を駆動したのと対称な最大かつ右サイズの gap は DoD#1-#3: outcome.rs に末尾 streak 集計+閾値(既定3)で pivot/persevere を理由つきで返す決定論関数、compass pivot-check CLI で JSON 観測、streak/閾値の unit test。次の一手 = outcome.rs の集計関数+test と main.rs の pivot-check サブコマンド。DoD#4(flow SKILL Step4 の consume)は parked で次スライス。
+nudge-cap（config.rs + toolguard.rs のセッション内反復キャップ）が未実装。dispatch-update は ef824f4 で完了済み。
 
 ## next_action
+nudge-cap: config.rs に toolguard_nudge_cap を追加し、toolguard.rs の run() でセッション内 tooldump カウントが上限を超えたら nudge = None を返す（size=s）
 
 ## parked
+- dispatch-update (ef824f4 で完了済み・削除可)
 

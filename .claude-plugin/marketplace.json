@@ -19,13 +19,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/beacon",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/beacon",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/beacon",
         "ref": "main"
       }
@@ -43,13 +43,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/blastguard",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/blastguard",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/blastguard",
         "ref": "main"
       }
@@ -68,13 +68,13 @@
         "condukt"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/backlog",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/backlog",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/backlog",
         "ref": "main"
       }
@@ -93,13 +93,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/budgetguard",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/budgetguard",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/budgetguard",
         "ref": "main"
       }
@@ -117,13 +117,13 @@
         "condukt"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/compass",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/compass",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/compass",
         "ref": "main"
       }
@@ -145,14 +145,38 @@
         "websearch"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/condukt",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/condukt",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/condukt",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "context-governor",
+      "description": "A thin control layer around Claude Code's built-in compaction: pin + lossless-recall + retrieval + tool-hygiene, wired as a single hook-dispatch binary. Separates the three axes it touches — size (window occupancy), cost (recompute/cache), correctness (norm preservation) — and never writes its own lossy summarizer (compression is delegated to built-in compaction). Subscription-native (hooks + binary, no API key).",
+      "version": "0.1.0",
+      "category": "context",
+      "keywords": [
+        "context",
+        "compaction",
+        "hooks",
+        "retrieval",
+        "rust"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/context-governor",
+      "author": {
+        "name": "yukineko"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
+        "path": "crates/context-governor",
         "ref": "main"
       }
     },
@@ -169,13 +193,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/ctxrot",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/ctxrot",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/ctxrot",
         "ref": "main"
       }
@@ -194,13 +218,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/curate",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/curate",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/curate",
         "ref": "main"
       }
@@ -218,13 +242,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/deepwiki",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/deepwiki",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/deepwiki",
         "ref": "main"
       }
@@ -243,13 +267,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/difflog",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/difflog",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/difflog",
         "ref": "main"
       }
@@ -267,13 +291,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/donegate",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/donegate",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/donegate",
         "ref": "main"
       }
@@ -292,13 +316,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/evalkit",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/evalkit",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/evalkit",
         "ref": "main"
       }
@@ -319,13 +343,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/flow",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/flow",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/flow",
         "ref": "main"
       }
@@ -345,13 +369,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/fugu-router",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/fugu-router",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/fugu-router",
         "ref": "main"
       }
@@ -371,13 +395,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/gauge",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/gauge",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/gauge",
         "ref": "main"
       }
@@ -396,13 +420,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/harness-status",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/harness-status",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/harness-status",
         "ref": "main"
       }
@@ -420,13 +444,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/playbook",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/playbook",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/playbook",
         "ref": "main"
       }
@@ -444,13 +468,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/precommit-audit",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/precommit-audit",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/precommit-audit",
         "ref": "main"
       }
@@ -468,13 +492,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/reviewgate",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/reviewgate",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/reviewgate",
         "ref": "main"
       }
@@ -492,13 +516,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/run-book",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/run-book",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/run-book",
         "ref": "main"
       }
@@ -516,13 +540,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/schemaguard",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/schemaguard",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/schemaguard",
         "ref": "main"
       }
@@ -540,13 +564,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/session-insights",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/session-insights",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/session-insights",
         "ref": "main"
       }
@@ -566,13 +590,13 @@
         "linux"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/specguard",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/specguard",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/specguard",
         "ref": "main"
       }
@@ -590,13 +614,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/stuckguard",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/stuckguard",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/stuckguard",
         "ref": "main"
       }
@@ -615,13 +639,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/taskprog",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/taskprog",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/taskprog",
         "ref": "main"
       }
@@ -639,13 +663,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/tdd",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/tdd",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/tdd",
         "ref": "main"
       }
@@ -664,13 +688,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/tracekit",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/tracekit",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/tracekit",
         "ref": "main"
       }
@@ -689,13 +713,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/autoflow",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/autoflow",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/autoflow",
         "ref": "main"
       }
@@ -712,13 +736,13 @@
         "compass"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/hypothesis",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/hypothesis",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/hypothesis",
         "ref": "main"
       }
@@ -737,13 +761,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/daily",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/daily",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/daily",
         "ref": "main"
       }
@@ -764,13 +788,13 @@
         "flow"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/scout",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/scout",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/scout",
         "ref": "main"
       }
@@ -788,13 +812,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/trajectoryeval",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/trajectoryeval",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/trajectoryeval",
         "ref": "main"
       }
@@ -813,13 +837,13 @@
         "rust"
       ],
       "license": "MIT",
-      "homepage": "https://github.com/yukineko/harness/tree/main/crates/replaykit",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/replaykit",
       "author": {
         "name": "yukineko"
       },
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/yukineko/harness.git",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
         "path": "crates/replaykit",
         "ref": "main"
       }

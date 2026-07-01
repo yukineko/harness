@@ -174,14 +174,15 @@ fn completeness(
             let p = parse::parse(&o.out.stdout);
             if o.out.code != 0 || !p.marker_found {
                 eprintln!(
-                    "specguard: WARN 網羅性批評 inconclusive for '{label}' (agent 失敗/marker 欠落); 見落とし候補なし扱い"
+                    "specguard: WARN 網羅性批評 inconclusive for '{label}' (agent 失敗/marker 欠落); fail-safe: needs_user=true で存置"
                 );
-                // A broken critic must not raise a sentinel by itself.
+                // A broken critic cannot confirm "nothing missed" — treat as
+                // needs_user=true so the shard is not silently dropped from review.
                 return (
                     label,
                     Parsed {
                         report: "網羅性批評 inconclusive (agent 失敗/marker 欠落)".to_string(),
-                        needs_user: false,
+                        needs_user: true,
                         summary: String::new(),
                         marker_found: true,
                     },

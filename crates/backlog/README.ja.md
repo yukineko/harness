@@ -1,0 +1,72 @@
+# backlog
+
+> 🌐 [English](README.md) ・ **日本語**
+
+Claude Code 向けの**クロスプロジェクト・タスクキュー** — どのセッション・どのリポジトリよりも長く生き残る、cycle-type タグ付きの作業項目の永続キュー。
+
+## 目的
+
+backlog は「あとでやる」をセッションをまたいで持ち越すための耐久キューである。責務は次の 2 つに集約される。
+
+- **キューと state の管理**: `backlog` バイナリが作業項目の追加・一覧・ピック・完了/失敗マークを担い、複数セッションを直列化するための排他 run-lock (`~/.backlog/run.lock`) を所有する。
+- **保留作業の自動浮上**: **SessionStart** フックが、セッションが開いた瞬間に pending なタスクを context として注入する。
+
+cycle-type のタグでタスクを分類できるため、リポジトリ横断で「どの種類の仕事が溜まっているか」を後から絞り込める。lock→pick→`/condukt`→done のループ driver 自体は `/flow` に統合されており、同梱の `/backlog` skill はその薄いエイリアス兼 queue/state 操作のエントリポイントである。
+
+**サブスクリプションネイティブ**: skill 1 つ、hook 1 つ、同梱の Rust バイナリ 1 つだけで動き、`ANTHROPIC_API_KEY` も追加インストールも不要。SessionStart フックは fail-soft で、壊れた stdin は stderr にログして読み飛ばし、常に exit 0 で返すのでターンを壊さない。
+
+## どうして必要か
+
+セッションは揮発する。会話を閉じれば「次にやろうと思っていたこと」も一緒に消え、別のリポジトリで作業を始めれば、別プロジェクトで積み残した課題は視界から完全に外れる。チャット履歴や記憶に頼っていると、保留タスクは静かに失われる。
+
+backlog はこの失敗モードを潰す。一度キューに積めば、
+
+- セッションを閉じても、別リポジトリに移っても、項目は永続キューに残り続ける。
+- 次にどのプロジェクトでセッションを開いても、SessionStart フックが pending な作業を自動で context に差し込むので、「何が残っていたか」を思い出す必要がない。
+- 排他 run-lock により、複数セッションが同時にキューを消化して競合することを防ぐ。`/flow` driver はキューを drain する前にロックを取得し、他セッションは `lock status` がアクティブな保有者を報告したら退避する。
+
+つまり backlog が無いと、保留作業の追跡が人間（または揮発する会話）任せになり、取りこぼしと並行消化の衝突が起きる。
+
+## どう使うか
+
+プラグインマーケットプレイス経由で導入すると、同梱の `/backlog` skill がすぐ使える。`backlog` バイナリはキューと排他 run-lock を所有し、次のサブコマンドを公開する。
+
+| サブコマンド | 役割 |
+|---|---|
+| `add` | タスクを追加 (`--title`, `--project`, `--tag`, `--priority p0/p1/p2`, `--notes`, `--weight`) |
+| `list` | タスク一覧。`--tag` / `--project` / `--status` で絞り込み |
+| `next` | 次の最高優先度の pending タスクを JSON で出力 |
+| `done <id>` | タスクを完了マーク |
+| `fail <id>` | タスクを失敗マーク (`--reason`)。再実行を 2 日先送りする |
+| `edit <id>` | タスクの title / tags / notes / status を更新 |
+| `session-start` | SessionStart フック: pending タスクを context として注入 |
+| `install` / `uninstall` | `~/.claude/settings.json` の SessionStart フックを配線/除去 |
+| `lock {acquire,release,status}` | `~/.backlog/run.lock` 排他ロックの管理 |
+
+### slash command
+
+`/backlog` は queue・state 操作（`list` / `next` / `done` / `fail` / `lock`）を呼ぶ薄いエントリポイント。引数でサブコマンドを渡す。
+
+> キューを自動で全件消化したいときは `/backlog` ではなく **`/flow`** を使う。lock 取得 → アイテムピック → `/condukt` → done/fail → lock 解放というループ driver は `/flow` に統合されており、compass ゲート・budgetguard・fugu-router によるモデル選択も含む上位互換 driver になっている。
+
+### SessionStart フックの配線
+
+プラグイン導入後、`backlog install` を実行すると `~/.claude/settings.json` に `SessionStart` グループがマージされる（冪等・所有権マーク付き）。これでセッションを開くたびに pending な作業が浮上する。`install` / `uninstall` は `--dry-run` で書き込まず結果だけ表示できる。
+
+### 最小例（standalone / cargo）
+
+```sh
+cargo install --path .
+backlog add --title "Fix X" --project "$PWD" --priority p1   # 項目をキューに積む
+backlog list --status pending                                # キューを見る
+backlog next                                                 # 次の項目をピック
+backlog done <id>                                            # 解決する
+backlog fail <id> --reason "blocked"                         # 2 日先送りする
+backlog lock status                                          # run-lock の保有者を確認
+backlog install                                              # SessionStart フックを settings.json にマージ
+backlog uninstall                                            # 再び除去する
+```
+
+> 補足: `backlog list` の status 語彙は `pending` であり `open` ではない。`list --status open` は何も表示しない。
+
+同梱の `bin/backlog-*` バイナリがプラグインの出荷物なので、エンドユーザーは cargo も API キーも不要。skill や hook が依存する挙動を変えたら、ワークスペースをビルド（`cargo build --workspace --release`）して再コミットする。

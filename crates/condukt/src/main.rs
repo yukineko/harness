@@ -252,6 +252,14 @@ enum StateAction {
         #[arg(long)]
         task: String,
     },
+    /// Run the mechanical gate for a task's done_criteria and print JSON.
+    /// Exits 0 if the criteria is met (or non-mechanical), exits 1 if it fails.
+    CheckCriteria {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        task: String,
+    },
 }
 
 fn main() {
@@ -495,7 +503,19 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             }
             if clear_branch {
                 t.branch = None;
+                t.branch_sha = None;
             } else if branch.is_some() {
+                // Record the SHA at assignment time so reconcile can detect
+                // force-push false-positives by checking the original commit.
+                if let Some(ref b) = branch {
+                    if t.branch_sha.is_none() {
+                        let repo = worktree::toplevel(cwd).ok();
+                        t.branch_sha = repo
+                            .as_deref()
+                            .and_then(|r| worktree::git(r, &["rev-parse", b]).ok())
+                            .map(|s| s.trim().to_string());
+                    }
+                }
                 t.branch = branch;
             }
             rs.save(cfg, cwd)?;
@@ -737,8 +757,120 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             let (done, total) = rs.counts();
             eprintln!("run '{run}': {done}/{total} done");
         }
+        StateAction::CheckCriteria { run, task } => {
+            let rs = state::RunState::load(cfg, cwd, &run)?;
+            let dec_raw = state::load_decomposition(cfg, cwd, &run)?;
+            let dec: model::Decomposition = serde_json::from_str(&dec_raw)?;
+            let t = dec
+                .tasks
+                .iter()
+                .find(|t| t.id == task)
+                .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
+            let Some(dc) = &t.done_criteria else {
+                println!("{{\"mechanical\":false}}");
+                return Ok(());
+            };
+            let Some(cmd) = criteria_mechanical_cmd(dc) else {
+                println!("{{\"mechanical\":false}}");
+                return Ok(());
+            };
+            let run_dir = rs
+                .tasks
+                .iter()
+                .find(|s| s.id == task)
+                .and_then(|s| s.worktree.as_deref())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| cwd.to_path_buf());
+            match std::process::Command::new(&cmd[0])
+                .args(&cmd[1..])
+                .current_dir(&run_dir)
+                .output()
+            {
+                Ok(out) => {
+                    let passed = out.status.success();
+                    let combined = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    println!(
+                        "{{\"mechanical\":true,\"passed\":{passed},\"cmd\":{},\"output\":{}}}",
+                        serde_json::to_string(&cmd)?,
+                        serde_json::to_string(&combined)?
+                    );
+                    if !passed {
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    let err = e.to_string();
+                    println!(
+                        "{{\"mechanical\":true,\"passed\":false,\"cmd\":{},\"error\":{}}}",
+                        serde_json::to_string(&cmd)?,
+                        serde_json::to_string(&err)?
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// Extract a runnable command from a done_criteria string for mechanical gate checking.
+/// Returns None if no mechanical check can be derived (LLM verifier needed).
+fn criteria_mechanical_cmd(done_criteria: &str) -> Option<Vec<String>> {
+    // Prefer an explicit backtick command: `cargo test -p condukt`
+    let re = regex::Regex::new(r"`([^`]+)`").ok()?;
+    for caps in re.captures_iter(done_criteria) {
+        let inner = caps.get(1)?.as_str().trim();
+        let argv: Vec<String> = inner.split_whitespace().map(String::from).collect();
+        if argv.first().is_some_and(|p| is_criteria_runner(p)) {
+            return Some(argv);
+        }
+    }
+    // Fall back to recognised test-runner prose
+    let lower = done_criteria.to_lowercase();
+    if lower.contains("cargo test") {
+        let mut cmd = vec!["cargo".to_string(), "test".to_string()];
+        if let Ok(re2) = regex::Regex::new(r"-p\s+([A-Za-z0-9_-]+)") {
+            if let Some(c) = re2.captures(done_criteria).and_then(|c| c.get(1)) {
+                cmd.push("-p".to_string());
+                cmd.push(c.as_str().to_string());
+            }
+        }
+        return Some(cmd);
+    }
+    if lower.contains("npm test") {
+        return Some(vec!["npm".to_string(), "test".to_string()]);
+    }
+    if lower.contains("pytest") {
+        return Some(vec!["pytest".to_string()]);
+    }
+    if lower.contains("go test") {
+        return Some(vec!["go".to_string(), "test".to_string()]);
+    }
+    None
+}
+
+fn is_criteria_runner(tok: &str) -> bool {
+    matches!(
+        tok,
+        "cargo"
+            | "npm"
+            | "npx"
+            | "pytest"
+            | "go"
+            | "make"
+            | "bash"
+            | "sh"
+            | "python"
+            | "python3"
+            | "node"
+            | "yarn"
+            | "pnpm"
+            | "just"
+    )
 }
 
 /// Probe whether the `fugu-router` binary is on PATH and, if so, return its
@@ -937,6 +1069,7 @@ mod state_set_tests {
                 status: Status::Pending,
                 worktree: worktree.map(str::to_string),
                 branch: branch.map(str::to_string),
+                branch_sha: None,
                 updated_at: None,
                 model: None,
                 cost_usd: None,

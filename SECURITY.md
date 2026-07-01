@@ -4,7 +4,7 @@
 
 セキュリティの問題を発見した場合は、**GitHub Issues** で報告してください。
 
-- 報告先: <https://github.com/yukineko/harness/issues/new?labels=security>
+- 報告先: <https://github.com/yukineko/claude-harnesses/issues/new?labels=security>
 - テンプレート: タイトルに `[SECURITY]` を付け、再現手順・影響範囲・発見バージョンを記載
 - **対応 SLA**: 報告受領から **7 営業日以内** に初回応答します。重大度 Critical は **48 時間以内** に応答します。
 

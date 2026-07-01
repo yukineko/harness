@@ -52,7 +52,13 @@ pub fn parse(stdout: &str) -> Parsed {
     let report = lines[..marker_idx].join("\n").trim_end().to_string();
     let trailer = &lines[marker_idx + 1..];
 
-    let needs_user = field(trailer, "needs_user")
+    let needs_user_raw = field(trailer, "needs_user");
+    if needs_user_raw.is_none() {
+        eprintln!(
+            "specguard: WARN parse: marker found but 'needs_user' field absent from trailer; defaulting to false"
+        );
+    }
+    let needs_user = needs_user_raw
         // Take only the first whitespace token so "yes (3 findings)" -> "yes".
         .map(|v| {
             v.split_whitespace()

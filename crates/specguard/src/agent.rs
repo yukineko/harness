@@ -57,7 +57,7 @@ pub fn run_shards(
         for _ in 0..workers {
             s.spawn(|| loop {
                 let idx = {
-                    let mut g = next.lock().unwrap();
+                    let mut g = next.lock().unwrap_or_else(|e| e.into_inner());
                     if *g >= n {
                         break;
                     }
@@ -67,19 +67,35 @@ pub fn run_shards(
                 };
                 let shard = &shards[idx];
                 let out = run_one(cfg, repo_root, &shard.prompt);
-                results.lock().unwrap()[idx] = Some(ShardOutput {
-                    label: shard.label.clone(),
-                    out,
-                });
+                if let Ok(mut g) = results.lock().or_else(|e| Ok::<_, ()>(e.into_inner())) {
+                    g[idx] = Some(ShardOutput {
+                        label: shard.label.clone(),
+                        out,
+                    });
+                }
             });
         }
     });
 
+    // Recover from a poisoned mutex; fold missing slots (worker panic) as agent failures.
     results
         .into_inner()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .into_iter()
-        .map(|o| o.expect("every shard slot is filled"))
+        .enumerate()
+        .map(|(idx, o)| {
+            o.unwrap_or_else(|| ShardOutput {
+                label: shards[idx].label.clone(),
+                out: AgentOutput {
+                    stdout: String::new(),
+                    stderr: format!(
+                        "specguard: worker thread panicked for shard '{}'",
+                        shards[idx].label
+                    ),
+                    code: -1,
+                },
+            })
+        })
         .collect()
 }
 

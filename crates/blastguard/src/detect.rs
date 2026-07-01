@@ -19,7 +19,7 @@ pub fn detect(tool_name: &str, tool_input: Option<&Value>) -> Decision {
                 .and_then(|v| v.get("command"))
                 .and_then(|c| c.as_str());
             match cmd {
-                Some(c) => detect_bash(c),
+                Some(c) => detect_bash(c, 0),
                 None => Decision::Allow,
             }
         }
@@ -78,7 +78,12 @@ fn detect_write(ti: Option<&Value>) -> Decision {
 // Bash handling
 // ---------------------------------------------------------------------------
 
-fn detect_bash(cmd: &str) -> Decision {
+/// How deep we recurse into shell-evaluation wrappers (`eval`, `sh -c`, …)
+/// before giving up. Bounds work and guards against pathological nesting; no
+/// realistic command line wraps a destructive payload this many layers deep.
+const MAX_SHELL_DEPTH: usize = 8;
+
+fn detect_bash(cmd: &str, depth: usize) -> Decision {
     // 1. Fork bomb (whitespace-insensitive signature).
     let compact: String = cmd.chars().filter(|c| !c.is_whitespace()).collect();
     if compact.contains(":(){") && compact.contains(":|:") {
@@ -96,7 +101,7 @@ fn detect_bash(cmd: &str) -> Decision {
 
     // 3. Per-command-segment analysis.
     for seg in split_segments(cmd) {
-        let d = analyze_segment(&seg);
+        let d = analyze_segment(&seg, depth);
         if d.is_deny() {
             return d;
         }
@@ -254,7 +259,45 @@ fn has_short(rest: &[&str], ch: char) -> bool {
     rest.iter().any(|t| is_short_flag(t) && t.contains(ch))
 }
 
-fn analyze_segment(seg: &str) -> Decision {
+/// Shells that take a command line as a string argument (e.g. `sh -c "…"`).
+fn is_shell(cmd: &str) -> bool {
+    matches!(cmd, "sh" | "bash" | "zsh" | "ksh" | "dash")
+}
+
+/// Strip one layer of matching surrounding quotes from a reconstructed
+/// argument string. Tokenisation has already split on whitespace, so a quoted
+/// payload like `"rm -rf /"` arrives as `"rm -rf /"` — peel the wrapper so the
+/// inner command line can be re-analysed.
+fn strip_wrapping_quotes(s: &str) -> &str {
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'"' || first == b'\'') && first == last {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// For `<shell> … -c <payload>`, return the payload command line (the words
+/// after the `-c`/bundled-`c` flag, with surrounding quotes peeled). Returns
+/// `None` when there is no `-c` flag (e.g. `bash script.sh`, whose file we
+/// cannot inspect).
+fn dash_c_payload(rest: &[&str]) -> Option<String> {
+    let pos = rest
+        .iter()
+        .position(|t| is_short_flag(t) && t.contains('c'))?;
+    let payload = rest[pos + 1..].join(" ");
+    let inner = strip_wrapping_quotes(&payload);
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
+    }
+}
+
+fn analyze_segment(seg: &str, depth: usize) -> Decision {
     let tokens: Vec<&str> = seg.split_whitespace().collect();
     let idx = match command_index(&tokens) {
         Some(i) => i,
@@ -266,6 +309,32 @@ fn analyze_segment(seg: &str) -> Decision {
     // A help invocation never destroys anything.
     if rest.iter().any(|t| *t == "--help" || *t == "-h") {
         return Decision::Allow;
+    }
+
+    // Shell-evaluation wrappers that would otherwise smuggle a destructive
+    // command past the per-command analysis. We re-analyse the *inline*
+    // command line they evaluate; an opaque file argument (e.g.
+    // `source .venv/bin/activate`) re-analyses to a harmless path and stays
+    // allowed, preserving the no-false-positive bias.
+    if depth < MAX_SHELL_DEPTH {
+        // `eval`/`exec`/`source`/`.` run their remaining words as a command.
+        if matches!(cmd, "eval" | "exec" | "source" | ".") && !rest.is_empty() {
+            let joined = rest.join(" ");
+            let inline = strip_wrapping_quotes(&joined);
+            let d = detect_bash(inline, depth + 1);
+            if d.is_deny() {
+                return d;
+            }
+        }
+        // `sh -c "<payload>"` and friends evaluate the `-c` argument.
+        if is_shell(cmd) {
+            if let Some(payload) = dash_c_payload(rest) {
+                let d = detect_bash(&payload, depth + 1);
+                if d.is_deny() {
+                    return d;
+                }
+            }
+        }
     }
 
     match cmd {
@@ -376,10 +445,20 @@ fn analyze_find(rest: &[&str]) -> Decision {
     if rest.contains(&"-delete") {
         return Decision::deny("find -delete removes every matching file");
     }
-    if rest.iter().any(|t| *t == "-exec" || *t == "-execdir")
-        && rest.iter().any(|t| basename(t) == "rm")
-    {
-        return Decision::deny("find -exec rm removes every matching file");
+    if let Some(pos) = rest.iter().position(|t| *t == "-exec" || *t == "-execdir") {
+        // The token right after -exec is the command run for each match.
+        // A shell there (`find … -exec sh -c "rm …"`) can run any destructive
+        // command and slips past a literal `rm` scan.
+        if let Some(c) = rest.get(pos + 1).map(|t| basename(t)) {
+            if is_shell(c) {
+                return Decision::deny(
+                    "find -exec on a shell can run an arbitrary destructive command per match",
+                );
+            }
+        }
+        if rest.iter().any(|t| basename(t) == "rm") {
+            return Decision::deny("find -exec rm removes every matching file");
+        }
     }
     Decision::Allow
 }
@@ -442,6 +521,35 @@ mod tests {
         assert!(bash(":(){ :|:& };:").is_deny());
     }
 
+    #[test]
+    fn denies_shell_eval_bypasses() {
+        // eval / exec run their inline arguments as a command.
+        assert!(bash("eval \"rm -rf /\"").is_deny());
+        assert!(bash("eval 'rm -rf /'").is_deny());
+        assert!(bash("exec rm -rf /").is_deny());
+        // <shell> -c "<payload>" re-analyses the payload.
+        assert!(bash("sh -c \"rm -rf /\"").is_deny());
+        assert!(bash("bash -c 'shred secret'").is_deny());
+        assert!(bash("zsh -c \"rm -rf /var\"").is_deny());
+        assert!(bash("bash -lc \"rm -rf /\"").is_deny());
+        // find -exec/-execdir on a shell can run any destructive command.
+        assert!(bash("find . -type f -exec sh -c 'rm -rf {}' ;").is_deny());
+        assert!(bash("find . -execdir bash -c \"rm -rf .\" ;").is_deny());
+        // A benign wrapper in front still resolves to the eval builtin.
+        assert!(bash("sudo eval \"rm -rf /\"").is_deny());
+        // Nested wrapping is caught up to the recursion bound.
+        assert!(bash("sh -c \"sh -c 'rm -rf /'\"").is_deny());
+    }
+
+    #[test]
+    fn absolute_path_and_leading_whitespace_rm_still_denied() {
+        // Regression: basename() already normalises an absolute path, and
+        // split_whitespace() drops leading blanks — both stay denied.
+        assert!(bash("/bin/rm -rf /data").is_deny());
+        assert!(bash("  rm -rf dir").is_deny());
+        assert!(bash("\trm -rf dir").is_deny());
+    }
+
     // ---- Bash: allow group ----
     #[test]
     fn allows_benign_commands() {
@@ -461,6 +569,27 @@ mod tests {
         assert_eq!(bash("chmod 644 file"), Decision::Allow);
         assert_eq!(bash("find . -name '*.rs'"), Decision::Allow);
         assert_eq!(bash("rm --help"), Decision::Allow);
+    }
+
+    #[test]
+    fn allows_benign_shell_wrappers() {
+        // Quoted text that merely mentions a destructive command is not run.
+        assert_eq!(bash("echo 'eval rm -rf /'"), Decision::Allow);
+        // Help and benign payloads stay allowed.
+        assert_eq!(bash("sh --help"), Decision::Allow);
+        assert_eq!(bash("bash -c \"cargo test\""), Decision::Allow);
+        assert_eq!(bash("sh -c 'ls -la'"), Decision::Allow);
+        // source/. of an opaque file path cannot be inspected — allowed
+        // (re-analyse-inline bias: a bare path is not a destructive command).
+        assert_eq!(bash("source .venv/bin/activate"), Decision::Allow);
+        assert_eq!(bash(". ~/.bashrc"), Decision::Allow);
+        // A shell running a script file (no -c) — file unknowable, allowed.
+        assert_eq!(bash("bash build.sh"), Decision::Allow);
+        // find -exec with a non-shell, non-rm command.
+        assert_eq!(
+            bash("find . -name '*.rs' -exec grep todo {} ;"),
+            Decision::Allow
+        );
     }
 
     #[test]
