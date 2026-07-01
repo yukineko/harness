@@ -11,6 +11,25 @@ use crate::rng::Rng;
 /// Cost order of the model tiers condukt understands. Index = cheapest-first.
 const TIERS: &[&str] = &["haiku", "sonnet", "opus"];
 
+/// Exploration bonus the bandit adds to a tier's sampled pass-rate, scaled by how
+/// cheap the tier is (cheapest tier gets the full bonus, the priciest gets none).
+/// This nudges Thompson sampling to try the cheaper tiers more often before their
+/// posteriors have tightened — the cheap tiers are exactly the ones worth
+/// exploring, since a pass there is a permanent cost saving. Kept small so a tier
+/// with a genuinely poor record still loses; it only tips near-ties cheapward.
+const EXPLORE_CHEAP_BONUS: f64 = 0.15;
+
+/// Cheap-tier exploration bonus for `TIERS[idx]`: full bonus at the cheapest tier
+/// (idx 0), linearly down to 0 at the priciest. opus never gets a bonus, so this
+/// only ever biases sampling *toward* cheaper models, never toward opus.
+fn cheap_bonus(idx: usize) -> f64 {
+    let last = TIERS.len() - 1;
+    if last == 0 {
+        return 0.0;
+    }
+    EXPLORE_CHEAP_BONUS * (last - idx) as f64 / last as f64
+}
+
 #[derive(Debug, Clone)]
 pub struct Decision {
     pub worker_model: String,
@@ -56,13 +75,20 @@ const TRIVIAL_KW: &[&str] = &[
 ];
 
 /// Cold-start model guess from task text + file count (mirrors the interpreter's
-/// own rule: design→opus, trivial→cheap, else sonnet).
+/// own rule: design→opus, trivial→cheap, else cheapest tier the blast radius
+/// allows).
 ///
-/// Order matters: triviality is judged **before** the raw `file_count > 5`
-/// rule. Otherwise a many-file mechanical chore (a repo-wide `rename`, a
-/// formatting sweep) would short-circuit to opus on volume alone — the cold
-/// start over-charges exactly the cheap work, before any history exists to
-/// correct it. Design/high-stakes keywords still win outright.
+/// The cold start is deliberately biased **cheap** — with no history to learn
+/// from, start at the floor and let the verifier's cascade escalation
+/// (haiku→sonnet→opus on a failed check) buy up only the tasks that actually
+/// need it. Over-charging every unseen task at sonnet/opus spends real money on
+/// work that would have cleared at haiku.
+///
+/// Order matters: triviality is judged **before** the file-count rules.
+/// Otherwise a many-file mechanical chore (a repo-wide `rename`, a formatting
+/// sweep) would short-circuit to a pricier tier on volume alone — the cold start
+/// over-charges exactly the cheap work, before any history exists to correct it.
+/// Design/high-stakes keywords still win outright.
 pub fn prior_model(title: &str, file_count: usize) -> &'static str {
     let t = title.to_lowercase();
 
@@ -76,15 +102,23 @@ pub fn prior_model(title: &str, file_count: usize) -> &'static str {
     if TRIVIAL_KW.iter().any(|k| t.contains(k)) {
         return if file_count > 5 { "sonnet" } else { "haiku" };
     }
-    // Non-trivial, non-design: a wide blast radius is itself a complexity signal.
-    if file_count > 5 {
+    // Non-trivial, non-design: blast radius is the only complexity signal we
+    // have at cold start, so scale the tier to it rather than defaulting pricey.
+    // A very wide change (>10 files) still earns opus; a medium spread (6–10)
+    // gets sonnet; an ordinary small change starts at the haiku floor and only
+    // escalates if the verifier rejects it.
+    if file_count > 10 {
         return "opus";
     }
-    "sonnet"
+    if file_count > 5 {
+        return "sonnet";
+    }
+    "haiku"
 }
 
-/// Independent verifier: generally a not-cheaper, different model so it doesn't
-/// share the worker's blind spots. Escalate for serial / high-stakes work.
+/// Independent verifier: a **different** model from the worker so it doesn't
+/// share its blind spots. High-stakes work (serial / design) escalates the
+/// verifier; low-stakes work takes the cheapest independent tier.
 pub fn verifier_model(worker: &str, class: &str, title: &str) -> &'static str {
     let t = title.to_lowercase();
     let high_stakes = class == "serial" || DESIGN_KW.iter().any(|k| t.contains(k));
@@ -92,9 +126,18 @@ pub fn verifier_model(worker: &str, class: &str, title: &str) -> &'static str {
         "opus" => "sonnet", // strong worker → independent (cheaper) second pair of eyes
         _ => {
             if high_stakes {
+                // Serial / design work still gets a strong independent verifier.
                 "opus"
-            } else {
+            } else if worker == "haiku" {
+                // Low-stakes, but the worker is already at the floor — verify one
+                // tier up so the check stays independent (can't verify haiku with
+                // haiku).
                 "sonnet"
+            } else {
+                // Low-stakes sonnet worker → a cheap haiku verifier is enough of an
+                // independent second pass; save the sonnet spend for the cases that
+                // need it.
+                "haiku"
             }
         }
     }
@@ -322,9 +365,12 @@ pub fn decide_bandit(
     let default_cpp = if max_cpp > 0.0 { max_cpp } else { 0.0 };
 
     let mut chosen: Option<(String, f64, usize, f64)> = None; // (tier, mean, count, efficiency)
-    for tier in TIERS {
+    for (idx, tier) in TIERS.iter().enumerate() {
         let (mean, sd, count) = posterior(tier);
-        let sample = rng.normal(mean, sd).clamp(0.0, 1.0);
+        // Draw a pass-rate, then add a cheap-tier exploration bonus so the cheaper
+        // tiers clear the gate (and score) a little more readily. opus gets no
+        // bonus, so this only ever tips the choice cheapward.
+        let sample = (rng.normal(mean, sd).clamp(0.0, 1.0) + cheap_bonus(idx)).min(1.0);
         // Only consider tiers that sampled above the threshold (exploration gate).
         if sample < pass_threshold {
             continue;
@@ -462,6 +508,42 @@ mod tests {
     }
 
     #[test]
+    fn verifier_is_cheap_for_low_stakes_but_stays_independent() {
+        // Low-stakes sonnet worker → a cheap haiku verifier is enough.
+        assert_eq!(verifier_model("sonnet", "parallel", "add a field"), "haiku");
+        // Low-stakes haiku worker → can't verify haiku with haiku; step up to
+        // sonnet to keep the check independent.
+        assert_eq!(
+            verifier_model("haiku", "parallel", "rename a field"),
+            "sonnet"
+        );
+        // High-stakes (serial) low-tier worker → strong opus verifier, unchanged.
+        assert_eq!(
+            verifier_model("sonnet", "serial", "wire the endpoint"),
+            "opus"
+        );
+        // Design keyword is high-stakes even when parallel → opus verifier.
+        assert_eq!(
+            verifier_model("sonnet", "parallel", "auth token check"),
+            "opus"
+        );
+        // Opus worker → independent (cheaper) sonnet second pair of eyes.
+        assert_eq!(
+            verifier_model("opus", "serial", "redesign schema"),
+            "sonnet"
+        );
+    }
+
+    #[test]
+    fn cheap_bonus_is_largest_for_cheapest_tier_and_zero_for_opus() {
+        // haiku (idx 0) gets the full bonus, opus (last idx) none, so the bandit
+        // bias can only ever tip the choice toward cheaper models.
+        assert_eq!(cheap_bonus(0), EXPLORE_CHEAP_BONUS);
+        assert!(cheap_bonus(1) > 0.0 && cheap_bonus(1) < EXPLORE_CHEAP_BONUS);
+        assert_eq!(cheap_bonus(TIERS.len() - 1), 0.0);
+    }
+
+    #[test]
     fn gated_is_not_auto_routed() {
         let d = decide("deploy to prod", &[], "gated", &[], 0.7, 2);
         assert_eq!(d.basis, "gated");
@@ -503,8 +585,10 @@ mod tests {
     #[test]
     fn budget_downgrade_suppresses_opus_verifier() {
         // sonnet worker + high-stakes (serial) → opus verifier; pressure caps it
-        // at sonnet and shaves the worker to haiku. ("endpoint" hits no DESIGN_KW.)
-        let d = decide("implement the endpoint", &[], "serial", &[], 0.7, 2);
+        // at sonnet and shaves the worker to haiku. ("endpoint" hits no DESIGN_KW;
+        // a 6–10 file spread lands the cold-start prior on sonnet, not haiku.)
+        let files: Vec<String> = (0..6).map(|i| format!("f{i}.rs")).collect();
+        let d = decide("implement the endpoint", &files, "serial", &[], 0.7, 2);
         assert_eq!(d.worker_model, "sonnet");
         assert_eq!(d.verifier_model, "opus");
         let dg = downgrade_for_budget(d);
@@ -531,13 +615,16 @@ mod tests {
     }
 
     #[test]
-    fn multi_file_design_and_nontrivial_stay_opus() {
+    fn cold_start_scales_tier_to_blast_radius() {
         // Design keywords win outright, even across many files…
         assert_eq!(prior_model("refactor the auth module", 20), "opus");
-        // …and a wide non-trivial, non-design change keeps its volume signal.
-        assert_eq!(prior_model("implement the new endpoints", 8), "opus");
-        // An ordinary small change is still sonnet.
-        assert_eq!(prior_model("add a field to the response", 1), "sonnet");
+        // …a very wide (>10 files) non-trivial, non-design change still earns opus…
+        assert_eq!(prior_model("implement the new endpoints", 12), "opus");
+        // …a medium spread (6–10 files) gets sonnet…
+        assert_eq!(prior_model("implement the new endpoints", 8), "sonnet");
+        // …and an ordinary small change starts at the haiku floor (cheap cold
+        // start; the verifier's cascade buys up only what actually needs it).
+        assert_eq!(prior_model("add a field to the response", 1), "haiku");
     }
 
     #[test]

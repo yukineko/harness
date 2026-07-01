@@ -99,4 +99,13 @@ fugu-router install               # UserPromptSubmit フックをマージ
 
 ### コールドスタート
 
-ストアが空のときは、interpreter のルールを写したキーワード prior を使う。design/refactor/migrate/security や多ファイル → `opus`、rename/format/docs/typo → `haiku`、それ以外 → `sonnet`。`gated` タスクは自動ルーティングしない（人間承認の対象）。
+ストアが空のときはキーワード prior を使うが、**安い方向にバイアス**する。履歴が無い時は floor（`haiku`）から始め、verifier のカスケードエスカレーション（検証落ちで haiku→sonnet→opus）が本当に必要なタスクだけ買い上げる:
+
+- design/refactor/migrate/security キーワード → `opus`（高stakes は優先で opus）
+- 非常に広い変更（11ファイル超）→ `opus`、中規模（6〜10ファイル）→ `sonnet`
+- rename/format/docs/typo → `haiku`（5ファイル超の広い trivial 一括は `sonnet`）
+- それ以外（通常の小規模変更）→ `haiku`
+
+独立 verifier も低stakesでは安くする。`opus` ワーカーは `sonnet` で検証、低stakesの `sonnet` ワーカーは `haiku` で検証、`haiku` ワーカーは独立性のため一段上の `sonnet` で検証する。serial/design は従来どおり `opus` verifier。`gated` タスクは自動ルーティングしない（人間承認の対象）。
+
+既定値もバイアスを補強する: `pass_threshold = 0.6`・`min_samples = 1` により、ほぼ信頼できる類似成功が1件あれば安いティアを信頼し、Thompson サンプリングの探索は安いティアに小さなボーナスを与えて未検証の安ティアを優先的に試す。

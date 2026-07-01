@@ -193,10 +193,26 @@ cleanly across machines and produce better k-NN file-token similarity.
 
 ## Cold start
 
-With an empty store, routing uses a keyword prior that mirrors the interpreter's
-own rule: design/refactor/migrate/security or many touched files → `opus`;
-rename/format/docs/typo → `haiku`; else `sonnet`. `gated` tasks are never
-auto-routed (human approval).
+With an empty store, routing uses a keyword prior biased **cheap** — start at the
+floor and let the verifier's cascade escalation (haiku→sonnet→opus on a failed
+check) buy up only the tasks that need it:
+
+- design/refactor/migrate/security keywords → `opus` (high stakes win outright);
+- a very wide blast radius (>10 touched files) → `opus`; a medium spread
+  (6–10 files) → `sonnet`;
+- rename/format/docs/typo → `haiku` (a wide trivial sweep of >5 files → `sonnet`);
+- everything else (an ordinary small change) → `haiku`.
+
+The independent verifier is likewise cheap for low-stakes work: an `opus` worker
+is checked by `sonnet`, a low-stakes `sonnet` worker by `haiku`, and a `haiku`
+worker by `sonnet` (one tier up, to keep the check independent). Serial/design
+tasks still get an `opus` verifier. `gated` tasks are never auto-routed (human
+approval).
+
+Defaults reinforce the bias: `pass_threshold = 0.6` and `min_samples = 1`, so a
+cheaper tier is trusted after a single mostly-reliable similar success, and the
+Thompson-sampling explorer adds a small cheap-tier bonus so unproven cheap tiers
+get tried first.
 
 ## License
 

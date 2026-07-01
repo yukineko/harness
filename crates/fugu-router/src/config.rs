@@ -40,8 +40,12 @@ impl Default for Config {
             sync_dir: None,
             k: 6,
             sim_threshold: 0.15,
-            pass_threshold: 0.7,
-            min_samples: 2,
+            // Bias cheap: a 60% neighbour pass-rate is enough to trust a tier, and
+            // a single similar sample is enough to leave the cold-start prior. The
+            // verifier's cascade escalation is the safety net that buys back up the
+            // few tasks a cheap tier gets wrong, so the bar to *try* cheap is low.
+            pass_threshold: 0.6,
+            min_samples: 1,
             explore: true,
             inject_limit: 1500,
         }
