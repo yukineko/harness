@@ -71,6 +71,14 @@ pub struct TaskState {
     /// records as 0.0. Used as the learning signal's cost dimension.
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    /// Whether this task carried a valid Fail→Pass reproduction oracle at the
+    /// moment it was promoted to `verified`, per `oracle::check_oracle`.
+    /// `Some(true)`/`Some(false)` reflect a real verdict (fallback == false);
+    /// `None` means no trustworthy verdict was available (legacy data, a
+    /// non-scope task, or the oracle check fell back to the legacy gate).
+    /// `#[serde(default)]` keeps old run-state JSON parseable.
+    #[serde(default)]
+    pub fp_oracle_valid: Option<bool>,
 }
 
 pub fn now_secs() -> i64 {
@@ -385,6 +393,55 @@ pub fn compute_stats(cfg: &Config, cwd: &Path) -> Vec<RunStats> {
         .collect()
 }
 
+/// Decision produced by [`enforce_fp_gate`] from an `oracle::check_oracle`
+/// verdict JSON, for the `state set --status verified` gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FpGateDecision {
+    /// The task is a fix/feature task with a real (non-fallback) verdict that
+    /// reports no valid Fail→Pass oracle: refuse the promotion to `verified`.
+    Reject,
+    /// Allow the promotion. The carried value is what to persist into
+    /// `TaskState.fp_oracle_valid`: `Some(bool)` for a real verdict
+    /// (fallback == false), `None` when there is no trustworthy verdict
+    /// (fallback == true, or the input was malformed).
+    Allow(Option<bool>),
+}
+
+/// Pure, unit-testable decision logic for the F→P oracle completion gate.
+/// Reads the JSON produced by `oracle::check_oracle` and decides whether a
+/// task may be promoted to `verified`.
+///
+/// Rejects ONLY when `required == true && fallback == false &&
+/// valid_fp_oracle == false` — i.e. the task is in-scope for the oracle, a
+/// real (non-fallback) verdict was obtained, and that verdict says the
+/// Fail→Pass oracle is not valid. Every other case (not required, fallback,
+/// or a valid oracle) allows the promotion. Missing/non-bool fields default
+/// defensively (`false`) so a malformed verdict never rejects.
+pub fn enforce_fp_gate(verdict: &serde_json::Value) -> FpGateDecision {
+    let required = verdict
+        .get("required")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let fallback = verdict
+        .get("fallback")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let valid = verdict
+        .get("valid_fp_oracle")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if required && !fallback && !valid {
+        return FpGateDecision::Reject;
+    }
+
+    if fallback {
+        FpGateDecision::Allow(None)
+    } else {
+        FpGateDecision::Allow(Some(valid))
+    }
+}
+
 /// Reasons the run is NOT complete (empty = gate passes).
 pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     let mut reasons = Vec::new();
@@ -393,6 +450,17 @@ pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     for t in &run.tasks {
         if !matches!(t.status, Status::Verified | Status::Cancelled) {
             reasons.push(format!("task '{}' is {:?}, not verified", t.id, t.status));
+        }
+        // Defense-in-depth: a task marked verified but recorded with a real
+        // (non-fallback) verdict of "no valid Fail→Pass oracle" should never
+        // have been promoted in the first place. `enforce_fp_gate` at `state
+        // set` time is the primary guard; this catches state files that
+        // bypassed it (manual edits, older binaries, etc).
+        if t.status == Status::Verified && t.fp_oracle_valid == Some(false) {
+            reasons.push(format!(
+                "task '{}' verified without a valid fail-to-pass oracle",
+                t.id
+            ));
         }
         // A finished task must not leave its worktree behind, dirty or not.
         if let Some(wt) = &t.worktree {
@@ -958,6 +1026,7 @@ mod tests {
                     model: None,
                     cost_usd: None,
                     branch_sha: None,
+                    fp_oracle_valid: None,
                 },
                 TaskState {
                     id: "b".into(),
@@ -968,6 +1037,7 @@ mod tests {
                     model: None,
                     cost_usd: None,
                     branch_sha: None,
+                    fp_oracle_valid: None,
                 },
             ],
             paused: false,
@@ -992,6 +1062,7 @@ mod tests {
                     model: None,
                     cost_usd: None,
                     branch_sha: None,
+                    fp_oracle_valid: None,
                 },
                 TaskState {
                     id: "b".into(),
@@ -1002,6 +1073,7 @@ mod tests {
                     model: None,
                     cost_usd: None,
                     branch_sha: None,
+                    fp_oracle_valid: None,
                 },
                 TaskState {
                     id: "c".into(),
@@ -1012,6 +1084,7 @@ mod tests {
                     model: None,
                     cost_usd: None,
                     branch_sha: None,
+                    fp_oracle_valid: None,
                 },
             ],
             paused: false,
@@ -1132,6 +1205,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             }],
             paused: false,
             terminal_label: None,
@@ -1261,6 +1335,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             }],
             paused: false,
             terminal_label: None,
@@ -1314,6 +1389,7 @@ mod tests {
             model: None,
             cost_usd: None,
             branch_sha: None,
+            fp_oracle_valid: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert_eq!(ids, vec!["stuck-task".to_string()]);
@@ -1334,6 +1410,7 @@ mod tests {
             model: None,
             cost_usd: None,
             branch_sha: None,
+            fp_oracle_valid: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert!(ids.is_empty(), "recent Running task must not be stuck");
@@ -1352,6 +1429,7 @@ mod tests {
             model: None,
             cost_usd: None,
             branch_sha: None,
+            fp_oracle_valid: None,
         }]);
         let ids = stuck_task_ids(&run, ttl);
         assert!(
@@ -1377,6 +1455,7 @@ mod tests {
             model: None,
             cost_usd: None,
             branch_sha: None,
+            fp_oracle_valid: None,
         }]);
         let t = run.tasks.iter_mut().find(|t| t.id == "t1").unwrap();
         t.status = Status::Pending;
@@ -1405,6 +1484,7 @@ mod tests {
             model: None,
             cost_usd: None,
             branch_sha: None,
+            fp_oracle_valid: None,
         }]);
         let t = run.tasks.iter_mut().find(|t| t.id == "t-fail").unwrap();
         t.status = Status::Pending;
@@ -1432,6 +1512,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
             TaskState {
                 id: "verified-task".into(),
@@ -1442,6 +1523,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
         ]);
         for t in &run.tasks {
@@ -1470,6 +1552,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
             TaskState {
                 id: "stuck-2".into(),
@@ -1480,6 +1563,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
             TaskState {
                 id: "active".into(),
@@ -1490,6 +1574,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
         ]);
 
@@ -1532,6 +1617,7 @@ mod tests {
             model: None,
             cost_usd: None,
             branch_sha: None,
+            fp_oracle_valid: None,
         }]);
         let found = run.tasks.iter().find(|t| t.id == "no-such-task");
         assert!(found.is_none(), "non-existent task id must not be found");
@@ -1610,6 +1696,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
             TaskState {
                 id: "done-old".into(),
@@ -1620,6 +1707,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
             TaskState {
                 id: "verified-old".into(),
@@ -1630,6 +1718,7 @@ mod tests {
                 model: None,
                 cost_usd: None,
                 branch_sha: None,
+                fp_oracle_valid: None,
             },
         ]);
         let ids = stuck_task_ids(&run, ttl);
@@ -1869,6 +1958,7 @@ mod tests {
         let t_without_sha = TaskState {
             branch: Some(branch.into()),
             branch_sha: None,
+            fp_oracle_valid: None,
             ..Default::default()
         };
         let ref_to_check = t_without_sha.branch_sha.as_deref().unwrap_or(branch);
@@ -1876,5 +1966,103 @@ mod tests {
             ref_to_check, branch,
             "branch name must be used when branch_sha is None"
         );
+    }
+
+    // ── enforce_fp_gate tests ───────────────────────────────────────────────
+
+    #[test]
+    fn enforce_fp_gate_rejects_real_invalid_verdict() {
+        let verdict = serde_json::json!({
+            "required": true,
+            "fallback": false,
+            "valid_fp_oracle": false,
+        });
+        assert_eq!(enforce_fp_gate(&verdict), FpGateDecision::Reject);
+    }
+
+    #[test]
+    fn enforce_fp_gate_allows_real_valid_verdict() {
+        let verdict = serde_json::json!({
+            "required": true,
+            "fallback": false,
+            "valid_fp_oracle": true,
+        });
+        assert_eq!(
+            enforce_fp_gate(&verdict),
+            FpGateDecision::Allow(Some(true))
+        );
+    }
+
+    #[test]
+    fn enforce_fp_gate_allows_on_fallback_even_if_required() {
+        let verdict = serde_json::json!({
+            "required": true,
+            "fallback": true,
+            "valid_fp_oracle": false,
+        });
+        assert_eq!(enforce_fp_gate(&verdict), FpGateDecision::Allow(None));
+    }
+
+    #[test]
+    fn enforce_fp_gate_allows_non_scope_task() {
+        let verdict = serde_json::json!({
+            "required": false,
+            "fallback": true,
+            "valid_fp_oracle": false,
+        });
+        assert_eq!(enforce_fp_gate(&verdict), FpGateDecision::Allow(None));
+    }
+
+    /// A malformed verdict (missing fields) must never reject — defaults are
+    /// chosen so it degrades to Allow(None), never Reject.
+    #[test]
+    fn enforce_fp_gate_malformed_verdict_never_rejects() {
+        let verdict = serde_json::json!({});
+        assert_eq!(enforce_fp_gate(&verdict), FpGateDecision::Allow(None));
+    }
+
+    /// `gate_reasons`-shaped check: a task marked verified with a real invalid
+    /// verdict persisted (`fp_oracle_valid == Some(false)`) surfaces a gate
+    /// reason; `None` (legacy/fallback) and `Some(true)` do not.
+    #[test]
+    fn gate_reasons_flags_verified_with_invalid_fp_oracle() {
+        let tmp = make_tmp_dir("gate-fp-oracle");
+        let cfg = make_test_cfg(&tmp);
+        let run = make_run_with_tasks(vec![
+            TaskState {
+                id: "bad".into(),
+                status: Status::Verified,
+                fp_oracle_valid: Some(false),
+                ..Default::default()
+            },
+            TaskState {
+                id: "good".into(),
+                status: Status::Verified,
+                fp_oracle_valid: Some(true),
+                ..Default::default()
+            },
+            TaskState {
+                id: "legacy".into(),
+                status: Status::Verified,
+                fp_oracle_valid: None,
+                ..Default::default()
+            },
+        ]);
+        let reasons = gate_reasons(&cfg, &tmp, &run);
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.contains("bad") && r.contains("valid fail-to-pass oracle")),
+            "task with Some(false) verdict must be flagged: {reasons:?}"
+        );
+        assert!(
+            !reasons.iter().any(|r| r.contains("good")),
+            "task with Some(true) verdict must not be flagged: {reasons:?}"
+        );
+        assert!(
+            !reasons.iter().any(|r| r.contains("legacy")),
+            "task with None verdict must not be flagged: {reasons:?}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

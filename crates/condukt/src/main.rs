@@ -615,6 +615,54 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
         } => {
             let mut rs = state::RunState::load(cfg, cwd, &run)?;
             let st: state::Status = status.parse()?;
+
+            // F→P oracle completion gate: before promoting a task to
+            // `verified`, ask `tdd oracle` (via `oracle::check_oracle`)
+            // whether it carries a valid Fail→Pass reproduction proof. This
+            // mirrors `CheckOracle`'s load + run_dir resolution exactly, but
+            // fails soft (degrade to the legacy gate) whenever the
+            // decomposition or matching task can't be found — a run-state
+            // task with no matching decomposition entry must still be
+            // settable to verified.
+            let mut fp_gate_value: Option<bool> = None;
+            if st == state::Status::Verified {
+                if let Ok(dec_raw) = state::load_decomposition(cfg, cwd, &run) {
+                    if let Ok(dec) = serde_json::from_str::<model::Decomposition>(&dec_raw) {
+                        if let Some(dt) = dec.tasks.iter().find(|dt| dt.id == task) {
+                            // Resolve run_dir from `rs` (immutable read) into a
+                            // local *before* taking the `&mut` borrow below.
+                            let run_dir = rs
+                                .tasks
+                                .iter()
+                                .find(|s| s.id == task)
+                                .and_then(|s| s.worktree.as_deref())
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_else(|| cwd.to_path_buf());
+                            let verdict = oracle::check_oracle(
+                                dt.requires_fp_oracle(),
+                                dt.reproduction_tests.as_deref(),
+                                &task,
+                                &run_dir,
+                            );
+                            match state::enforce_fp_gate(&verdict) {
+                                state::FpGateDecision::Reject => {
+                                    bail!(
+                                        "refusing to verify task '{task}': no valid fail-to-pass reproduction oracle ({})",
+                                        verdict
+                                            .get("reason")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("see `condukt state check-oracle` for details")
+                                    );
+                                }
+                                state::FpGateDecision::Allow(v) => {
+                                    fp_gate_value = v;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let t = rs
                 .tasks
                 .iter_mut()
@@ -622,6 +670,9 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
             t.status = st;
             t.updated_at = Some(state::now_secs());
+            if st == state::Status::Verified {
+                t.fp_oracle_valid = fp_gate_value;
+            }
             // Record the model/cost used so the fugu-router outcome reflects the
             // truth (incl. escalation), not just the originally suggested model.
             if model.is_some() {
@@ -1226,6 +1277,7 @@ mod state_set_tests {
                 updated_at: None,
                 model: None,
                 cost_usd: None,
+                fp_oracle_valid: None,
             }],
             paused: false,
             terminal_label: None,
