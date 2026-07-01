@@ -151,14 +151,40 @@ fn load_at(path: &Path) -> Vec<DiscoveryRecord> {
     records
 }
 
-/// Check if another session has already discovered a task (and it hasn't been
-/// superseded by selection yet). Returns true iff the store contains a record
-/// with the same `fingerprint` whose `session_id != my_session` AND `status == Discovered`.
+/// Whether a *different* session owns `fingerprint` — i.e. should this session
+/// suppress it from its surface (cross-session dedup).
+///
+/// Ownership is by *earliest discovery*: the owner is the session with the
+/// earliest row for the fingerprint (`created_at`, then `session_id` for a
+/// deterministic tie-break), **regardless of status**. A `Selected` row still
+/// counts, so a task another session is actively working keeps suppressing this
+/// one. Returns true iff that owner is a different session than `my_session`.
+///
+/// This realises the DoD's "the *later* discovery does not re-surface the
+/// duplicate" rule: the first discoverer keeps the task and every later session
+/// drops it (stable single owner — no mutual annihilation where both sessions
+/// see each other's row and both drop it). An absent/empty store has no owner,
+/// so nothing is suppressed (byte-equivalent fallback).
 pub fn already_discovered_by_other(cwd: &Path, fingerprint: &str, my_session: &str) -> bool {
-    let records = load(cwd);
-    records.iter().any(|r| {
-        r.fingerprint == fingerprint && r.session_id != my_session && r.status == Status::Discovered
-    })
+    owned_by_other(&load(cwd), fingerprint, my_session)
+}
+
+/// Pure ownership check over an already-loaded record set — the core of
+/// [`already_discovered_by_other`], split out so it is testable without touching
+/// the real store. The owner is the earliest row for `fingerprint` (by
+/// `created_at`, then `session_id`); returns true iff that owner is a different
+/// session than `my_session`. No matching row → no owner → false.
+fn owned_by_other(records: &[DiscoveryRecord], fingerprint: &str, my_session: &str) -> bool {
+    records
+        .iter()
+        .filter(|r| r.fingerprint == fingerprint)
+        .min_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.session_id.cmp(&b.session_id))
+        })
+        .map(|owner| owner.session_id != my_session)
+        .unwrap_or(false)
 }
 
 /// Mark a task as selected, rewriting the store atomically. All records matching
@@ -320,62 +346,84 @@ mod tests {
     }
 
     #[test]
-    fn dedup_signal_already_discovered_by_other() {
-        // Create a temp directory with two records: same fingerprint, different sessions.
-        let tempdir = tempfile::tempdir().expect("tempfile::tempdir");
-        let path = tempdir.path().join("discovery.jsonl");
-
-        let rec_fp_s1 = DiscoveryRecord {
+    fn owned_by_other_is_earliest_owner_stable_and_status_agnostic() {
+        // Two sessions discover the SAME fingerprint; sessA is earlier => owner.
+        let rec_a = DiscoveryRecord {
             fingerprint: "same-fp".to_string(),
-            session_id: "session1".to_string(),
+            session_id: "sessA".to_string(),
             status: Status::Discovered,
             created_at: 1000,
             title: "Task X".to_string(),
         };
-        let rec_fp_s2 = DiscoveryRecord {
+        let rec_b = DiscoveryRecord {
             fingerprint: "same-fp".to_string(),
-            session_id: "session2".to_string(),
+            session_id: "sessB".to_string(),
             status: Status::Discovered,
             created_at: 1001,
             title: "Task X".to_string(),
         };
+        let recs = vec![rec_a.clone(), rec_b.clone()];
 
-        append_at(&path, &rec_fp_s1);
-        append_at(&path, &rec_fp_s2);
+        // Earliest discoverer (sessA) OWNS it => not "by other" => keeps surfacing.
+        assert!(
+            !owned_by_other(&recs, "same-fp", "sessA"),
+            "the earliest discoverer owns the task and keeps it"
+        );
+        // The later session AND any third session suppress it (DoD: "2回目 doesn't
+        // re-surface"). Stable single owner — no mutual annihilation.
+        assert!(
+            owned_by_other(&recs, "same-fp", "sessB"),
+            "a later session must suppress the duplicate"
+        );
+        assert!(
+            owned_by_other(&recs, "same-fp", "sessC"),
+            "a third session must suppress the duplicate"
+        );
 
-        // Helper: simulate the already_discovered_by_other check on loaded records.
+        // Unknown fingerprint => no owner => not suppressed (byte-equivalent).
+        assert!(
+            !owned_by_other(&recs, "missing-fp", "sessB"),
+            "an unseen fingerprint is owned by nobody"
+        );
+
+        // Status-agnostic: once the owner SELECTS it, it STILL suppresses others
+        // (active work must keep deduping) and the owner still keeps it. This is
+        // the case the old status==Discovered predicate got wrong.
+        let selected_owner = DiscoveryRecord {
+            status: Status::Selected,
+            ..rec_a
+        };
+        let recs_selected = vec![selected_owner, rec_b];
+        assert!(
+            owned_by_other(&recs_selected, "same-fp", "sessB"),
+            "a Selected owner still suppresses other sessions"
+        );
+        assert!(
+            !owned_by_other(&recs_selected, "same-fp", "sessA"),
+            "a Selected owner still keeps its own task"
+        );
+    }
+
+    #[test]
+    fn already_discovered_by_other_reads_the_store_end_to_end() {
+        // Exercise the public, store-backed entry point (not just the pure core):
+        // an earlier row from another session, persisted to a real JSONL file,
+        // must be observed by `owned_by_other` via `load_at`.
+        let tempdir = tempfile::tempdir().expect("tempfile::tempdir");
+        let path = tempdir.path().join("discovery.jsonl");
+        append_at(
+            &path,
+            &DiscoveryRecord {
+                fingerprint: "fp".to_string(),
+                session_id: "owner".to_string(),
+                status: Status::Discovered,
+                created_at: 5,
+                title: "T".to_string(),
+            },
+        );
         let records = load_at(&path);
-        let my_session = "session3";
-        let found = records.iter().any(|r| {
-            r.fingerprint == "same-fp"
-                && r.session_id != my_session
-                && r.status == Status::Discovered
-        });
-        assert!(
-            found,
-            "should find a record with same fp from a different session"
-        );
-
-        // Also test that it returns false if the fingerprint is not found.
-        let found_other = records.iter().any(|r| {
-            r.fingerprint == "different-fp"
-                && r.session_id != my_session
-                && r.status == Status::Discovered
-        });
-        assert!(!found_other, "should not find a non-existent fingerprint");
-
-        // Test that it returns false if the status is Selected (not Discovered).
-        mark_selected_at(&path, "same-fp");
-        let records_after = load_at(&path);
-        let found_selected = records_after.iter().any(|r| {
-            r.fingerprint == "same-fp"
-                && r.session_id != my_session
-                && r.status == Status::Discovered
-        });
-        assert!(
-            !found_selected,
-            "should not find a record if it's already Selected"
-        );
+        assert!(owned_by_other(&records, "fp", "latecomer"));
+        assert!(!owned_by_other(&records, "fp", "owner"));
     }
 
     #[test]

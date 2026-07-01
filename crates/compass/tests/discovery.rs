@@ -98,22 +98,8 @@ fn dod2_other_session_discovery_is_not_resurfaced_by_gap() {
     let env = Env::new();
     write_charter(&env, "ship the dedup loop");
 
-    // sessB records two opportunities under the north_star (each also emits a
-    // discovery row for sessB).
-    for title in ["dup task", "solo task"] {
-        let (_o, ok) = env.run(Some("sessB"), &["opportunity", "add", "--title", title]);
-        assert!(ok, "opportunity add should succeed");
-    }
-
-    // DoD#4 baseline: with NO other-session discovery, both opportunities surface
-    // for sessB (the filter drops nothing — byte-equivalent to no filter).
-    let before = gap_opportunity_titles(&env, "sessB");
-    assert!(
-        before.contains(&"dup task".to_string()) && before.contains(&"solo task".to_string()),
-        "baseline: both opportunities surface, got {before:?}"
-    );
-
-    // A DIFFERENT session (sessA) discovers "dup task".
+    // Ownership is by EARLIEST discovery, so the owner must record FIRST: sessA
+    // discovers "dup task" before sessB ever sees it. sessA is now its owner.
     let (_r, ok) = env.run(
         Some("sessA"),
         &[
@@ -127,16 +113,34 @@ fn dod2_other_session_discovery_is_not_resurfaced_by_gap() {
     );
     assert!(ok, "discovery record should exit 0");
 
-    // DoD#2: now gap as sessB drops "dup task" (already discovered by sessA) but
-    // keeps "solo task".
+    // sessB LATER registers the same "dup task" plus a unique "solo task" as
+    // opportunities (each also emits a sessB discovery row, but sessB's "dup task"
+    // row is later than sessA's, so sessA remains the owner).
+    for title in ["dup task", "solo task"] {
+        let (_o, ok) = env.run(Some("sessB"), &["opportunity", "add", "--title", title]);
+        assert!(ok, "opportunity add should succeed");
+    }
+
+    // DoD#2: gap as the LATER session (sessB) drops "dup task" (owned by sessA's
+    // earlier discovery) but keeps "solo task". The surviving "solo task" also
+    // exercises DoD#4 byte-equivalence: an opportunity no other session owns is
+    // never dropped by the filter.
     let after = gap_opportunity_titles(&env, "sessB");
     assert!(
         !after.contains(&"dup task".to_string()),
-        "dup task discovered by another session must NOT re-surface, got {after:?}"
+        "a task an EARLIER session discovered must NOT re-surface for the later session, got {after:?}"
     );
     assert!(
         after.contains(&"solo task".to_string()),
-        "solo task (undiscovered by others) must still surface, got {after:?}"
+        "solo task (owned by nobody else) must still surface, got {after:?}"
+    );
+
+    // And the owner (sessA) still surfaces "dup task" — stable single owner, no
+    // mutual annihilation where both sessions drop it.
+    let owner_view = gap_opportunity_titles(&env, "sessA");
+    assert!(
+        owner_view.contains(&"dup task".to_string()),
+        "the earliest discoverer (sessA) keeps surfacing its task, got {owner_view:?}"
     );
 
     // And the duplicate is observable in the shared store via `discovery list`.
