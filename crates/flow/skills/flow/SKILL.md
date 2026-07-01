@@ -129,6 +129,11 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
    → **ループを抜けて Step 4 へ**（awaiting-measurement にまだ観測不能な仮説が残っていても、
    それは「計測待ち」として残課題に計上しループは終える）。
 6. ピックしたタスクのタイトル＋ notes（仕様・制約・参照ファイル）を**課題文**に組み立てる。
+7. **選択を shared discovery store に記録**（未選択は `discovered` で次サイクルへ）:
+   ```bash
+   compass discovery select --session-id "<SESSION_ID>" --title "<選んだタスクのタイトル>"
+   ```
+   - 失敗時は fail-soft（compass 欠如 / 呼び出し失敗時も続行）。
 
 #### 3-2. condukt で実行（fugu-router がモデル選択）
 
