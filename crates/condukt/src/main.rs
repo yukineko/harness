@@ -7,6 +7,7 @@
 //! analysis, manage the git-worktree lifecycle, track run state, and gate
 //! completion. Hooks (restore/statusline) never break a turn — they exit 0.
 
+mod checkpoint;
 mod config;
 mod consensus;
 mod editgate;
@@ -25,6 +26,7 @@ mod worktree;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -335,6 +337,26 @@ enum StateAction {
     /// autonomous, 1 when not — so the /condukt skill can branch on the exit code
     /// to skip human gates (e.g. the Phase 3 agreement) only when autonomous.
     AutonomyCheck,
+    /// Durably checkpoint a run: snapshot its run-state + each task's branch SHA
+    /// and journal the event. Prints the new checkpoint seq. The reversibility
+    /// safety net for autonomous proceeding (charter #7).
+    Checkpoint {
+        #[arg(long)]
+        run: String,
+        /// Optional human label (e.g. the phase name).
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Roll a run back to a prior checkpoint: restore the snapshotted run-state,
+    /// best-effort git-reset each worktree to its recorded SHA, and journal the
+    /// rollback. Defaults to the latest checkpoint; --to picks a specific seq.
+    Rollback {
+        #[arg(long)]
+        run: String,
+        /// Checkpoint seq to restore (default: latest).
+        #[arg(long)]
+        to: Option<u64>,
+    },
     /// Resolve the verifier model so it never equals the worker model (shared
     /// blind-spot guard). Prints the chosen model on stdout. A distinct
     /// --suggested is honoured; otherwise a distinct tier is picked.
@@ -794,6 +816,7 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 .iter_mut()
                 .find(|t| t.id == task)
                 .ok_or_else(|| anyhow!("no task '{task}' in run '{run}'"))?;
+            let prior_status = t.status;
             t.status = st;
             t.updated_at = Some(state::now_secs());
             if st == state::Status::Verified {
@@ -834,6 +857,27 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             rs.save(cfg, cwd)?;
             let (done, total) = rs.counts();
             eprintln!("run '{run}': {done}/{total} verified");
+            // Auto-rollback (charter #7): a task that fails after having been
+            // verified restores the run to the last checkpoint — the safety net
+            // that makes unattended proceeding reversible. Fail-soft: a missing
+            // checkpoint or any restore error is logged, never breaks the turn.
+            if st == state::Status::Failed && prior_status == state::Status::Verified {
+                let dir = checkpoint_project_dir(cfg, cwd, &run);
+                if let Some(cp) = checkpoint::latest_checkpoint(&dir, &run) {
+                    restore_checkpoint(
+                        cfg,
+                        cwd,
+                        &dir,
+                        &run,
+                        &cp,
+                        checkpoint::JournalKind::AutoRollback,
+                    );
+                    eprintln!(
+                        "auto-rollback: verified task '{task}' failed; restored checkpoint {}",
+                        cp.seq
+                    );
+                }
+            }
         }
         StateAction::Show { run } => {
             let rs = state::RunState::load(cfg, cwd, &run)?;
@@ -1178,8 +1222,105 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        StateAction::Checkpoint { run, label } => {
+            let rs = state::RunState::load(cfg, cwd, &run)?;
+            let dir = checkpoint_project_dir(cfg, cwd, &run);
+            let shas = capture_branch_shas(cwd, &rs);
+            let seq = checkpoint::write_checkpoint(
+                &dir,
+                &run,
+                &rs,
+                label.as_deref().unwrap_or(""),
+                shas,
+            )?;
+            println!("{seq}");
+            eprintln!("checkpoint {seq} recorded for run '{run}'");
+        }
+        StateAction::Rollback { run, to } => {
+            let dir = checkpoint_project_dir(cfg, cwd, &run);
+            let cp = match to {
+                Some(seq) => checkpoint::checkpoint_at(&dir, &run, seq),
+                None => checkpoint::latest_checkpoint(&dir, &run),
+            };
+            let Some(cp) = cp else {
+                bail!("no checkpoint to roll back to for run '{run}'");
+            };
+            restore_checkpoint(cfg, cwd, &dir, &run, &cp, checkpoint::JournalKind::Rollback);
+            let depth = checkpoint::load_journal(&dir, &run).len();
+            println!("{}", cp.seq);
+            eprintln!(
+                "rolled run '{run}' back to checkpoint {} ({depth} journal events)",
+                cp.seq
+            );
+        }
     }
     Ok(())
+}
+
+/// The durable per-project state dir for a run's checkpoints/journal — the same
+/// dir the run-state and decomposition live in (derived via the public
+/// `decomposition_path` so we need no new state.rs API).
+fn checkpoint_project_dir(cfg: &Config, cwd: &Path, run_id: &str) -> PathBuf {
+    state::decomposition_path(cfg, cwd, run_id)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| cwd.to_path_buf())
+}
+
+/// Snapshot each task's current branch tip SHA (best-effort): tasks with no
+/// branch, or whose `git rev-parse` fails, are simply omitted — never aborts.
+fn capture_branch_shas(cwd: &Path, rs: &state::RunState) -> BTreeMap<String, String> {
+    let mut shas = BTreeMap::new();
+    let repo = worktree::toplevel(cwd).ok();
+    for t in &rs.tasks {
+        if let (Some(repo), Some(branch)) = (repo.as_deref(), t.branch.as_deref()) {
+            if let Ok(sha) = worktree::git(repo, &["rev-parse", branch]) {
+                shas.insert(t.id.clone(), sha.trim().to_string());
+            }
+        }
+    }
+    shas
+}
+
+/// Restore a checkpoint's run-state snapshot as the current run-state, then
+/// best-effort git-reset each recorded worktree to its snapshot SHA, and journal
+/// the event. Every side effect is fail-soft: a git or journal error is logged
+/// and skipped so a rollback (incl. the auto-rollback path) never breaks a turn.
+fn restore_checkpoint(
+    cfg: &Config,
+    cwd: &Path,
+    dir: &Path,
+    run_id: &str,
+    cp: &checkpoint::Checkpoint,
+    kind: checkpoint::JournalKind,
+) {
+    // 1. Restore the tracking state (atomic save).
+    if let Err(e) = cp.run.save(cfg, cwd) {
+        eprintln!("rollback: failed to restore run-state for '{run_id}': {e:#}");
+    }
+    // 2. Best-effort restore each worktree to its snapshot SHA.
+    for t in &cp.run.tasks {
+        if let (Some(wt), Some(sha)) = (t.worktree.as_deref(), cp.branch_shas.get(&t.id)) {
+            let wt_path = Path::new(wt);
+            if wt_path.exists() {
+                if let Err(e) = worktree::git(wt_path, &["reset", "--hard", sha]) {
+                    eprintln!("rollback: git reset skipped for task '{}': {e:#}", t.id);
+                }
+            }
+        }
+    }
+    // 3. Journal the event.
+    checkpoint::append_journal(
+        dir,
+        run_id,
+        &checkpoint::JournalEntry {
+            seq: cp.seq,
+            kind,
+            label: cp.label.clone(),
+            created_at: state::now_secs(),
+            note: None,
+        },
+    );
 }
 
 /// Run a mechanical check command in `run_dir`, returning (passed, combined output).
