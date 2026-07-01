@@ -4,6 +4,30 @@
 `git-subdir`（`yukineko/claude-harnesses.git` の `crates/<plugin>`、`ref=main`）で配布する。配布の仕組みは
 [README の「配布」節](README.md) を参照。
 
+## ビルドとローカル反映（ソース変更を有効化する）
+
+各プラグインの「実体」は、リポジトリのソースでも `crates/<plugin>/bin/<name>-<os>-<arch>`（配布用にコミットされた
+バイナリ）でもなく、**インストール済みキャッシュ** `~/.claude/plugins/cache/<vendor>/<plugin>/<ver>/bin/<name>-<os>-<arch>`
+にある platform 別バイナリである。`bin/<name>` ランチャが `uname` で該当バイナリを exec する。
+
+**帰結**: crate のソースを直しても、リポジトリを `cargo build` しただけでは動いているハーネスの挙動は変わらない。
+キャッシュ内のバイナリを差し替えて初めて有効化される（実行時 config は即反映されるが、ロジックは再ビルド＋差し替えが必須）。
+
+ローカルで有効化するには:
+
+```sh
+scripts/rebuild-plugins.sh            # cargo clean → release build → ホスト platform のキャッシュを冪等に差し替え
+scripts/rebuild-plugins.sh --no-clean # 増分ビルド（cargo clean をスキップ）
+scripts/rebuild-plugins.sh --dry-run  # 差分だけ表示（ビルド・コピーなし）
+scripts/rebuild-plugins.sh --stage-repo   # コミット対象 crates/*/bin も更新
+CLAUDE_PLUGIN_CACHE=/path scripts/rebuild-plugins.sh   # キャッシュルート上書き
+```
+
+**配布用バイナリの注意**: `rebuild-plugins.sh` はホスト platform（例: Linux なら `linux-x86_64`）しか再ビルドできない。
+darwin バイナリは Mac / CI で生成する前提のため、linux 版だけを `crates/*/bin` にコミットすると platform 間が
+不整合になる。通常はローカルの再ビルド blob をコミットせず、配布用は Mac / CI で全 platform 揃えて更新する。
+単一 crate を任意 target で staging するには `scripts/build-plugin-bin.sh <crate> [rust-target] [bin-name]` を使う。
+
 ## バージョン運用ポリシー
 
 **プラグインは独立して semver でバージョニングする。workspace 全体で統一した単一バージョンは
