@@ -456,3 +456,205 @@ mod tests {
         assert!(validate(&d).is_empty());
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use crate::model::{Class, Decomposition, Task};
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+
+    fn pt(id: &str, files: Vec<String>, deps: Vec<String>, class: Class) -> Task {
+        Task {
+            id: id.into(),
+            title: id.into(),
+            touched_files: files,
+            deps,
+            class,
+            ..Default::default()
+        }
+    }
+
+    fn pd(tasks: Vec<Task>) -> Decomposition {
+        Decomposition { goal: "g".into(), tasks }
+    }
+
+    fn batch_index(sched: &Schedule, id: &str) -> Option<usize> {
+        sched.batches.iter().position(|b| b.parallel.contains(&id.to_string()))
+    }
+
+    proptest! {
+        /// Every input task id appears in exactly one output list (batches, serial, or gated).
+        #[test]
+        fn all_tasks_accounted_for(n in 1usize..8) {
+            let tasks: Vec<Task> = (0..n).map(|i| pt(&format!("t{i}"), vec![], vec![], Class::Parallel)).collect();
+            let in_ids: HashSet<String> = tasks.iter().map(|t| t.id.clone()).collect();
+            let sched = schedule(&pd(tasks), &[]);
+            let mut out_ids: Vec<String> = sched.batches.iter()
+                .flat_map(|b| b.parallel.iter().cloned())
+                .chain(sched.serial.iter().cloned())
+                .chain(sched.gated.iter().cloned())
+                .collect();
+            out_ids.sort();
+            let mut in_sorted: Vec<String> = in_ids.into_iter().collect();
+            in_sorted.sort();
+            prop_assert_eq!(out_ids, in_sorted);
+        }
+
+        /// All parallel tasks with unique files land in batches (not serial/gated).
+        #[test]
+        fn parallel_unique_files_in_batches(n in 1usize..8) {
+            let tasks: Vec<Task> = (0..n)
+                .map(|i| pt(&format!("t{i}"), vec![format!("src/f{i}.rs")], vec![], Class::Parallel))
+                .collect();
+            let sched = schedule(&pd(tasks.clone()), &[]);
+            for t in &tasks {
+                let in_batch = sched.batches.iter().any(|b| b.parallel.contains(&t.id));
+                prop_assert!(in_batch, "task {} should be in a batch", t.id);
+            }
+        }
+
+        /// Gated tasks always end up in sched.gated and nowhere else.
+        #[test]
+        fn gated_tasks_always_in_gated(n in 1usize..6) {
+            let tasks: Vec<Task> = (0..n).map(|i| pt(&format!("t{i}"), vec![], vec![], Class::Gated)).collect();
+            let sched = schedule(&pd(tasks.clone()), &[]);
+            for t in &tasks {
+                prop_assert!(sched.gated.contains(&t.id));
+                prop_assert!(!sched.serial.contains(&t.id));
+                prop_assert!(!sched.batches.iter().any(|b| b.parallel.contains(&t.id)));
+            }
+        }
+
+        /// Serial tasks never appear in batches or gated.
+        #[test]
+        fn serial_tasks_never_in_batches_or_gated(n in 1usize..6) {
+            let tasks: Vec<Task> = (0..n).map(|i| pt(&format!("t{i}"), vec![], vec![], Class::Serial)).collect();
+            let sched = schedule(&pd(tasks.clone()), &[]);
+            for t in &tasks {
+                prop_assert!(!sched.gated.contains(&t.id));
+                prop_assert!(!sched.batches.iter().any(|b| b.parallel.contains(&t.id)));
+            }
+        }
+
+        /// No file appears in two parallel tasks within the same batch.
+        #[test]
+        fn no_file_overlap_in_same_batch(n in 2usize..8) {
+            let tasks: Vec<Task> = (0..n)
+                .map(|i| pt(&format!("t{i}"), vec![format!("src/f{i}.rs")], vec![], Class::Parallel))
+                .collect();
+            let dec = pd(tasks.clone());
+            let sched = schedule(&dec, &[]);
+            for batch in &sched.batches {
+                let mut seen: HashSet<String> = HashSet::new();
+                for tid in &batch.parallel {
+                    let t = dec.tasks.iter().find(|t| &t.id == tid).unwrap();
+                    for f in &t.touched_files {
+                        prop_assert!(seen.insert(f.clone()), "file {f} appears twice in same batch");
+                    }
+                }
+            }
+        }
+
+        /// All IDs in schedule output reference valid input task ids.
+        #[test]
+        fn all_output_ids_valid(n in 1usize..8, class_seed in 0u8..3) {
+            let classes = [Class::Parallel, Class::Serial, Class::Gated];
+            let c = classes[class_seed as usize % 3];
+            let tasks: Vec<Task> = (0..n).map(|i| pt(&format!("t{i}"), vec![], vec![], c)).collect();
+            let valid: HashSet<String> = tasks.iter().map(|t| t.id.clone()).collect();
+            let sched = schedule(&pd(tasks), &[]);
+            for id in sched.batches.iter().flat_map(|b| &b.parallel)
+                .chain(sched.serial.iter()).chain(sched.gated.iter()) {
+                prop_assert!(valid.contains(id), "unknown id {id} in output");
+            }
+        }
+
+        /// Dep ordering: if t1 depends on t0, t0's batch index < t1's batch index.
+        #[test]
+        fn dep_batch_ordering(fa in "[a-z]{3,5}", fb in "[a-z]{3,5}") {
+            if fa == fb { return Ok(()); }
+            let tasks = vec![
+                pt("t0", vec![format!("src/{fa}.rs")], vec![], Class::Parallel),
+                pt("t1", vec![format!("src/{fb}.rs")], vec!["t0".into()], Class::Parallel),
+            ];
+            let sched = schedule(&pd(tasks), &[]);
+            if let (Some(b0), Some(b1)) = (batch_index(&sched, "t0"), batch_index(&sched, "t1")) {
+                prop_assert!(b0 < b1, "t0 batch {b0} >= t1 batch {b1}");
+            }
+        }
+
+        /// Shared glob forces a parallel task into serial.
+        #[test]
+        fn shared_glob_demotes_to_serial(n in 2usize..5) {
+            let tasks: Vec<Task> = (0..n)
+                .map(|i| pt(&format!("t{i}"), vec!["src/shared.rs".into()], vec![], Class::Parallel))
+                .collect();
+            let sched = schedule(&pd(tasks.clone()), &["src/shared.rs".to_string()]);
+            for t in &tasks {
+                let in_serial = sched.serial.contains(&t.id);
+                let in_batch_solo = sched.batches.iter()
+                    .any(|b| b.parallel.contains(&t.id) && b.parallel.len() == 1);
+                prop_assert!(in_serial || in_batch_solo,
+                    "task {} should be serial or solo-batch when touching shared file", t.id);
+            }
+        }
+
+        /// No duplicates in output lists.
+        #[test]
+        fn no_duplicate_ids_in_output(n in 1usize..8) {
+            let tasks: Vec<Task> = (0..n).map(|i| pt(&format!("t{i}"), vec![], vec![], Class::Parallel)).collect();
+            let sched = schedule(&pd(tasks), &[]);
+            let all: Vec<String> = sched.batches.iter()
+                .flat_map(|b| b.parallel.iter().cloned())
+                .chain(sched.serial.iter().cloned())
+                .chain(sched.gated.iter().cloned())
+                .collect();
+            let unique: HashSet<&String> = all.iter().collect();
+            prop_assert_eq!(all.len(), unique.len(), "duplicate ids in schedule output");
+        }
+
+        /// Mixed classes: total output count = total input count.
+        #[test]
+        fn mixed_classes_total_preserved(np in 1usize..4, ns in 1usize..3, ng in 1usize..3) {
+            let mut tasks: Vec<Task> = vec![];
+            for i in 0..np { tasks.push(pt(&format!("p{i}"), vec![], vec![], Class::Parallel)); }
+            for i in 0..ns { tasks.push(pt(&format!("s{i}"), vec![], vec![], Class::Serial)); }
+            for i in 0..ng { tasks.push(pt(&format!("g{i}"), vec![], vec![], Class::Gated)); }
+            let total = tasks.len();
+            let sched = schedule(&pd(tasks), &[]);
+            let out_count = sched.batches.iter().map(|b| b.parallel.len()).sum::<usize>()
+                + sched.serial.len() + sched.gated.len();
+            prop_assert_eq!(out_count, total);
+        }
+
+        /// Warnings are emitted when a task is demoted by shared glob.
+        #[test]
+        fn warnings_on_shared_glob_demotion(n in 2usize..5) {
+            let tasks: Vec<Task> = (0..n)
+                .map(|i| pt(&format!("t{i}"), vec!["shared.rs".into()], vec![], Class::Parallel))
+                .collect();
+            let sched = schedule(&pd(tasks), &["shared.rs".to_string()]);
+            prop_assert!(!sched.warnings.is_empty(), "expected demotion warnings");
+        }
+
+        /// Single parallel task → exactly one batch of size one.
+        #[test]
+        fn single_parallel_task_one_batch(id in "[a-z]{2,5}") {
+            let sched = schedule(&pd(vec![pt(&id, vec![], vec![], Class::Parallel)]), &[]);
+            prop_assert_eq!(sched.batches.len(), 1);
+            prop_assert_eq!(sched.batches[0].parallel.len(), 1);
+            prop_assert!(sched.serial.is_empty());
+            prop_assert!(sched.gated.is_empty());
+        }
+    }
+
+    /// Empty decomposition → empty schedule (deterministic sanity check).
+    #[test]
+    fn empty_decomp_empty_schedule() {
+        let sched = schedule(&pd(vec![]), &[]);
+        assert!(sched.batches.is_empty());
+        assert!(sched.serial.is_empty());
+        assert!(sched.gated.is_empty());
+    }
+}

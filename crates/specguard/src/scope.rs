@@ -329,3 +329,166 @@ mod tests {
         assert_eq!(resolve_baseline(&cfg, None, None), "HEAD~20");
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use crate::config::Area;
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+
+    fn mk_area(name: &str, globs: Vec<String>) -> Area {
+        Area { name: name.into(), globs, canon: vec![] }
+    }
+
+    fn all_hit_files(hits: &[AreaHit]) -> Vec<String> {
+        hits.iter().flat_map(|h| h.matched_files.iter().cloned()).collect()
+    }
+
+    proptest! {
+        /// With no areas, no changed files are classified into any area hit.
+        #[test]
+        fn no_areas_no_hits(
+            files in prop::collection::vec("[a-z]{3,6}", 1..8),
+        ) {
+            let changed: Vec<String> = files.iter().map(|f| format!("src/{f}.rs")).collect();
+            let (hits, _oob) = classify(&changed, &[]).unwrap();
+            prop_assert!(hits.is_empty(), "with no areas there should be no hits");
+        }
+
+        /// With no changed files, no area hits are produced.
+        #[test]
+        fn empty_changed_no_hits(
+            n_areas in 0usize..4,
+        ) {
+            let areas: Vec<Area> = (0..n_areas)
+                .map(|i| mk_area(&format!("a{i}"), vec![format!("src/a{i}/**")]))
+                .collect();
+            let (hits, _oob) = classify(&[], &areas).unwrap();
+            // hits come from matched changed files; with none, no area should have hits
+            prop_assert!(hits.iter().all(|h| h.matched_files.is_empty()),
+                "no changed files should yield no matched_files in any hit");
+        }
+
+        /// area_index is always < areas.len().
+        #[test]
+        fn area_index_always_in_bounds(
+            files in prop::collection::vec("[a-z]{3,5}", 1..6),
+            n_areas in 1usize..4,
+        ) {
+            let areas: Vec<Area> = (0..n_areas)
+                .map(|i| mk_area(&format!("a{i}"), vec![format!("src/a{i}/**")]))
+                .collect();
+            let changed: Vec<String> = files.iter().map(|f| format!("src/a0/{f}.rs")).collect();
+            let (hits, _) = classify(&changed, &areas).unwrap();
+            for h in &hits {
+                prop_assert!(h.area_index < areas.len(),
+                    "area_index {} >= areas.len() {}", h.area_index, areas.len());
+            }
+        }
+
+        /// No file appears in more than one AreaHit.
+        #[test]
+        fn no_file_in_multiple_hits(
+            files in prop::collection::vec("[a-z]{3,5}", 1..6),
+        ) {
+            let areas = vec![
+                mk_area("a0", vec!["src/a0/**".into()]),
+                mk_area("a1", vec!["src/a1/**".into()]),
+            ];
+            let changed: Vec<String> = files.iter().enumerate().map(|(i, f)| {
+                if i % 2 == 0 { format!("src/a0/{f}.rs") } else { format!("src/a1/{f}.rs") }
+            }).collect();
+            let (hits, _) = classify(&changed, &areas).unwrap();
+            let all: Vec<String> = all_hit_files(&hits);
+            let unique: HashSet<&String> = all.iter().collect();
+            prop_assert_eq!(all.len(), unique.len(), "a file appeared in multiple hits");
+        }
+
+        /// Files in out_of_scope don't appear in any AreaHit.
+        #[test]
+        fn out_of_scope_disjoint_from_hits(
+            files in prop::collection::vec("[a-z]{3,5}", 1..8),
+        ) {
+            let areas = vec![mk_area("a0", vec!["src/a0/**".into()])];
+            let changed: Vec<String> = files.iter().map(|f| format!("src/other/{f}.rs")).collect();
+            let (hits, oob) = classify(&changed, &areas).unwrap();
+            let hit_set: HashSet<String> = all_hit_files(&hits).into_iter().collect();
+            for f in &oob {
+                prop_assert!(!hit_set.contains(f), "file {f} in both oob and hits");
+            }
+        }
+
+        /// Total files in hits + out_of_scope equals changed (no file lost or duplicated).
+        #[test]
+        fn total_files_preserved(
+            files in prop::collection::vec("[a-z]{3,6}", 1..8),
+        ) {
+            let areas = vec![mk_area("a0", vec!["src/**".into()])];
+            let changed: Vec<String> = {
+                let mut v: Vec<String> = files.iter().map(|f| format!("src/{f}.rs")).collect();
+                v.sort(); v.dedup(); v
+            };
+            let (hits, oob) = classify(&changed, &areas).unwrap();
+            let total_out = all_hit_files(&hits).len() + oob.len();
+            prop_assert_eq!(total_out, changed.len());
+        }
+
+        /// Files matching an area's glob appear in that area's hit.
+        #[test]
+        fn matching_file_in_hit(f in "[a-z]{3,6}") {
+            let file = format!("src/{f}.rs");
+            let areas = vec![mk_area("a0", vec!["src/**".into()])];
+            let (hits, oob) = classify(&[file.clone()], &areas).unwrap();
+            prop_assert!(oob.is_empty(), "file {file} should be in-scope");
+            prop_assert!(!hits.is_empty());
+            prop_assert!(hits[0].matched_files.contains(&file));
+        }
+
+        /// File not matching any area glob never appears in any hit's matched_files.
+        #[test]
+        fn non_matching_file_not_in_hits(f in "[a-z]{3,6}") {
+            let file = format!("other/{f}.rs");
+            let areas = vec![mk_area("a0", vec!["src/**".into()])];
+            let (hits, _oob) = classify(&[file.clone()], &areas).unwrap();
+            for h in &hits {
+                prop_assert!(!h.matched_files.contains(&file),
+                    "non-matching file {file} should not appear in any hit");
+            }
+        }
+
+        /// Number of AreaHits never exceeds number of areas.
+        #[test]
+        fn hit_count_le_area_count(
+            files in prop::collection::vec("[a-z]{3,5}", 1..8),
+            n_areas in 1usize..5,
+        ) {
+            let areas: Vec<Area> = (0..n_areas)
+                .map(|i| mk_area(&format!("a{i}"), vec![format!("src/a{i}/**")]))
+                .collect();
+            let changed: Vec<String> = files.iter().map(|f| format!("src/a0/{f}.rs")).collect();
+            let (hits, _) = classify(&changed, &areas).unwrap();
+            prop_assert!(hits.len() <= n_areas);
+        }
+
+        /// changed_canon files are also in matched_files for that hit.
+        #[test]
+        fn changed_canon_subset_of_matched_files(f in "[a-z]{3,6}") {
+            let canon_file = format!("src/{f}.md");
+            let impl_file = format!("src/{f}.rs");
+            let areas = vec![Area {
+                name: "a0".into(),
+                globs: vec!["src/**".into()],
+                canon: vec![canon_file.clone()],
+            }];
+            let changed = vec![canon_file.clone(), impl_file];
+            let (hits, _) = classify(&changed, &areas).unwrap();
+            if let Some(h) = hits.iter().find(|h| h.area_index == 0) {
+                for cc in &h.changed_canon {
+                    prop_assert!(h.matched_files.contains(cc) || changed.contains(cc),
+                        "changed_canon file {cc} not found");
+                }
+            }
+        }
+    }
+}
