@@ -1,6 +1,7 @@
 mod budget;
 mod display;
 mod hooks;
+mod inject;
 mod progress;
 mod sessions;
 
@@ -34,6 +35,8 @@ enum Command {
     Progress,
     /// Show Stop-hook latency aggregation only
     Hooks,
+    /// Show UserPromptSubmit injection-size aggregation only
+    Inject,
 }
 
 fn today() -> String {
@@ -172,15 +175,43 @@ fn main() {
                 }
             }
         }
+        Some(Command::Inject) => {
+            let i = inject::read();
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&i).unwrap_or_default());
+            } else if i.turns.is_empty() {
+                println!("[no UserPromptSubmit injections recorded]");
+            } else {
+                for t in &i.turns {
+                    println!(
+                        "{} | {} chars across {} injectors",
+                        inject::key8(&t.turn_key),
+                        t.total_chars,
+                        t.per_plugin.len()
+                    );
+                }
+                for t in &i.turns {
+                    if t.over_budget {
+                        println!(
+                            "⚠ turn {} injection total {} chars exceeds budget {}",
+                            inject::key8(&t.turn_key),
+                            t.total_chars,
+                            i.budget_chars
+                        );
+                    }
+                }
+            }
+        }
         None => {
             let b = budget::read(&today);
             let s = sessions::recent(cli.sessions);
             let p = progress::read(&cwd);
             let h = hooks::read();
+            let i = inject::read();
             if cli.json {
-                display::print_json(&today, &b, &s, &p, &h);
+                display::print_json(&today, &b, &s, &p, &h, &i);
             } else {
-                display::print_status(&today, &b, &s, &p, &h, &cwd.to_string_lossy());
+                display::print_status(&today, &b, &s, &p, &h, &i, &cwd.to_string_lossy());
             }
         }
     }

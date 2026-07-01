@@ -1,6 +1,6 @@
 # ADR 0001 — Cross-harness injection budget
 
-- **Status:** Proposed (observation step landed in ctxrot; cross-harness aggregation + shared budget pending)
+- **Status:** Phase 1 landed (ctxrot observation); **Phase 2 landed** (cross-harness aggregation + detection/warn budget). Active same-turn enforcement remains future work.
 - **Date:** 2026-06-22
 - **Scope:** the harness-plugin family (`ctxrot`, `playbook`, `gauge`, `session-insights`, …) — multiple plugins, distributed together from the `yukineko/claude-harnesses` monorepo
 - **Owner:** ctxrot maintainers (originating repo); requires buy-in from the sibling plugins
@@ -52,7 +52,52 @@ plugins' signals — **`gauge` or `session-insights`** — which should:
 
 Deliverable of Phase 1: you can *see* the combined number. No enforcement yet.
 
-### Phase 2 — Shared budget (design only; implement after Phase 1 data)
+### Phase 2 — Cross-harness aggregation + detection/warn budget (LANDED)
+
+Landed in `harness-core` + `harness-status`, not the sibling repos: all five
+`UserPromptSubmit` injectors in this monorepo now report to a single shared
+ledger.
+
+**Shared channel.** `harness_core::inject_metrics` owns a central append-only
+JSONL ledger at `<base_dir("harness")>/state/inject-metrics.jsonl` (i.e.
+`~/.harness/state/inject-metrics.jsonl`), mirroring the `hook-latency.jsonl`
+model. Each line is an `InjectEntry { ts, turn_key, plugin, session, chars }`.
+Recording is best-effort and swallows every error (never breaks a turn), and a
+zero-char injection records nothing.
+
+**Turn id — solved without cross-process coordination.** The hard problem in the
+original design ("defining a turn reliably across hooks") is resolved by the
+observation that all five injectors receive the SAME user `prompt` on the SAME
+`UserPromptSubmit` event. So `turn_key = FNV-1a(session_id + "\n" + prompt)` (a
+STABLE hash, deliberately not `DefaultHasher`) is a deterministic shared key the
+five separate processes derive independently — no daemon, no lock, no shared
+mutable state file. `inject_metrics::turn_key` computes it; aggregation groups by
+it.
+
+**Instrumented injectors (post-cap size).** Each injector records the CHAR count
+of the exact string it emits, at its emit site, after its own per-injector cap:
+`playbook`, `run-book`, `ctxrot` (guard), `context-governor`
+(`additionalContext` on UserPromptSubmit), and `fugu-router`. Injection behavior
+is unchanged — only a side-effecting `record()` call was added before the
+existing emit.
+
+**Aggregation + warn.** `harness-status inject` (and the default all-panels view)
+reads the ledger via `inject_metrics::aggregate`, groups by `turn_key`, sums the
+combined and per-plugin chars, sorts most-recent-turn-first, and flags any turn
+whose combined size exceeds `HARNESS_INJECT_BUDGET_CHARS` (default 20000 chars)
+with a clear `⚠ turn <key> injection total <n> chars exceeds budget <b>` line.
+
+**Shipped enforcement is detection + warn, honestly not forced truncation.**
+Cross-process same-turn ordering across the five hooks is not guaranteed, and
+dropping safety-critical injected context to fit a same-turn budget is riskier
+than a transient overflow. So Phase 2 ships observability and an over-budget
+warning, not same-turn trimming. `inject_metrics::remaining_for_turn(path,
+turn_key, budget)` is provided (and tested) as a cooperative self-cap helper —
+budget minus what siblings already recorded for the turn, saturating at 0 — that
+a future active-enforcement phase can wire in per-injector, but no injector calls
+it yet.
+
+### Phase 3 — Active shared budget (design only; implement after Phase 2 data)
 
 Two candidate mechanisms, to be chosen once Phase 1 shows the real magnitude:
 

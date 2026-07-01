@@ -271,6 +271,12 @@ fn main() {
             if let Some(input) = HookInput::parse(&raw) {
                 let cfg = Config::load();
                 if let Some(text) = hooks::guard::run(&input, &cfg) {
+                    harness_core::inject_metrics::record(
+                        "ctxrot",
+                        &input.session_id,
+                        &input.prompt,
+                        text.chars().count(),
+                    );
                     println!("{text}");
                 }
             }

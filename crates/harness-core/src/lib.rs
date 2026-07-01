@@ -29,6 +29,7 @@ pub mod hash;
 pub mod hook;
 pub mod hook_latency;
 pub mod inject;
+pub mod inject_metrics;
 pub mod install;
 pub mod interrogate;
 pub mod ledger;
