@@ -148,14 +148,32 @@ L3 は「他プロジェクトが現にやっている」根拠の URL を必ず
 
 ### Phase 5 — backlog へ書き出し
 
-承認された施策を 1 件ずつ backlog に積む:
+承認された施策を 1 件ずつ backlog に積む。同時に、**機械スコープ共有発見ストア（discovery store）に記録し、並行セッションの重複を回避**する（fail-soft）:
 
 ```bash
-backlog add --title "<施策名>" --project "$PWD" \
-  --priority <p0|p1|p2> \
-  --tag <lens> --tag scout \
-  --notes "<rationale> / 証拠: <evidence> / 完了条件: <suggested_done>"
+# 既に他セッションが発見した施策をスキップ（発見ストア確認）
+DISCOVERED=$(compass discovery list --json 2>/dev/null || echo '[]')
+
+# 各承認施策について
+for 施策名 in "${APPROVED_TASKS[@]}"; do
+  # 他セッションが既に所有している場合は skip（同じ title の行を探し、session_id が異なれば他セッション所有）
+  if echo "$DISCOVERED" | jq -e --arg title "$施策名" '.[] | select(.title == $title and .session_id != env.SESSION_ID)' >/dev/null 2>&1; then
+    echo "（スキップ: $施策名 は他セッションで既に発見）"
+    continue
+  fi
+  
+  # 本セッションの発見ストアに記録（失敗しても scout 続行 = fail-soft）
+  compass discovery record --session-id "$SESSION_ID" --title "$施策名" 2>/dev/null || true
+  
+  # backlog に積む
+  backlog add --title "$施策名" --project "$PWD" \
+    --priority <p0|p1|p2> \
+    --tag <lens> --tag scout \
+    --notes "<rationale> / 証拠: <evidence> / 完了条件: <suggested_done>"
+done
 ```
+
+**発見ストア**（`~/.compass/<project_key>/discovery.jsonl`）は、同一機械上の複数 scout セッションが**同じ施策を重複 backlog 追加する**のを防ぐ side-channel（repo 書き込みではない）。ストア呼び出しが失敗しても scout は常に続行する（**never break a turn**）。
 
 `--tag scout` を付け、scout 由来の施策と分かるようにする。`--notes` に証拠と完了条件を残し、
 実行時（condukt の interpreter）が done_criteria を引けるようにする。
