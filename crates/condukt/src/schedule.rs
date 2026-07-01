@@ -322,6 +322,7 @@ mod tests {
             target_symbols: Vec::new(),
             reproduction_tests: None,
             confidence: None,
+            kind: None,
         }
     }
 

@@ -55,6 +55,22 @@ pub struct Task {
     /// re-verification. Unknown values are accepted and ignored.
     #[serde(default)]
     pub confidence: Option<String>,
+    /// Classification of the change (fix|feature|chore|...). Free-form and
+    /// permissive: unknown or missing values are accepted and ignored here.
+    /// Used to decide whether a fix/feature transition requires an FP oracle.
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+impl Task {
+    /// True only when `kind` is present and names a fix or feature (case-insensitive).
+    /// Chore/other/absent classifications return false.
+    pub fn requires_fp_oracle(&self) -> bool {
+        matches!(
+            self.kind.as_deref().map(str::to_ascii_lowercase).as_deref(),
+            Some("fix") | Some("feature")
+        )
+    }
 }
 
 /// The full plan the interpreter agent emits.
@@ -173,6 +189,52 @@ mod tests {
             serde_json::from_str(r#"{"goal":"g","tasks":[{"id":"a","confidence":"low"}]}"#)
                 .expect("decomposition with confidence should parse");
         assert_eq!(dec.tasks[0].confidence.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn task_without_kind_still_parses() {
+        // Back-compat: decompositions emitted before `kind` existed must load.
+        let dec: Decomposition = serde_json::from_str(
+            r#"{"goal":"g","tasks":[{"id":"a","touched_files":["src/a.rs"]}]}"#,
+        )
+        .expect("decomposition without kind should parse");
+        assert_eq!(dec.tasks.len(), 1);
+        assert_eq!(dec.tasks[0].kind, None);
+    }
+
+    #[test]
+    fn task_with_kind_is_populated() {
+        let dec: Decomposition =
+            serde_json::from_str(r#"{"goal":"g","tasks":[{"id":"a","kind":"fix"}]}"#)
+                .expect("decomposition with kind should parse");
+        assert_eq!(dec.tasks[0].kind.as_deref(), Some("fix"));
+    }
+
+    #[test]
+    fn requires_fp_oracle_only_for_fix_or_feature() {
+        let fix = Task {
+            kind: Some("fix".to_string()),
+            ..Default::default()
+        };
+        assert!(fix.requires_fp_oracle());
+
+        let feature = Task {
+            kind: Some("FEATURE".to_string()),
+            ..Default::default()
+        };
+        assert!(feature.requires_fp_oracle());
+
+        let chore = Task {
+            kind: Some("chore".to_string()),
+            ..Default::default()
+        };
+        assert!(!chore.requires_fp_oracle());
+
+        let none = Task {
+            kind: None,
+            ..Default::default()
+        };
+        assert!(!none.requires_fp_oracle());
     }
 
     #[test]
