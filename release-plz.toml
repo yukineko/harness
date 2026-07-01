@@ -1,0 +1,46 @@
+# release-plz configuration for this git-subdir-distributed plugin monorepo.
+#
+# What release-plz is used FOR here: on every push to main it detects which
+# crates changed since their last release (from conventional commits), bumps
+# each changed crate's semver INDEPENDENTLY, regenerates that crate's per-crate
+# CHANGELOG.md, and opens a single "release" PR carrying those edits.
+#
+# What is deliberately DISABLED: publishing to crates.io. These plugins are
+# distributed via git-subdir (see CONTRIBUTING.md "配布"), never crates.io, so
+# `publish = false` applies workspace-wide.
+#
+# Version-parity note: release-plz only edits Cargo.toml. Each plugin carries
+# the SAME version a second time in .claude-plugin/plugin.json, and
+# check-versions.sh gates the two being equal. The release-plz workflow runs
+# scripts/sync-plugin-versions.sh on the release PR branch, so plugin.json is
+# bumped in lockstep with Cargo.toml and BOTH files land in the one PR.
+# release-plz itself never touches plugin.json.
+
+[workspace]
+# Distribution is git-subdir only — never `cargo publish` to crates.io.
+publish = false
+# Maintain a per-crate CHANGELOG.md driven by conventional commits.
+changelog_update = true
+# Do not run `cargo update` inside the release PR (keep the bump PR to version +
+# changelog edits only; dependency bumps stay a separate, deliberate change).
+dependencies_update = false
+# On the post-merge `release` run, tag and create a GitHub Release per crate.
+# Tags are per-package (`<crate>-v<version>`), matching independent versioning.
+git_release_enable = true
+git_tag_enable = true
+
+# --- crates excluded from plugin releasing ---------------------------------
+# harness-core is an internal shared library: no .claude-plugin/plugin.json, not
+# distributed as a plugin. mutategate is likewise a cargo-only crate with no
+# plugin manifest. Neither is versioned, changelogged, or released as a plugin.
+# (crates/scout is a skill-only plugin with no cargo crate and is already
+# excluded from the workspace, so release-plz never sees it.)
+[[package]]
+name = "harness-core"
+release = false
+changelog_update = false
+
+[[package]]
+name = "mutategate"
+release = false
+changelog_update = false
