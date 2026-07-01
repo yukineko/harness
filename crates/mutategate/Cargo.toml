@@ -1,0 +1,24 @@
+# mutategate — internal mutation-testing kill-rate gate.
+#
+# NOT a distributed Claude Code plugin: it carries no `.claude-plugin/plugin.json`
+# (per CONTRIBUTING.md, internal tooling that isn't shipped needs only Cargo.toml).
+# It parses `cargo-mutants` JSON output and fails (exit 1) when the measured
+# kill-rate of the existing tests falls below a threshold.
+[package]
+rust-version.workspace = true
+name = "mutategate"
+version = "0.1.0"
+edition = "2021"
+description = "Mutation-testing kill-rate gate: parses cargo-mutants outcomes.json, computes the kill-rate (caught / viable) of the existing tests, and exits non-zero when it drops below a threshold. Measures the fault-detection power that golden/regression tests alone cannot."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "mutategate"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+anyhow = { workspace = true }
