@@ -143,8 +143,22 @@ L3 は「他プロジェクトが現にやっている」根拠の URL を必ず
 
 ### Phase 4 — 合意（AskUserQuestion / HOTL）
 
-スコア上位の施策（既定 8〜12 件）を `AskUserQuestion`（multiSelect）で提示し、**backlog に積むものを選ばせる**。
-各選択肢に `severity/effort/lens/priority` を要約表示する。`--dry-run` ならここで停止し、提示だけで終了。
+合意提示の前に autonomy モードを決定論的に確認する（condukt Phase 3 と同じスイッチを共有する）:
+
+```bash
+condukt state autonomy-check   # autonomous なら exit 0 + {"autonomous":true}、そうでなければ exit 1 + {"autonomous":false}
+```
+
+- **exit 1（非 autonomous・既定）** → 従来どおり。スコア上位の施策（既定 8〜12 件）を
+  `AskUserQuestion`（multiSelect）で提示し、**backlog に積むものを選ばせる**。各選択肢に
+  `severity/effort/lens/priority` を要約表示する（後方互換。既定では必ず選別 Ask が出る）。
+- **exit 0（autonomous）** → 選別の `AskUserQuestion` を**省略**し、スコア上位 N 件（既定 top 8、
+  `p0`/`p1` を優先）を**そのまま採用**して Phase 5 へ auto-queue する。採用した施策一覧は
+  「autonomy: top-N を自動採用」として**サマリで明示**する（黙って積まない）。ただし安全側の不変:
+  - `--dry-run` は autonomy でも**必ずここで停止**する（選別省略は「停止しない」ではない）。
+  - `condukt` バイナリが無い / `autonomy-check` 未対応なら非 autonomous とみなし、従来どおり Ask を出す。
+
+`--dry-run` ならここで停止し、提示だけで終了。
 
 ### Phase 5 — backlog へ書き出し
 
@@ -160,14 +174,26 @@ backlog add --title "<施策名>" --project "$PWD" \
 `--tag scout` を付け、scout 由来の施策と分かるようにする。`--notes` に証拠と完了条件を残し、
 実行時（condukt の interpreter）が done_criteria を引けるようにする。
 
-### Phase 6 — 実行引き渡し（propose-then-confirm）
+### Phase 6 — 実行引き渡し（autonomy で分岐）
 
-backlog に積んだら `/flow` を**提案**する（即実行はしない＝HOTL）:
+backlog に積んだら、Phase 4 と**同じ autonomy スイッチ**で引き渡し方を決める（`condukt state autonomy-check`
+の結果を Phase 4 で得ていればそれを再利用してよい）:
 
-> 「scout が N 件の施策を backlog に積みました。`/flow` で source→executor を回して順に実装しますか？」
+- **非 autonomous（既定）→ propose-then-confirm**。`/flow` を**提案**する（即実行はしない＝HOTL）:
 
-ユーザーが承認したら `/flow`（または個別 `/condukt <施策>`）に引き渡す。scout はここで終了する
-（実行ループと backlog ロックは flow の責務。scout は併走しない）。
+  > 「scout が N 件の施策を backlog に積みました。`/flow` で source→executor を回して順に実装しますか？」
+
+  ユーザーが承認したら `/flow`（または個別 `/condukt <施策>`）に引き渡す。scout はここで終了する。
+
+- **autonomous → auto-handoff**。**積んだものがあれば**（Phase 5 で 1 件以上 backlog add した場合のみ）、
+  提案の `AskUserQuestion` を省き、**そのまま `/flow` を起動**して source→executor ループへ直接引き渡す
+  （scout→flow を人間 0 介入で連結する）。積んだ件数が **0 件なら起動しない**（空ループ防止）。
+  安全側の不変: `--dry-run` は autonomy でも起動しない（Phase 4 で既に停止済み）。`flow`/`condukt`
+  が無ければ起動できないので、その旨を報告して終了する。
+
+いずれの場合も、実行ループと backlog ロックは **flow の責務**。scout 自身はループもロックも持たず、
+`/flow` を起動したら**終了**する（併走しない）。autonomy の auto-handoff は「scout が flow を起動して
+バトンを渡す」であって、scout が実行を続けるのではない。
 
 ---
 
@@ -185,5 +211,8 @@ backlog に積んだら `/flow` を**提案**する（即実行はしない＝HO
 
 - **scout は実装しない**。発見した施策の実行は backlog→/flow→condukt に委ねる。
 - **証拠のない施策は出さない**（逐語引用 / `file:line` / Web URL のいずれか必須）。
-- **/backlog や /flow と併走させない**（scout は書き込むだけでループを持たない）。
-- **合意なく全件 backlog に積まない**（Phase 4 の AskUserQuestion を省略しない）。
+- **/backlog や /flow と併走させない**（scout は書き込むだけでループを持たない）。autonomy の
+  auto-handoff（Phase 6）は「`/flow` を**起動して終了**する」バトン渡しであり、併走ではない。
+- **合意なく全件 backlog に積まない** — ただし *非 autonomous 既定時*。Phase 4 の AskUserQuestion を
+  省略できるのは `condukt state autonomy-check` が autonomous を返したときのみで、その場合も採用した
+  top-N をサマリで明示し、`--dry-run` では必ず停止する（静かな全件採用は禁止）。
