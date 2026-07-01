@@ -442,6 +442,105 @@ pub fn enforce_fp_gate(verdict: &serde_json::Value) -> FpGateDecision {
     }
 }
 
+// ── Edit-time compile gate (analog of the F→P oracle gate) ────────────────
+
+/// Decision produced by [`enforce_edit_gate`] from an `editgate::check_edit`
+/// verdict JSON, for the PostToolUse edit gate (a later hook subcommand).
+///
+/// Consumed by the hook subcommand added in the follow-up task; until then it
+/// is exercised only by unit tests.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditGateDecision {
+    /// The edit is in-scope, a real (non-fallback) `cargo check` verdict was
+    /// obtained, and it reports the crate is broken: reject the edit.
+    Reject,
+    /// Allow the edit. Covers not-required, fallback (gate could not be
+    /// trusted or does not apply), a clean build, and any malformed verdict.
+    Allow,
+}
+
+/// Pure, unit-testable decision logic for the edit-time compile gate. Reads the
+/// JSON produced by `editgate::check_edit` and decides whether a Rust-file edit
+/// should be rejected.
+///
+/// Rejects ONLY when `required == true && fallback == false && broken == true`
+/// — i.e. the edit is in-scope for the gate, a real (non-fallback) `cargo
+/// check` verdict was obtained, and that verdict says the crate no longer
+/// compiles. Every other case (not required, fallback, or a clean build)
+/// allows the edit. Missing/non-bool fields default defensively (`fallback`
+/// defaults to `true`, `required`/`broken` to `false`) so a malformed verdict
+/// fails open to `Allow` and never rejects.
+#[allow(dead_code)]
+pub fn enforce_edit_gate(verdict: &serde_json::Value) -> EditGateDecision {
+    let required = verdict
+        .get("required")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let fallback = verdict
+        .get("fallback")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let broken = verdict
+        .get("broken")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if required && !fallback && broken {
+        EditGateDecision::Reject
+    } else {
+        EditGateDecision::Allow
+    }
+}
+
+/// Resolve the live condukt worktree that `path` falls under, if any. Scans the
+/// run-state JSON files in `run_dir` (the project's state directory), and
+/// returns the recorded `TaskState.worktree` of an *open* run (not every task
+/// verified) that is `path` itself or an ancestor of `path`. Fail-soft: an
+/// unreadable directory, or corrupt/unparseable run JSON, contributes nothing
+/// and never panics; when nothing matches the result is `None`.
+///
+/// This is the edit-gate analog of how `open_runs` treats `TaskState.worktree`
+/// as the source of truth for "which worktrees are live". Kept low-level (a raw
+/// directory path rather than a `Config`) so it is unit-testable and reusable
+/// by the hook subcommand without materialising a full config.
+#[allow(dead_code)]
+pub fn active_worktree_for_path(path: &Path, run_dir: &Path) -> Option<PathBuf> {
+    let rd = std::fs::read_dir(run_dir).ok()?;
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if fname.ends_with(".decomposition.json") {
+            continue;
+        }
+        let txt = match std::fs::read_to_string(&p) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let rs: RunState = match serde_json::from_str(&txt) {
+            Ok(rs) => rs,
+            Err(_) => continue,
+        };
+        // Only open runs describe live worktrees.
+        let (done, total) = rs.counts();
+        if done >= total {
+            continue;
+        }
+        for t in &rs.tasks {
+            if let Some(wt) = &t.worktree {
+                let wt_path = PathBuf::from(wt);
+                if path == wt_path || path.starts_with(&wt_path) {
+                    return Some(wt_path);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Reasons the run is NOT complete (empty = gate passes).
 pub fn gate_reasons(cfg: &Config, cwd: &Path, run: &RunState) -> Vec<String> {
     let mut reasons = Vec::new();
@@ -2016,6 +2115,144 @@ mod tests {
     fn enforce_fp_gate_malformed_verdict_never_rejects() {
         let verdict = serde_json::json!({});
         assert_eq!(enforce_fp_gate(&verdict), FpGateDecision::Allow(None));
+    }
+
+    // ── enforce_edit_gate tests ─────────────────────────────────────────────
+
+    /// Reject ONLY when required && !fallback && broken.
+    #[test]
+    fn enforce_edit_gate_rejects_real_broken_verdict() {
+        let verdict = serde_json::json!({
+            "required": true,
+            "fallback": false,
+            "broken": true,
+        });
+        assert_eq!(enforce_edit_gate(&verdict), EditGateDecision::Reject);
+    }
+
+    /// A real (non-fallback) clean verdict allows the edit.
+    #[test]
+    fn enforce_edit_gate_allows_real_clean_verdict() {
+        let verdict = serde_json::json!({
+            "required": true,
+            "fallback": false,
+            "broken": false,
+        });
+        assert_eq!(enforce_edit_gate(&verdict), EditGateDecision::Allow);
+    }
+
+    /// A fallback verdict allows the edit even when required and broken —
+    /// fallback means the gate could not be trusted.
+    #[test]
+    fn enforce_edit_gate_allows_on_fallback_even_if_broken() {
+        let verdict = serde_json::json!({
+            "required": true,
+            "fallback": true,
+            "broken": true,
+        });
+        assert_eq!(enforce_edit_gate(&verdict), EditGateDecision::Allow);
+    }
+
+    /// A not-required verdict allows the edit even with a real broken result.
+    #[test]
+    fn enforce_edit_gate_allows_when_not_required() {
+        let verdict = serde_json::json!({
+            "required": false,
+            "fallback": false,
+            "broken": true,
+        });
+        assert_eq!(enforce_edit_gate(&verdict), EditGateDecision::Allow);
+    }
+
+    /// A malformed verdict (missing fields) must fail open to Allow, never
+    /// reject and never panic.
+    #[test]
+    fn enforce_edit_gate_malformed_verdict_never_rejects() {
+        let verdict = serde_json::json!({});
+        assert_eq!(enforce_edit_gate(&verdict), EditGateDecision::Allow);
+        let garbage = serde_json::json!({ "broken": "not-a-bool", "required": 1 });
+        assert_eq!(enforce_edit_gate(&garbage), EditGateDecision::Allow);
+    }
+
+    // ── active_worktree_for_path tests ──────────────────────────────────────
+
+    /// A path under an open run's recorded worktree resolves to that worktree;
+    /// an unrelated path resolves to None.
+    #[test]
+    fn active_worktree_for_path_matches_open_run_worktree() {
+        let tmp = make_tmp_dir("active-wt");
+        let wt = tmp.join("worktrees").join("t1");
+        let rs = RunState {
+            run_id: "run-wt".into(),
+            goal: "g".into(),
+            tasks: vec![TaskState {
+                id: "t1".into(),
+                status: Status::Running, // open run (not verified)
+                worktree: Some(wt.to_string_lossy().into_owned()),
+                ..Default::default()
+            }],
+            paused: false,
+            terminal_label: None,
+            recorded_at: None,
+        };
+        // Write the run-state JSON directly into the scan directory.
+        std::fs::write(
+            tmp.join("run-wt.json"),
+            serde_json::to_string_pretty(&rs).unwrap(),
+        )
+        .unwrap();
+
+        let edited = wt.join("crates").join("condukt").join("src").join("lib.rs");
+        assert_eq!(
+            active_worktree_for_path(&edited, &tmp),
+            Some(wt.clone()),
+            "a path under the worktree must resolve to it"
+        );
+        assert_eq!(
+            active_worktree_for_path(&tmp.join("elsewhere").join("x.rs"), &tmp),
+            None,
+            "a path outside any worktree must resolve to None"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A run whose tasks are all verified is not "open", so its worktree is not
+    /// resolved; a nonexistent scan dir yields None (fail-soft, no panic).
+    #[test]
+    fn active_worktree_for_path_skips_closed_runs_and_missing_dir() {
+        let tmp = make_tmp_dir("active-wt-closed");
+        let wt = tmp.join("worktrees").join("done");
+        let rs = RunState {
+            run_id: "run-done".into(),
+            goal: "g".into(),
+            tasks: vec![TaskState {
+                id: "t1".into(),
+                status: Status::Verified, // closed run
+                worktree: Some(wt.to_string_lossy().into_owned()),
+                ..Default::default()
+            }],
+            paused: false,
+            terminal_label: None,
+            recorded_at: None,
+        };
+        std::fs::write(
+            tmp.join("run-done.json"),
+            serde_json::to_string_pretty(&rs).unwrap(),
+        )
+        .unwrap();
+
+        let edited = wt.join("src").join("lib.rs");
+        assert_eq!(
+            active_worktree_for_path(&edited, &tmp),
+            None,
+            "a closed (all-verified) run's worktree must not resolve"
+        );
+        // A missing scan directory must fail soft to None.
+        assert_eq!(
+            active_worktree_for_path(&edited, &tmp.join("does-not-exist")),
+            None,
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// `gate_reasons`-shaped check: a task marked verified with a real invalid

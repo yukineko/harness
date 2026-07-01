@@ -9,6 +9,7 @@
 
 mod config;
 mod consensus;
+mod editgate;
 mod hooks;
 mod install;
 mod model;
