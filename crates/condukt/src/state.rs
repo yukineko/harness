@@ -1076,6 +1076,7 @@ mod tests {
             build_command: None,
             deploy_command: None,
             loop_max_iters: 10,
+            autonomous: false,
         }
     }
 
