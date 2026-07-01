@@ -17,5 +17,5 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-dirs = "5"
+dirs = "6"
 anyhow = { workspace = true }
