@@ -171,6 +171,12 @@ pub fn source_criteria(cfg: &Config, root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // These tests mutate the process-global env var PROPGUARD_CRITERIA. cargo runs
+    // tests in one binary concurrently, so without serialization a remove_var in one
+    // test can race a set_var/read in another. Guard every env-touching test with it.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn derives_matching_properties_from_criteria() {
@@ -240,6 +246,7 @@ mod tests {
 
     #[test]
     fn env_criteria_take_priority() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("PROPGUARD_CRITERIA", "must be idempotent");
         let cfg = Config {
             done_criteria: "inline that should lose".to_string(),
@@ -252,6 +259,7 @@ mod tests {
 
     #[test]
     fn inline_criteria_used_when_no_env_or_file() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("PROPGUARD_CRITERIA");
         let cfg = Config {
             done_criteria: "handle errors and keep the schema stable".to_string(),
@@ -266,6 +274,7 @@ mod tests {
 
     #[test]
     fn no_criteria_source_is_none() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("PROPGUARD_CRITERIA");
         let cfg = Config::default(); // empty done_criteria
         assert!(source_criteria(&cfg, Path::new("/nonexistent-root-xyzzy")).is_none());
