@@ -155,10 +155,30 @@ pub fn catch_silent<F: FnOnce() + UnwindSafe>(f: F) -> bool {
     std::panic::catch_unwind(f).is_ok()
 }
 
-/// Run a hook handler with all panics swallowed; always exits 0. The handler does
-/// its own stdout/stderr writing — this only guarantees the turn is never broken.
+/// Like `catch_silent` but writes the panic payload to stderr so it is
+/// visible in Claude Code's hook diagnostics without breaking the turn.
+/// Returns `true` if `f` completed without panicking.
+pub fn catch_and_log<F: FnOnce() + UnwindSafe>(hook_name: &str, f: F) -> bool {
+    match std::panic::catch_unwind(f) {
+        Ok(()) => true,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "(non-string panic payload)".to_string()
+            };
+            eprintln!("[harness hook panic] {hook_name}: {msg}");
+            false
+        }
+    }
+}
+
+/// Run a hook handler with all panics caught and logged to stderr; always
+/// exits 0 so the turn is never broken.
 pub fn run_hook<F: FnOnce() + UnwindSafe>(f: F) -> ! {
-    let _ = catch_silent(f);
+    let _ = catch_and_log("hook", f);
     std::process::exit(0);
 }
 
@@ -191,5 +211,16 @@ mod tests {
             "a panicking handler must be caught, not propagated"
         );
         assert!(ok, "a clean handler reports success");
+    }
+
+    #[test]
+    fn catch_and_log_returns_false_on_panic_and_true_on_ok() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = catch_and_log("test-hook", || panic!("logged panic"));
+        let ok = catch_and_log("test-hook", || {});
+        std::panic::set_hook(prev);
+        assert!(!panicked, "panicking handler returns false");
+        assert!(ok, "clean handler returns true");
     }
 }
