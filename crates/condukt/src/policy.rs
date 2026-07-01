@@ -55,7 +55,8 @@ pub enum Decision {
 impl Decision {
     /// Restrictiveness rank (Auto=0, Escalate=1, Block=2). Used to state and
     /// test the monotonicity invariant.
-    pub fn restrictiveness(self) -> i32 {
+    #[cfg(test)]
+    fn restrictiveness(self) -> i32 {
         match self {
             Decision::Auto => 0,
             Decision::Escalate => 1,
@@ -199,7 +200,10 @@ mod tests {
                 let lo = decide(Level::Low, v, c).restrictiveness();
                 let mid = decide(Level::Medium, v, c).restrictiveness();
                 let hi = decide(Level::High, v, c).restrictiveness();
-                assert!(lo <= mid && mid <= hi, "risk not monotone at v={v:?} c={c:?}");
+                assert!(
+                    lo <= mid && mid <= hi,
+                    "risk not monotone at v={v:?} c={c:?}"
+                );
             }
         }
     }

@@ -72,6 +72,12 @@ enum Command {
         #[command(subcommand)]
         action: StateAction,
     },
+    /// Central graded autonomy policy: map a decision's risk x reversibility x
+    /// confidence to auto|escalate|block.
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
     /// Multi-sample self-consistency: plan an opt-in fan-out, or tally N verifier
     /// verdicts for one task into a majority winner + escalate-to-opus decision.
     Consensus {
@@ -342,6 +348,25 @@ enum StateAction {
     },
 }
 
+#[derive(Subcommand)]
+enum PolicyAction {
+    /// Decide how to handle one autonomy decision. Prints `auto`/`escalate`/
+    /// `block` on stdout and exits with a contract: 0=auto, 2=escalate,
+    /// 3=block, 1=invalid input (unparseable level). Each level is one of
+    /// low|medium|high (case-insensitive).
+    Decide {
+        /// How much damage if this decision is wrong (low|medium|high).
+        #[arg(long)]
+        risk: String,
+        /// How easily the decision can be undone (low|medium|high).
+        #[arg(long)]
+        reversible: String,
+        /// How sure we are the decision is correct (low|medium|high).
+        #[arg(long)]
+        confidence: String,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -500,6 +525,7 @@ fn run_user(cmd: Command) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Policy { action } => run_policy(action),
         Command::Status { all } => status::render(&cfg, &cwd, all),
         // These are dispatched as hooks in main() (via run_hook, which exits and
         // never returns here). Reaching this arm would be an internal dispatch
@@ -509,6 +535,36 @@ fn run_user(cmd: Command) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `condukt policy decide` — parse the three graded levels, print the
+/// [`policy::Decision`] and exit with the documented contract (0=auto,
+/// 2=escalate, 3=block, 1=invalid input). Never panics: an unparseable level
+/// prints a message to stderr and exits 1.
+fn run_policy(action: PolicyAction) -> ! {
+    let PolicyAction::Decide {
+        risk,
+        reversible,
+        confidence,
+    } = action;
+    let parsed = policy::parse_level(&risk)
+        .zip(policy::parse_level(&reversible))
+        .zip(policy::parse_level(&confidence));
+    let ((risk, reversible), confidence) = match parsed {
+        Some(t) => t,
+        None => {
+            eprintln!("condukt: --risk/--reversible/--confidence must each be low|medium|high");
+            std::process::exit(1);
+        }
+    };
+    let decision = policy::decide(risk, reversible, confidence);
+    println!("{decision}");
+    let code = match decision {
+        policy::Decision::Auto => 0,
+        policy::Decision::Escalate => 2,
+        policy::Decision::Block => 3,
+    };
+    std::process::exit(code);
 }
 
 fn run_worktree(cfg: &Config, cwd: &Path, action: WtAction) -> Result<()> {
@@ -1105,7 +1161,18 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             println!("{chosen}");
         }
         StateAction::AutonomyCheck => {
-            let autonomous = cfg.autonomous;
+            // Delegate to the central policy engine instead of reading the raw
+            // bool: the autonomous flag supplies confidence on a routine
+            // (medium risk, medium reversibility) gate. Auto -> autonomous;
+            // anything else (Escalate) keeps the human in the loop. This
+            // preserves the existing stdout bytes + exit contract exactly.
+            let confidence = if cfg.autonomous {
+                policy::Level::High
+            } else {
+                policy::Level::Low
+            };
+            let decision = policy::decide(policy::Level::Medium, policy::Level::Medium, confidence);
+            let autonomous = decision == policy::Decision::Auto;
             println!("{{\"autonomous\":{autonomous}}}");
             if !autonomous {
                 std::process::exit(1);
