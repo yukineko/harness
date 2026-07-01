@@ -14,6 +14,7 @@
 //! - 0 pending items: stay silent — no chatter when there is nothing to do.
 //! - N ≥ 1 items: inject a terse summary with count + top task title so the
 //!   agent can offer a single AskUserQuestion without re-reading the queue.
+//!
 //! The hook never breaks a turn: it only writes to stdout and exits 0.
 
 use clap::{Parser, Subcommand};
