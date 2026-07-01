@@ -138,6 +138,7 @@ fn check_command() -> ! {
 }
 
 fn check_run(hook: Option<HookInput>) -> ! {
+    let __start = std::time::Instant::now();
     let interactive = hook.is_none();
     let input = hook.unwrap_or_default();
     let root = input.cwd_or_current();
@@ -146,6 +147,7 @@ fn check_run(hook: Option<HookInput>) -> ! {
         if interactive {
             eprintln!("propguard: disabled (PROPGUARD_DISABLE)");
         }
+        harness_core::hook_latency::record("propguard", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -154,6 +156,7 @@ fn check_run(hook: Option<HookInput>) -> ! {
         if interactive {
             eprintln!("propguard: disabled in config");
         }
+        harness_core::hook_latency::record("propguard", "", __start.elapsed().as_millis() as u64);
         std::process::exit(0);
     }
 
@@ -164,6 +167,11 @@ fn check_run(hook: Option<HookInput>) -> ! {
         state::reset(&cfg.state_dir, &session);
         log_event(&cfg, &session, "skip", &[], &[], 0);
         eprintln!("propguard: .propguard-skip consumed — allowing stop ({reason})");
+        harness_core::hook_latency::record(
+            "propguard",
+            &session,
+            __start.elapsed().as_millis() as u64,
+        );
         std::process::exit(0);
     }
 
@@ -193,6 +201,11 @@ fn check_run(hook: Option<HookInput>) -> ! {
             if interactive {
                 println!("propguard: allow ({tag})");
             }
+            harness_core::hook_latency::record(
+                "propguard",
+                &session,
+                __start.elapsed().as_millis() as u64,
+            );
             std::process::exit(0);
         }
         Decision::Block {
@@ -215,9 +228,19 @@ fn check_run(hook: Option<HookInput>) -> ! {
             log_event(&cfg, &session, tag, &files, &properties, attempts);
             if interactive {
                 eprintln!("{reason}");
+                harness_core::hook_latency::record(
+                    "propguard",
+                    &session,
+                    __start.elapsed().as_millis() as u64,
+                );
                 std::process::exit(1);
             }
             println!("{}", json!({ "decision": "block", "reason": reason }));
+            harness_core::hook_latency::record(
+                "propguard",
+                &session,
+                __start.elapsed().as_millis() as u64,
+            );
             std::process::exit(0);
         }
     }
