@@ -68,3 +68,13 @@ darwin バイナリは Mac / CI で生成する前提のため、linux 版だけ
 - [ ] `crates/<plugin>/Cargo.toml` の `version` を同じ値に合わせた
 - [ ] 変更していない他プラグインのバージョンは触っていない
 - [ ] `cargo test --workspace` / `cargo clippy --workspace -- -D warnings` / `cargo fmt --check` が通る
+
+## カバレッジ運用
+
+CI の [`coverage.yml`](.github/workflows/coverage.yml) が `cargo llvm-cov` でワークスペース全体の
+line coverage を計測し、下限（`COVERAGE_MIN_LINES`、初期値 65%＝計測時点の約 72% から数ポイント下）を下回ると非ゼロ終了する。この下限は
+**目標値ではなく、上げていくための「床」**であり、coverage が余裕を持って上回るようになったら PR で
+引き上げる（赤いビルドを通すために下げない）。テストを伴わない実装は既存の `tdd` ゲートと同様、
+この床を通じても抑止される。数値は各 run の Job Summary と lcov アーティファクトで確認でき、
+外部サービス・トークンは不要。ツール導入も他のワークフロー（`msrv` / `semver` / `security-audit`）と
+同じく `cargo install --locked` で行い、CI のサプライチェーンを first-party に保つ。

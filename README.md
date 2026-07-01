@@ -1,5 +1,15 @@
 # harness
 
+[![coverage](https://github.com/yukineko/claude-harnesses/actions/workflows/coverage.yml/badge.svg)](https://github.com/yukineko/claude-harnesses/actions/workflows/coverage.yml)
+
+<!-- coverage バッジはトークン不要の GitHub Actions ステータスバッジ。`coverage`
+     ワークフロー（`cargo llvm-cov` + 閾値ゲート）の成否 = ワークスペースの
+     line coverage が下限を満たしているかを PR チェックに表示する。数値そのものは
+     各 run の Job Summary と lcov アーティファクトで確認できる。
+     トレンドグラフが欲しい場合は `coverage.yml` の Codecov opt-in を有効化し、
+     下のバッジに差し替える:
+     [![codecov](https://codecov.io/gh/yukineko/claude-harnesses/branch/main/graph/badge.svg)](https://codecov.io/gh/yukineko/claude-harnesses) -->
+
 Cargo ワークスペース・モノレポ。`yukineko` の Claude Code ハーネス一家を単一ソースで管理する。
 
 - 共通基盤: `crates/harness-core`（ビルド時依存。各プラグインのバイナリに静的に焼き込まれる）
@@ -57,6 +67,18 @@ cargo test  --workspace
 ```sh
 claude plugin validate crates/<plugin>
 ```
+
+## カバレッジ
+
+ワークスペースの line coverage は CI の [`coverage.yml`](.github/workflows/coverage.yml) が [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) で計測する（既存の smoke gate とは独立した別ジョブ）。coverage が下限（`COVERAGE_MIN_LINES`、初期値 65%。計測時点のワークスペース line coverage 約 72% から数ポイントの余裕を引いた「床」で、目標値ではなく上げていくための下限）を下回ると CI が非ゼロ終了する。各 run は lcov レポートをアーティファクトに、サマリ表を Job Summary に出力するので、外部サービスやトークンなしで数値を確認できる。ローカルでの計測:
+
+```sh
+cargo install cargo-llvm-cov --locked   # 初回のみ
+rustup component add llvm-tools-preview  # 初回のみ
+cargo llvm-cov --workspace --summary-only
+```
+
+トレンドの可視化（Codecov 連携）は `coverage.yml` にトークン設定後に有効化する opt-in として残している。
 
 ## バージョニング
 
