@@ -44,12 +44,16 @@ struct Cli {
 enum Command {
     /// Stop hook: run the record→condukt state machine.
     Stop,
+    /// SessionStart hook: inject a /flow proposal when pending backlog items exist.
+    /// Silent when queue is empty and charter is fresh — never breaks a turn.
+    SessionStart,
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Stop => stop_command(),
+        Command::SessionStart => session_start_command(),
     }
 }
 
@@ -175,4 +179,49 @@ fn stop_command() -> ! {
 
 fn block(reason: &str) {
     println!("{}", json!({ "decision": "block", "reason": reason }));
+}
+
+fn session_start_command() -> ! {
+    run_hook(|| {
+        let raw = read_stdin();
+        let input = HookInput::parse(&raw).unwrap_or_default();
+        let cwd = input.cwd_or_current();
+
+        // Check compass charter freshness before proposing backlog work.
+        // Nudge toward /compass if the charter is stale — blind-driving a stale
+        // charter is worse than staying silent.
+        if let Some(v) = compass::charter_freshness(&cwd) {
+            if !v.fresh {
+                let why = v
+                    .reason
+                    .unwrap_or_else(|| "charter が鮮明ではありません".to_string());
+                println!(
+                    "{}",
+                    json!({
+                        "additionalContext": format!(
+                            "compass: {why}\n/compass で再接地してから /flow を実行してください。"
+                        )
+                    })
+                );
+                return;
+            }
+        }
+
+        // Check backlog for pending items and propose /flow when work exists.
+        let open = backlog::find_open(&cwd);
+        if !open.is_empty() {
+            let n = open.len();
+            let first = &open[0];
+            println!(
+                "{}",
+                json!({
+                    "additionalContext": format!(
+                        "バックログに {} 件 (最優先: '{}')。/flow で開始しますか？",
+                        n, first.text
+                    )
+                })
+            );
+        }
+        // 0 pending + charter fresh → stay silent
+    })
 }
