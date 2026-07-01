@@ -24,10 +24,24 @@ Enable any combination in `beacon.toml`:
 - **slack_webhook** — Slack incoming webhook (`{"text": …}`). Prefer the
   `BEACON_SLACK_WEBHOOK` env var so the URL isn't committed; it overrides the file.
 - **webhook** — generic endpoint; receives `{event, project, title, body}` as a JSON POST (`BEACON_WEBHOOK` overrides).
-- **command** — escape hatch; a shell command run with `BEACON_EVENT`,
-  `BEACON_PROJECT`, `BEACON_TITLE`, `BEACON_BODY` in the environment.
+- **command** — escape hatch; a shell command run via `sh -c` with `BEACON_EVENT`,
+  `BEACON_PROJECT`, `BEACON_TITLE`, `BEACON_BODY` in the environment. A `command`
+  coming from a *project-local* `beacon.toml` is ignored until you run
+  `beacon trust` in that project (workspace-trust gate, à la git `safe.directory`
+  / `HARNESS_TRUST_ALL`); a home/default-config `command` needs no trust.
 
 Network channels shell out to `curl --max-time 8`; no HTTP stack is linked in.
+
+## Why it exists
+
+On a long session you want to step away while Claude keeps working — but then you
+miss the moment a turn finishes, or the moment it stalls waiting for a permission
+or an input, and time is wasted either way (as is sitting there watching it).
+beacon solves that "when do I look back?" problem by notifying on just the Stop
+and Notification events. Inspired by Devin's Slack notifications, it's rebuilt as
+a tiny local hook with no external-service dependency, and — because the hook can
+only notify and never blocks a turn — a failed notification never affects the
+session: it's strictly fail-safe, "nice to have, never breaks anything."
 
 ## Install (plugin)
 
@@ -44,6 +58,7 @@ beacon init          # write a starter ./beacon.toml
 beacon test          # fire a sample notification through configured channels
 beacon install       # merge the Stop + Notification hooks into ~/.claude/settings.json
 beacon status        # show resolved config + active channels
+beacon trust         # trust this project so its beacon.toml `command` is honored
 beacon uninstall     # remove them again
 ```
 

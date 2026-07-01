@@ -24,12 +24,15 @@ sub-agents doing read-only investigation:
 | Deterministic review | Collect facts read-only (`git log`, `cargo test`, `compass gap`, `backlog list`, `cargo deny`, …) |
 | 5-lens fan-out | Parallel read-only sub-agents return measure candidates with verbatim evidence |
 | Synthesize | Dedupe, evidence-filter, score `(severity × goal-proximity) ÷ effort`, tag `p0/p1/p2` |
-| Agree (HOTL) | `AskUserQuestion` (multiSelect) — the user picks which measures to queue |
-| Write + hand off | `backlog add` each approved measure (`--tag scout`), then propose `/flow` |
+| Agree (HOTL) | Default: `AskUserQuestion` (multiSelect) — the user picks which measures to queue. Autonomy-gated: if `condukt state autonomy-check` reports autonomous, the select prompt is skipped and the top-N (default top 8, `p0`/`p1` first) are auto-queued |
+| Write + hand off | `backlog add` each approved measure (`--tag scout`), then hand to `/flow`. Default: propose-then-confirm; autonomous: auto-launch `/flow` when at least one measure was queued |
 
 Invariants: the audit is read-only, no measure ships without evidence (verbatim
-quote / `file:line` / source URL), the only write is `backlog add`, and queuing
-requires explicit user agreement.
+quote / `file:line` / source URL), and the only write is `backlog add`. Queuing
+requires explicit user agreement — except under autonomy
+(`condukt state autonomy-check`), where scout auto-queues the top-N and still
+summarises what it queued. `--dry-run` always stops at the agree phase, even
+under autonomy.
 
 ## Install (plugin)
 
@@ -47,9 +50,9 @@ measures as Markdown for manual entry.
 /scout --dry-run             # present measures, but don't write to backlog
 ```
 
-After it queues measures, scout proposes `/flow` (propose-then-confirm) and
-stands down — the execution loop and backlog lock are flow's responsibility,
-not scout's.
+After it queues measures, scout hands off to `/flow` and stands down —
+propose-then-confirm by default, or an automatic `/flow` launch under autonomy —
+the execution loop and backlog lock are flow's responsibility, not scout's.
 
 ## Build
 

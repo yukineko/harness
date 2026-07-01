@@ -19,7 +19,9 @@ binary, so the distributed `crates/<plugin>/bin/` never references
 |---|---|
 | `store` | Durable Obsidian-compatible note store, per-project, with parallel-session-safe fallback (a harness invariant) |
 | `hook` | Hook stdin payload struct + `run_hook` wrapper that NEVER breaks a turn (exit 0 on any error/panic) |
+| `hook_latency` | Central append-only Stop-hook latency ledger (`<base_dir>/state/hook-latency.jsonl`) — one shared file so aggregation is a single read; best-effort, never breaks a turn |
 | `install` | `~/.claude/settings.json` load / timestamped backup / write + ownership detection by command markers |
+| `hash` | FNV-1a (32/64-bit) — the single source of truth for the non-cryptographic hashes that are load-bearing for on-disk addressing |
 | `projkey` | Per-project key `<basename>-<fnv1a32-hex>` — single source of truth for run-state file addressing |
 | `config` | home/base-dir resolution, tilde expansion, env-var parsing primitives |
 | `gate` | Shared run/runner/state gate machinery |
@@ -31,6 +33,7 @@ binary, so the distributed `crates/<plugin>/bin/` never references
 | `ledger` | Persistent daily spend ledger (`~/.budgetguard/state/ledger.json`) |
 | `daily` | Once-per-calendar-day guard |
 | `inject` | Shared substrate for context-injection hooks (`playbook`, `runbook`) |
+| `inject_metrics` | Cross-harness UserPromptSubmit injection-size ledger, keyed by `turn_key = hash(session + prompt)` so the five injectors sum a single turn without cross-process coordination |
 | `interrogate` | Domain-agnostic gate-by-gate interrogation control structure |
 | `shell` | Cross-platform shell invocation, single source of truth |
 | `trust` | Workspace-trust gate for honoring command strings from project-local config |

@@ -75,9 +75,9 @@ preserve foreign hook groups.
 
 ## Config
 
-See [`runbook.example.toml`](runbook.example.toml): `project_dir`, `global_dir`,
-`include_global`, `prefix`, `index_token`, `max_chars`, `per_runbook_chars`.
-`RUNBOOK_DISABLE=1` turns it off.
+See [`runbook.example.toml`](runbook.example.toml): `enabled`, `project_dir`,
+`global_dir`, `include_global`, `prefix`, `index_token`, `max_chars`,
+`per_runbook_chars`. `RUNBOOK_DISABLE=1` turns it off.
 
 ## Build
 

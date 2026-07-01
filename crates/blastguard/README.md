@@ -54,7 +54,21 @@ destructive, hard-to-undo patterns. Anything ambiguous falls through to allow, s
 blastguard stays out of the way of ordinary work. A single non-recursive
 `rm file.txt`, appends (`>>`), and fd redirects (`2>&1`, `>&2`) are all allowed.
 
+## Why it exists
+
+In agentic coding, a single `rm -rf`, `git reset --hard`, `git clean -fdx`, or
+`>`-overwrite can wipe out uncommitted work or a huge directory in an instant.
+These are irreversible, and because they arrive buried inside a stream of tool
+calls, expecting a human to catch each one by eye isn't realistic. blastguard is
+a safety net dedicated to intercepting only that small set of destructive-yet-
+irreversible patterns before they run — deterministically, via a pure function,
+holding the "never breaks a turn" invariant — and it favors reliably stopping the
+clearly dangerous over casting a wide net that gets in the way of ordinary work.
+
 ## Build
+
+The CLI surface is minimal: `--version` / `-V` and `--help` / `-h` short-circuit
+before stdin is touched; otherwise it reads a hook payload from stdin.
 
 ```sh
 cargo build --release -p blastguard   # -> target/release/blastguard
@@ -62,6 +76,8 @@ make bins                             # refresh bundled per-platform binaries
 cargo test -p blastguard              # unit + integration tests
 ```
 
-The hook (`hooks/hooks.json`) calls `${CLAUDE_PLUGIN_ROOT}/bin/blastguard`, a
-POSIX-sh launcher that execs the matching `blastguard-<os>-<arch>` build, or
-exits 0 silently if none is bundled for the host.
+The hook (`hooks/hooks.json`) registers on **PreToolUse** with matcher
+`Bash|Edit|Write|MultiEdit|NotebookEdit` (timeout 10) and calls
+`${CLAUDE_PLUGIN_ROOT}/bin/blastguard`, a POSIX-sh launcher that execs the
+matching `blastguard-<os>-<arch>` build, or exits 0 silently if none is bundled
+for the host.

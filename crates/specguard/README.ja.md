@@ -218,6 +218,8 @@ AEGIS の元実装を再現する設定例は `examples/aegis.toml`。
 | 3 | いずれかの shard の出力に marker が無い (レポートは保存。baseline 前進・sentinel はしない) |
 | 4 | いずれかの shard のエージェントが非ゼロ終了 (真の終了コードは stderr) |
 | 5 | prompt(メタ正典)が未批准/変更あり (`require_ratification` 有効時)。`accept-prompt` が必要 |
+| 6 | `ack` が sentinel 発生後の修正コミットを見つけられない。`--force` で上書き可 |
+| 7 | `testaudit` が実装済みだが実行されていないテストを検出 |
 
 一次情報は `src/main.rs` の `EXIT_*` 定数。エージェント由来の終了コードはそのまま伝播せず、
 常に `4` に集約し各 shard の実コードを stderr に出す。

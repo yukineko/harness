@@ -22,11 +22,26 @@ headless `claude -p` it spawns (subprocess mode).
 reviewgate hashes the reviewable diff. A stop whose diff matches the one it last
 forced a review of is allowed through — the agent already reviewed exactly that.
 A *changed* diff costs one more round, capped by `max_attempts` (default 2), so
-the agent is never trapped. Harness errors (no git, bad config, reviewer crash,
-our own bug) always **allow** the stop.
+the agent is never trapped. A genuine *harness* error (no git, bad config, our
+own bug) always **allows** the stop — reviewgate must never trap a turn because
+it itself broke.
 
 Safe by default: no git repo, or no reviewable file changed, → the stop is
 allowed. Lockfiles, `node_modules`, `target`, generated files, etc. are excluded.
+
+## Fail closed, but bounded
+
+A *reviewer* that itself fails is **not** the same as a clean review, so it does
+not silently allow — that would turn a broken reviewer into a bypass:
+
+- A reviewer subprocess that crashes / times out / emits unusable output →
+  **block** (bounded by `max_attempts`), then give up loudly.
+- A diff too large to review whole (truncated to `max_diff_bytes`) has an
+  unreviewed tail → **block** (bounded by `max_attempts`), then give up loudly.
+
+In both cases the block reason names every escape hatch (`.reviewgate-skip`,
+`REVIEWGATE_DISABLE=1`, raising `max_diff_bytes`), so a broken reviewer or an
+oversized diff can never permanently trap the turn.
 
 ## Install
 
@@ -51,13 +66,17 @@ reviewgate install       # wire the Stop hook into ~/.claude/settings.json
 - `reviewgate install [--dry-run]` / `uninstall [--dry-run]` — manage the hook.
 - `reviewgate init [--force]` — write a starter `reviewgate.toml`.
 - `reviewgate status` — show the resolved config and what would be reviewed now.
+- `reviewgate trust` — trust the current project so its `./reviewgate.toml`
+  (incl. `reviewer_cmd`) is honored; until trusted, a repo-shipped config is ignored.
 
 Run `reviewgate review` by hand (no stdin) for a human-readable dry check.
 
 ## Config
 
 See [`reviewgate.example.toml`](reviewgate.example.toml). Project
-`./reviewgate.toml` wins over `~/.reviewgate/config.toml` over built-in defaults.
+`./reviewgate.toml` wins over `~/.reviewgate/config.toml` over built-in defaults —
+but only once the project root is **trusted** (`reviewgate trust`), since
+`reviewer_cmd` runs as a subprocess.
 
 Key fields: `mode`, `max_attempts`, `min_changed_files`, `include`/`exclude`
 globs, `rubric`, and (subprocess) `reviewer_cmd` / `reviewer_timeout_secs`.

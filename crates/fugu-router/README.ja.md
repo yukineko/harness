@@ -67,11 +67,13 @@ fugu-router record --title "<task title>" --files "<touched_files>" \
 
 ```
 fugu-router suggest --files src/auth/login.ts "fix login validation"  # 単発でモデルの当たりを見る
+fugu-router procedures search --file decomp.json  # 似た検証済みタスクの解き方を k-NN で引く
 fugu-router stats [--json]                  # モデル別 pass率 / 平均コスト（HOTL 可視化）
 fugu-router label "add login" --verdict bad --by human   # 人間が実績を訂正（--latest も可）
 fugu-router fingerprint [--dir crates]      # SKILL.md コーパスのバージョンスタンプ
 fugu-router import --episodes /path/episodes.jsonl [--playbooks ...] [--dry-run]  # 別マシンの stores をマージ
 fugu-router import --dedup                  # ローカル stores の重複除去（content-hash, first-seen 優先）
+fugu-router sync [--pull-only | --push-only]  # record ストアを sync_repo（git）と同期
 fugu-router init                            # fugu-router.toml を書き出す
 ```
 
@@ -95,7 +97,9 @@ fugu-router install               # UserPromptSubmit フックをマージ
 
 ### 設定
 
-`~/.fugu-router/config.toml`（`fugu-router.example.toml` 参照）。主な調整項目は `pass_threshold`（安いティアを信頼する前にどれだけ確信が要るか）、`min_samples`（コールドスタート prior を抜けるのに必要な履歴量）、`sim_threshold`（過去タスクをどれだけ似ていれば数えるか）。`store_file` と `playbook_file` を git リポジトリ内のパスに向ければ、`git pull` 後に `import` するだけでマシン間同期が完結する（content-hash で重複排除されるので同じ実績を二度引いても安全）。
+`~/.fugu-router/config.toml`（`fugu-router.example.toml` 参照）。主な調整項目は `pass_threshold`（安いティアを信頼する前にどれだけ確信が要るか）、`min_samples`（コールドスタート prior を抜けるのに必要な履歴量）、`sim_threshold`（過去タスクをどれだけ似ていれば数えるか）。
+
+マシン間で stores を共有する方法は 2 通り。**`sync`（管理された git リモート）:** `sync_repo` に git リポジトリ URL を設定すると、`store_file`/`playbook_file` は `<sync_dir>/{episodes,playbooks}.jsonl`（`sync_dir` 既定 `~/.fugu-router/record-repo`）を指す。`fugu-router sync` はまずリモートから pull し、続いてローカルの変更を commit & push する（`--pull-only` / `--push-only` で片側のみ）。**手動（`import`）:** `store_file` と `playbook_file` を自分で管理する git リポジトリ内のパスに向け、`git pull` 後に `import` するだけでマシン間同期が完結する（content-hash で重複排除されるので同じ実績を二度引いても安全）。
 
 ### コールドスタート
 

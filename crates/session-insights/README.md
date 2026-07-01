@@ -15,8 +15,8 @@ blocks a turn.
 
 | Hook | Records |
 |---|---|
-| **PostToolUse** | each tool call (per-tool counts, distinct files touched) |
-| **Stop** | a completed turn; optionally writes the Obsidian session note |
+| **PostToolUse** | each tool call (per-tool counts, distinct files touched) — subcommand `record` |
+| **SessionEnd** | counts a turn and, opt-in, writes the Obsidian session note and the `/record` note — subcommands `stop` + `sessionend` |
 
 From that it derives:
 - **size**: XS / S / M / L / XL by total tool events (thresholds configurable)
@@ -29,6 +29,7 @@ From that it derives:
 session-insights report          # latest session
 session-insights report --session <id-prefix>
 session-insights report --all    # one line per recorded session
+session-insights report --context # also join context-governor ledger health
 ```
 
 ```
@@ -38,6 +39,26 @@ session a1b2c3d4  [2026-06-20T18:00:00+09:00]
   turns: 12   tool events: 47   files: 9
   top tools: Edit 18, Bash 12, Read 9, Write 5, Grep 3
 ```
+
+## `/record` note (Obsidian, opt-in)
+
+Set `record = true` (and point `obsidian_vault` at your vault). On SessionEnd —
+and on demand via the `/record` command — session-insights writes an AEGIS-style
+Markdown note to `<vault>/<record_dir>/<date>-<project>-<id>.md`, only if the
+vault directory already exists. The deterministic `## 数値サマリ` and `## コスト`
+blocks (fenced by machine-owned `<!-- si:numeric:* -->` / `<!-- si:cost:* -->`
+markers) are filled by the binary; the prose sections stay as `<!-- fill: … -->`
+placeholders.
+
+```sh
+session-insights record-now              # (re)generate the note, print its path
+session-insights record-now --session <id>
+```
+
+The `/record` slash command runs `record-now`, has a Sonnet subagent distill the
+transcript into the prose sections, then reconciles the standalone `backlog`
+(closes finished items, adds open `## 残課題` follow-ups). Re-runs merge in place:
+only the machine-owned blocks are refreshed, your prose is preserved.
 
 ## Backlog (cross-session open issues)
 
@@ -86,7 +107,7 @@ longer produced).
 
 ## Obsidian logging (opt-in)
 
-Set `obsidian_log = true` and point `obsidian_vault` at your vault. On each Stop
+Set `obsidian_log = true` and point `obsidian_vault` at your vault. On SessionEnd
 the session is written/overwritten to `<vault>/sessions/<date>-<id>.md` with
 frontmatter (`type: session`, size, category, turns…) — only if the vault dir
 already exists (it never creates the vault).
@@ -100,7 +121,7 @@ The bundled `hooks/hooks.json` wires both hooks automatically. Drop a
 
 ```sh
 cargo install --path .
-session-insights install      # merge the PostToolUse + Stop hooks
+session-insights install      # merge the PostToolUse + SessionEnd hooks
 session-insights report --all
 session-insights status        # resolved config
 session-insights uninstall
@@ -108,6 +129,24 @@ session-insights uninstall
 
 `install`/`uninstall` are idempotent, back up `settings.json`, and preserve
 foreign hook groups.
+
+## Config
+
+Drop `./session-insights.toml` (project) or `~/.session-insights/config.toml`
+(global); the first that exists wins.
+
+| key | meaning | default |
+|---|---|---|
+| `size_thresholds` | `[S, M, L, XL]` lower bounds by tool events | `[5, 15, 40, 100]` |
+| `ignore_tools` | tools excluded from metrics | `["TodoWrite"]` |
+| `obsidian_log` | write the dated `sessions/` note on SessionEnd | `false` |
+| `obsidian_vault` | vault root (notes go under `sessions/` and `records/`) | `~/Documents/vault/yukineko` |
+| `record` | write/update the `/record` note on SessionEnd | `false` |
+| `record_dir` | vault subdir for record notes | `records` |
+| `state_dir` | rollup state directory | `~/.session-insights/state` |
+| `price_overrides` | per-model cost overrides for the `## コスト` block | (built-in rates) |
+
+Kill switch: `SESSION_INSIGHTS_DISABLE=1`.
 
 ## Build
 

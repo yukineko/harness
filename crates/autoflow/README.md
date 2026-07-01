@@ -1,16 +1,17 @@
 # autoflow
 
-Session-end auto-flow gate for Claude Code — a single **Stop** hook that keeps a
-session from ending with work left on the floor. When a turn finishes, autoflow
-prompts `/record` once, then loops `/condukt` until the project's pending tasks
-are cleared, and finally drains the cross-project backlog. It blocks the Stop
-automatically up to 4× and, from the 5th prompt onward, asks the user before
-continuing so a stuck loop can't run away.
+Session-end auto-flow gate for Claude Code — a **Stop** hook that keeps a
+session from ending with work left on the floor, paired with a **SessionStart**
+hook that proposes `/flow` when the backlog has pending work. When a turn
+finishes, autoflow prompts `/record` once, then loops `/condukt` until the
+project's pending tasks are cleared, and finally drains the cross-project
+backlog. It blocks the Stop automatically up to 4× and, from the 5th prompt
+onward, asks the user before continuing so a stuck loop can't run away.
 
-Subscription-native: one hook plus a bundled Rust binary, **no API key**, no
-daemon. The hook only ever emits a `block` decision with a reason — it never
-runs work itself, and a missing state file or empty stdin exits 0 so the turn is
-never broken.
+Subscription-native: two hooks plus a bundled Rust binary, **no API key**, no
+daemon. The Stop hook only ever emits a `block` decision with a reason — it
+never runs work itself, and a missing state file or empty stdin exits 0 so the
+turn is never broken.
 
 ## What it does
 
@@ -30,21 +31,39 @@ the charter as fresh and proceeds. It also stands down entirely while another
 live session holds the backlog lock, so a running `/flow` or `/backlog` driver
 is never double-driven.
 
+At **SessionStart** (startup / resume / clear), autoflow checks the same backlog
+and, when open items exist and the charter is fresh, injects a one-line `/flow`
+proposal as context; if the charter is stale it nudges `/compass` instead. With
+nothing pending it stays silent, so it never breaks a turn on session open.
+
+## Why it exists
+
+Long sessions tend to end with loose ends — a `/record` never taken, condukt
+tasks left pending, backlog items parked and forgotten — simply because "the
+turn finished." autoflow inserts a deterministic "unfinished-work check" at the
+session boundary so the record → condukt → backlog chain actually runs to
+completion. Judgement (how to do the work) stays with the skills and the LLM;
+autoflow only owns the "may this end?" gate — which is why its auto-blocking is
+capped, hands off to the user past the cap, and stands down when another session
+holds the lock.
+
 ## Install (plugin)
 
 Installed via the plugin marketplace, the bundled `hooks/hooks.json` wires the
-**Stop** hook to `${CLAUDE_PLUGIN_ROOT}/bin/autoflow stop` automatically —
-nothing else to do. Thresholds (min turns, min tool events, max backlog
-prompts) come from config defaults; the gate is on by default.
+**Stop** and **SessionStart** hooks to `${CLAUDE_PLUGIN_ROOT}/bin/autoflow`
+automatically — nothing else to do. Thresholds (min turns, min tool events, max
+backlog prompts) come from config defaults; the gate is on by default.
 
 ## Standalone (cargo)
 
 ```sh
 cargo install --path .
-autoflow stop        # Stop hook: run the record→condukt→backlog state machine
+autoflow stop           # Stop hook: run the record→condukt→backlog state machine
+autoflow session-start  # SessionStart hook: propose /flow when backlog has pending items
 ```
 
 `autoflow stop` reads the hook JSON on stdin and prints a `block` decision (or
+nothing); `autoflow session-start` prints an `additionalContext` proposal (or
 nothing). `AUTOFLOW_DISABLE=1` silences the gate.
 
 ## Build

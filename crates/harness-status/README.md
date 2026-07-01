@@ -83,6 +83,10 @@ is a dev/HOTL tool: it classifies from the repo layout, so run it from a checkou
 
 - A section that reports "not installed" just means that plugin's store is
   absent — not an error.
+- `harness-status hooks` flags any Stop-hook whose latency exceeds
+  `HARNESS_HOOK_LATENCY_BUDGET_MS` (default `30000`).
+- `harness-status inject` flags any UserPromptSubmit injection larger than
+  `HARNESS_INJECT_BUDGET_CHARS` (default `20000`).
 - The date is derived without a clock dependency; override with `HARNESS_DATE=YYYY-MM-DD`
   for testing.
 

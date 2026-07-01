@@ -16,7 +16,9 @@ harness-core は、harness のすべてのプラグインで**同一でなけれ
 |---|---|
 | `store` | 永続的で Obsidian 互換のノートストア。プロジェクトごと、並列セッション安全なフォールバック付き（harness の不変条件） |
 | `hook` | Hook の stdin ペイロード構造体と、ターンを決して壊さない `run_hook` ラッパー（あらゆるエラー/パニックでも exit 0） |
+| `hook_latency` | 中央集約された追記専用の Stop-hook レイテンシ台帳（`<base_dir>/state/hook-latency.jsonl`）——共有の 1 ファイルなので集計は 1 回の読み込みで済む。best-effort でターンを決して壊さない |
 | `install` | `~/.claude/settings.json` の読み込み / タイムスタンプ付きバックアップ / 書き込みと、command marker による所有権検出 |
+| `hash` | FNV-1a（32/64-bit）——オンディスクのアドレッシングを支える非暗号ハッシュの単一の正典 |
 | `projkey` | プロジェクトキー `<basename>-<fnv1a32-hex>`——run-state ファイルのアドレッシングの単一の正典 |
 | `config` | home/base-dir の解決、チルダ展開、環境変数パースのプリミティブ |
 | `gate` | 共有の run/runner/state ゲート機構 |
@@ -28,6 +30,7 @@ harness-core は、harness のすべてのプラグインで**同一でなけれ
 | `ledger` | 日次の支出を永続化する台帳（`~/.budgetguard/state/ledger.json`） |
 | `daily` | カレンダー日ごとに一度だけのガード |
 | `inject` | context-injection hook（`playbook`・`runbook`）の共有基盤 |
+| `inject_metrics` | ハーネス横断の UserPromptSubmit インジェクションサイズ台帳。`turn_key = hash(session + prompt)` をキーにするので、5 つのインジェクタがプロセス間協調なしで同一ターン分を合算できる |
 | `interrogate` | ドメイン非依存の、ゲート単位の interrogation 制御構造 |
 | `shell` | クロスプラットフォームなシェル起動の単一の正典 |
 | `trust` | プロジェクトローカル config のコマンド文字列を尊重するための workspace-trust ゲート |

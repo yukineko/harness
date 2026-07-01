@@ -22,6 +22,8 @@
 
 ループは `compass gap` で鮮度をゲートし（charter が陳腐なら自動実行せず `/compass` を促す）、backlog ロックを取得して二重ループを防ぐ。`/flow` は `/backlog` の上位互換なので**併走させない**（backlog ロックで物理的に直列化される）。
 
+**autonomy switch**: config の `autonomous` または env `CONDUKT_AUTONOMOUS=1` を立てると、`/condukt` が `condukt state autonomy-check` の exit code で分岐して Phase 3 の人間合意などのゲートを縮退する（完全自走）。既定は無効（HOTL 維持）。有効化前に `donegate` / `reviewgate` / `propguard` などの検証ゲートを整えておくこと。
+
 ```
 /flow
   └─ compass ゲート: charter 鮮明 → 一手を to_condukt に保持
@@ -296,6 +298,17 @@ fi
 /harness-status:status      # コスト・ターン数・残 budget を 1 画面で確認
 condukt state stats         # 全 run の完了率・モデル分布を集計
 /difflog                    # セッション中の git diff を構造化ログで振り返る
+```
+
+harness-status は HOTL 点検ダッシュボード（CLI 専用・hook なし）で、面ごとにサブコマンドがある:
+
+```
+harness-status budget       # 今日のコスト
+harness-status sessions     # 直近セッション
+harness-status progress     # 進捗ファイル
+harness-status hooks        # Stop ゲートの遅延集計
+harness-status inject       # UserPromptSubmit 注入サイズ集計
+harness-status plugins      # 全プラグインの activation-scope 分類
 ```
 
 ### hypothesis (仮説管理)

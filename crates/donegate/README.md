@@ -55,8 +55,14 @@ through. Only an actual failing check blocks — on purpose.
 cargo install --path .
 cd your/project
 donegate init          # writes a starter donegate.toml for your stack
+donegate trust         # honor this project's donegate.toml (project configs are trust-gated)
 donegate install       # merges the Stop hook into ~/.claude/settings.json (backs it up)
 ```
+
+A project `donegate.toml` is only honored once the project is trusted
+(`donegate trust`); an untrusted project file is ignored and donegate falls back
+to `~/.donegate/config.toml` — so a hostile repo can't ship arbitrary Stop-time
+commands.
 
 Then check what would run:
 

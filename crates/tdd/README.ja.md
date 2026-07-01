@@ -67,7 +67,7 @@ proof_dir = ".tdd"          # RED/GREEN 証跡の書き出し先
 
 ### インストール
 
-プラグインマーケットプレイス経由が推奨で、`hooks/hooks.json` を通じて Stop hook を配線し、`/tdd` skill をバンドルする。プラグインを使わない場合は `tdd install` で Stop hook を `~/.claude/settings.json` にマージし、`tdd init` でスターター `tdd.toml` を書き出す。`/tdd` 使用前に `tdd --version` が通るか確認するとよい（`${CLAUDE_PLUGIN_ROOT}/bin/tdd` が PATH に無ければフルパスで呼ぶ）。
+プラグインマーケットプレイス経由が推奨で、`hooks/hooks.json` を通じて Stop hook を配線し（タイムアウト 30 秒）、`/tdd` skill をバンドルする。プラグインを使わない場合は `tdd install` で Stop hook を `~/.claude/settings.json` にマージし、`tdd init` でスターター `tdd.toml` を書き出す。`/tdd` 使用前に `tdd --version` が通るか確認するとよい（`${CLAUDE_PLUGIN_ROOT}/bin/tdd` が PATH に無ければフルパスで呼ぶ）。
 
 ## ライセンス
 

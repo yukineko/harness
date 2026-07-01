@@ -4,13 +4,9 @@
 
 **Claude Code 向けの統合 HOTL ステータスダッシュボード (Rust 製)**
 
-## 目的
-
 harness の各プラグインはそれぞれ独自の状態ストアを持つ。harness-status はそれらを
-横断して読み取り、human-on-the-loop (HOTL) — 「自分が介入すべきかどうかを一目で
-判断するための視点」 — を 1 画面にまとめて表示する **read-only** のバイナリである。
-
-集約する情報は次の 3 つ:
+横断して読み取り、human-on-the-loop の視点 — 介入すべきかどうかを一目で判断するために
+眺めるもの — を 1 画面にまとめて表示する:
 
 - **予算 (budgetguard)**: 今日の支出額とセッション数。`~/.budgetguard/state/ledger.json`
   から読む。
@@ -18,50 +14,82 @@ harness の各プラグインはそれぞれ独自の状態ストアを持つ。
   `~/.gauge/store/sessions/` から読む。
 - **進捗ファイル (taskprog)**: カレントディレクトリの `.claude/progress.md` のプレビュー。
 
-書き込みは一切行わず、他プラグインのストアを集めて表示するだけである。hook も API
-キーも不要で、subscription で完結する。
+**read-only** であり、書き込みは一切せず、他プラグインのストアを集約するだけである。hook も
+API キーも不要で、必要なときに手動で (または `/status` コマンドから) 実行する単一バイナリである。
 
-## どうして必要か
+**活性化スコープ: 手動 (CLI 専用)、これは意図的である。** harness-status は統合された
+手動 human-on-the-loop 検査ダッシュボードである。**hook を一切登録しない** — `SessionStart`
+すら登録しない — のは、毎セッション自動でダッシュボードを注入すれば、まさにこのツール
+(`hooks` / `inject`) と [ADR 0001](../ctxrot/docs/adr/0001-cross-harness-injection-budget.md)
+が抑えようとしている always-on の注入/hook 予算を膨らませてしまうからである。3 つのスコープの
+分類体系と全プラグインの現在の分類については
+[`docs/plugin-activation-scopes.md`](../../docs/plugin-activation-scopes.md) を参照。
 
-予算・セッション履歴・進捗はそれぞれ別プラグインの別ストアに散在している。状況を
-把握するには budgetguard・gauge・taskprog をそれぞれ個別に確認しなければならず、
-「今日いくら使ったか」「直近のセッションは高コストでなかったか」「今のタスクの残りは
-何か」を一望できない。harness-status はこれらを 1 つのビューに集約し、人間が
-「このまま任せるか / 介入するか」を素早く判断できるようにする。
+## 出力
 
-read-only に徹しているため、状態を壊す心配なくいつでも実行できる。あるセクションが
-"not installed" と出るのは、そのプラグインのストアが存在しないだけでエラーではない。
+```
+╔══════════════════════════════════════════════╗
+║         harness-status  (2026-06-23)         ║
+╚══════════════════════════════════════════════╝
 
-## どう使うか
+── Budget (budgetguard) ──────────────────────────
+  Today spend:  $1.8420  (3 session(s))
 
-プラグインとして導入すると、任意のセッションで `/status` コマンドが使える。
+── Recent sessions (gauge) ───────────────────────
+  Session          Project              Turns       Tokens  Cost USD
+  ----------------------------------------------------------------------
+  3c8d91a2         harness                 12        35000    0.1850
+
+── Progress file (taskprog) ──────────────────────
+  cwd: /repo
+  /repo/.claude/progress.md
+  │ # Progress
+  │ ## Pending
+  │ - specforge ⑤ worktree merge
+```
+
+## インストール (プラグイン)
 
 ```
 /plugin install harness-status@yukineko
 ```
 
-`/status` は同梱の Rust バイナリ (`${CLAUDE_PLUGIN_ROOT}/bin/harness-status`) を実行し、
-今日の支出・コスト付きの直近セッション・進捗ファイルを 1 画面で表示する。引数で
-特定セクションだけに絞れる:
+導入後、任意のセッションで `/status` を実行する。
 
-- `/status budget`   → 今日の支出のみ
-- `/status sessions` → 直近セッションのみ
-- `/status progress` → 進捗ファイルのみ
-- `--json` を付けると機械可読出力 (例: `/status --json`)
-
-バイナリを直接使う場合 (手動インストール):
+## 手動インストール
 
 ```sh
 cargo install --path .
-harness-status                         # フルダッシュボード
-harness-status budget                  # 今日の支出のみ
-harness-status sessions --sessions 10  # 直近セッション (件数 N を指定)
-harness-status progress                # 進捗ファイルのみ
-harness-status --json                  # 機械可読出力 (任意のサブコマンドに付与可)
+harness-status            # フルダッシュボード
 ```
 
-日付はクロックに依存せず導出される。テスト時は `HARNESS_DATE=YYYY-MM-DD` で上書き
-できる。
+## コマンド
+
+```sh
+harness-status                       # フルダッシュボード
+harness-status budget                # 今日の支出のみ
+harness-status sessions --sessions 10  # 直近セッション (件数 N を指定)
+harness-status progress              # 進捗ファイルのみ
+harness-status hooks                 # Stop-hook レイテンシ集約 (予算モニタ)
+harness-status inject                # UserPromptSubmit 注入サイズ集約 (予算モニタ)
+harness-status plugins               # 全プラグインを活性化スコープで分類
+harness-status --json                # 機械可読出力 (任意のサブコマンドに付与可)
+```
+
+`plugins` サブコマンドはモノレポをスキャンし、全プラグインを
+**always-on** / **event-scoped** / **manual** に分類する
+([`docs/plugin-activation-scopes.md`](../../docs/plugin-activation-scopes.md) を参照)。これは
+dev/HOTL 用ツールであり、リポジトリのレイアウトから分類するため、チェックアウトから実行すること。
+
+## 補足
+
+- あるセクションが "not installed" と出るのは、そのプラグインのストアが存在しないだけで、
+  エラーではない。
+- `harness-status hooks` は、レイテンシが `HARNESS_HOOK_LATENCY_BUDGET_MS` (デフォルト
+  `30000`) を超える Stop-hook を警告する。
+- `harness-status inject` は、`HARNESS_INJECT_BUDGET_CHARS` (デフォルト `20000`) を超える
+  UserPromptSubmit 注入を警告する。
+- 日付はクロックに依存せず導出される。テスト時は `HARNESS_DATE=YYYY-MM-DD` で上書きできる。
 
 ## ライセンス
 

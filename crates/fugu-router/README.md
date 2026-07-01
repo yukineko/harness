@@ -66,10 +66,12 @@ fugu-router route --file decomp.json [--report route.json]   # set suggested_mod
 fugu-router record --title "..." --files a,b --class parallel \
                    --model sonnet --status verified --cost 0.12   # feed an outcome
 fugu-router suggest --files src/auth/login.ts "fix login validation"  # one-off
+fugu-router procedures search --file decomp.json            # k-NN over how similar verified tasks were solved
 fugu-router stats [--json]                                   # per-model pass-rate / avg cost
 fugu-router import --episodes /path/episodes.jsonl [--playbooks /path/playbooks.jsonl] [--dry-run]
                                                              # merge another machine's stores (content-hash dedup)
 fugu-router import --dedup                                   # dedup local stores in place
+fugu-router sync [--pull-only | --push-only]                 # sync the record store with sync_repo (git)
 fugu-router init                                             # write fugu-router.toml
 fugu-router prompt                                           # UserPromptSubmit hook (injects a summary)
 ```
@@ -172,13 +174,22 @@ past task must be to count).
 |---|---|---|
 | `store_file` | `~/.fugu-router/episodes.jsonl` | Episode store path (redirect to a git-tracked path to share across machines) |
 | `playbook_file` | `~/.fugu-router/playbooks.jsonl` | Playbook store path (same; both stores can be git-tracked independently) |
+| `sync_repo` | *(unset)* | Remote git repo URL for `fugu-router sync`. When set, `store_file`/`playbook_file` default to `<sync_dir>/{episodes,playbooks}.jsonl` |
+| `sync_dir` | `~/.fugu-router/record-repo` | Local clone path for `sync_repo` |
 
-### Sharing stores across machines (git workflow)
+### Sharing stores across machines
 
-Point both `store_file` and `playbook_file` at files inside a git repo. On the
-receiving machine, after pulling, run `fugu-router import --episodes
-/path/to/synced/episodes.jsonl` to merge. The import deduplicates by content
-hash so pulling the same episode twice is safe.
+Two ways to share the stores across machines:
+
+**`sync` (managed git remote).** Set `sync_repo` to a git repo URL; the stores
+then default to `<sync_dir>/{episodes,playbooks}.jsonl`. `fugu-router sync` pulls
+from the remote first, then commits & pushes local changes (`--pull-only` /
+`--push-only` to do one side only).
+
+**Manual (`import`).** Point `store_file` and `playbook_file` at files inside a
+git repo you manage yourself. On the receiving machine, after pulling, run
+`fugu-router import --episodes /path/to/synced/episodes.jsonl` to merge. The
+import deduplicates by content hash so pulling the same episode twice is safe.
 
 `fugu-router import --dedup` rewrites the local stores in place, dropping any
 exact duplicates (content-hash comparison; first-seen order is preserved).

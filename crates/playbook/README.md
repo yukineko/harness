@@ -37,8 +37,9 @@ playbook add --title "commit は branch を切ってから" --always \
   --body "main で直接コミットしない。必ず作業ブランチを切る。"
 
 playbook list
-playbook search lightgbm が OOM で落ちる   # see what would be injected
+playbook search lightgbm が OOM で落ちる   # see what would be injected (✓ marks it)
 playbook rm <slug>
+playbook status                  # resolved config + store paths + visible note count
 ```
 
 A note is a markdown file with TOML frontmatter:
