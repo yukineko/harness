@@ -182,9 +182,12 @@ DEEPWIKI_PAGES=$(ls .deepwiki/*.md 2>/dev/null | tr '\n' ' ' || true)
   { "id": "t1", "title": "...", "touched_files": ["path/or/glob", ...],
     "deps": ["他タスクid"], "class": "parallel|serial|gated",
     "suggested_model": "sonnet|opus|haiku", "done_criteria": "検証で確認する合格条件",
-    "confidence": "high|medium|low" }
+    "confidence": "high|medium|low", "kind": "fix|feature|chore|..." }
 ]}
 ```
+`kind` は省略可 (バックワード互換: 無くても Decomposition はそのまま読み込める)。値が `fix` または
+`feature` (大小無視) のときだけ、Phase 6 で後述する F→P (Fail→Pass) 再現性ゲートの対象になる。
+`chore` やその他の値・未指定は対象外 (ゲートなし)。
 `open_questions` 相当が出たら、この時点で `AskUserQuestion` を 1 回使って解消する。
 
 ### Phase 2 — 検証 + ルーティング + スケジュール (決定論)
@@ -436,6 +439,31 @@ CC=$(condukt state check-criteria --run "$RID" --task "<id>")
 これにより「テストで赤確定」のタスクは LLM verifier 1 本分を省けつつ、振る舞い的な done_criteria が
 「テストが通ったから正しい」で verifier を素通りする穴（generation と verification の共有盲点の一種）を
 バイナリ側で塞ぐ。
+
+**F→P (Fail→Pass) 再現性ゲート (`kind: fix|feature` タスク限定)**: worker が `reproduction_tests` の
+red→green サイクル (`tdd` の RED/GREEN 証跡) を回し終えた後、**`verified` へ昇格させる前**に、その
+RED→GREEN が本物の Fail→Pass 遷移だったかを確認できる:
+```bash
+condukt state check-oracle --run "$RID" --task "<id>"
+# → {"required":bool,"valid_fp_oracle":bool,"fallback":bool,"transition":"fail_to_pass|fail_to_fail|pass_to_pass|pass_to_fail","reason":"..."}
+```
+これは advisory な信号で常に exit 0 (JSON を出すだけでそれ自体はゲートしない)。フィールドの意味:
+- `required`: タスクの `kind` が `fix`/`feature` (大小無視) かつ `reproduction_tests` を持つときのみ true。
+- `valid_fp_oracle`: `tdd oracle --task <id>` の判定。RED→GREEN が `fail_to_pass` のときだけ true
+  (`fail_to_fail`/`pass_to_pass`/`pass_to_fail` はすべて false)。
+- `fallback`: true なら「この判定は信用できない、または対象外」= 従来の検証ゲート
+  (`state check-criteria` → verifier agent) にそのまま委ねてよい、という意味。`tdd` が PATH に無い・
+  spawn 失敗・stdout が空/壊れている、または対象外タスク (kind が fix/feature でない、
+  `reproduction_tests` が無い) はすべて fail-soft に `fallback:true` へ degrade する (パニックしない、
+  ターンを壊さない)。
+- `transition` / `reason`: 判定の詳細 (ログ・カスケードエスカレーションの `failure_context` に転記してよい)。
+
+**実際の強制は `condukt state set --run $RID --task <id> --status verified` 自身が行う**: このコマンドは
+内部で上と同じ判定 (`check-oracle` 相当) を再実行し、`required:true, fallback:false,
+valid_fp_oracle:false` のときは昇格を**拒否**する (非0終了・理由を出力)。つまり `kind: fix/feature` かつ
+`reproduction_tests` を持つタスクは、`tdd` による本物の Fail→Pass 再現ができていない限り `verified` に
+できない。`fallback:true` (tdd 不在・対象外タスク等) のときは従来通り verifier agent の pass/fail 判定に
+すべて委ねる (legacy gate への degrade)。
 
 done の各タスクを `condukt-verifier` 相当で done_criteria 照合する。検証する子の **model は
 worker と必ず別モデルにする**（同一モデルだと generation と verification が同じ盲点を共有するため）。
