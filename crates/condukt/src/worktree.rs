@@ -318,6 +318,43 @@ mod worktree_remove_tests {
         fs::write(repo.join("new.txt"), "dirty\n").unwrap();
         assert!(is_dirty(&repo).expect("is_dirty should not error"));
     }
+
+    /// remove() force-removes a DIRTY worktree so orphans do not accumulate.
+    /// A plain `git worktree remove` refuses when the worktree has uncommitted
+    /// or untracked files; without a force-retry this returns Err and the dir is
+    /// never cleaned up (the unattended/parallel failure mode).
+    #[test]
+    fn worktree_remove_force_removes_dirty_worktree() {
+        let (tmp, repo) = init_repo();
+
+        let wt_base = tmp.path().join("worktrees");
+        fs::create_dir_all(&wt_base).unwrap();
+        let wt_path = wt_base.join("dirty-wt");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "feat/dirty",
+            ],
+        )
+        .unwrap();
+
+        // Make the worktree DIRTY: an untracked file inside the worktree dir.
+        fs::write(wt_path.join("uncommitted.txt"), "dirty\n").unwrap();
+        assert!(is_dirty(&wt_path).unwrap(), "worktree should be dirty");
+
+        // remove() must succeed on a dirty worktree (force) and leave no orphan.
+        let result = remove(&repo, &wt_path, None).expect("dirty worktree should be force-removed");
+        assert_eq!(result, None, "no branch requested -> None");
+        assert!(
+            !wt_path.exists(),
+            "dirty worktree dir must be gone after remove(); got orphan at {}",
+            wt_path.display()
+        );
+    }
 }
 
 /// Remove the worktree at `path` and delete its `branch` (best-effort on branch).
@@ -331,8 +368,16 @@ mod worktree_remove_tests {
 /// any other error), `None` when no branch was requested or deletion succeeded.
 pub fn remove(repo: &Path, path: &Path, branch: Option<&str>) -> Result<Option<String>> {
     let path_str = path.to_string_lossy().to_string();
-    git(repo, &["worktree", "remove", &path_str])
-        .with_context(|| format!("could not remove worktree {}", path.display()))?;
+    // Try a clean remove first. `git worktree remove` REFUSES when the worktree
+    // has uncommitted or untracked files (and for a few other reasons); in
+    // unattended/parallel runs that would leave orphan dirs accumulating on disk.
+    // On failure, retry with --force. Force-remove only discards uncommitted
+    // worktree state — committed work lives on the branch and is handled by the
+    // best-effort branch-deletion step below, so this is safe for cleanup.
+    if git(repo, &["worktree", "remove", &path_str]).is_err() {
+        git(repo, &["worktree", "remove", "--force", &path_str])
+            .with_context(|| format!("could not force-remove worktree {}", path.display()))?;
+    }
     if let Some(b) = branch {
         match git(repo, &["branch", "-d", b]) {
             Ok(_) => {}
