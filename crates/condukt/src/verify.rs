@@ -666,6 +666,12 @@ const BEHAVIORAL_MARKERS: &[&str] = &[
     "prove",
     "prevent",
     "enforce",
+    // Runtime / health markers: a criteria that asks about *running* behaviour
+    // (server starts, /health returns 200, no runtime panic) demands the verifier
+    // actually launch the target — a passing unit test is evidence, not a
+    // substitute. These force the verifier even when a command is embedded.
+    "runtime",
+    "health",
     // Japanese (SKILL.md wording: 実装/ロジック/設計/コード/振る舞い …)
     "実装",
     "ロジック",
@@ -676,6 +682,10 @@ const BEHAVIORAL_MARKERS: &[&str] = &[
     "正しく",
     "妥当",
     "検証",
+    // Japanese runtime / health markers.
+    "実行時",
+    "起動",
+    "稼働",
 ];
 
 /// True iff `done_criteria` carries any behavioral marker — i.e. it asks about
@@ -1422,6 +1432,31 @@ note: run with `RUST_BACKTRACE=1` for a backtrace";
         let c = classify_criteria(dc);
         assert!(c.behavioral);
         assert!(!c.skip_eligible);
+    }
+
+    /// Runtime / health criteria demand a running check, so even when they embed
+    /// a passing test command they must NOT skip the verifier. Covers the English
+    /// (`runtime`, `health`) and Japanese (`実行時`, `起動`, `稼働`) markers added
+    /// for the phase-3 runtime-verification path.
+    #[test]
+    fn runtime_health_markers_block_skip() {
+        for dc in [
+            "the server starts and GET /health returns 200; `cargo test -p condukt` passes",
+            "no runtime panic under load; `npm test` exits 0",
+            "サーバを起動し /health が 200 を返すこと。`cargo test -p condukt` が通る",
+            "実行時に例外を出さないこと。`pytest` が通る",
+            "本番相当で稼働し続けること。`go test` が通る",
+        ] {
+            let c = classify_criteria(dc);
+            assert!(
+                c.behavioral,
+                "runtime/health criteria must be behavioral: {dc}"
+            );
+            assert!(
+                !c.skip_eligible,
+                "runtime/health criteria must never skip the verifier even with an embedded command: {dc}"
+            );
+        }
     }
 
     // ── Health probe with server launch (health-url 付き起動経路) ──────────
