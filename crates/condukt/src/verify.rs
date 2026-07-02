@@ -14,6 +14,143 @@
 //!    is only *evidence handed to* the verifier, never a substitute for it. When
 //!    classification is ambiguous we fail toward RUNNING the verifier (safe side).
 
+/// How many trailing lines of raw output to retain in [`FailureDigest::output_tail`].
+const OUTPUT_TAIL_LINES: usize = 20;
+
+/// A deterministic, structured distillation of a failing command's raw output.
+///
+/// The verifier→worker reflux used to carry only a boolean plus an undistilled
+/// output blob. `FailureDigest` extracts the *why-it-failed* signal — failing
+/// test names, assertion evidence, and a bounded output tail — so a worker (or
+/// the /condukt skill's retry prompt) can self-correct in the same run. The
+/// FORMATTING here is deterministic Rust; only the fix DECISION is the LLM's job.
+///
+/// The `condukt verify digest` subcommand exposes [`distill_failure`] so the
+/// skill can distill ANY worker/verifier raw output into the retry reflux prompt.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FailureDigest {
+    /// Names of failing tests (deduplicated, first-seen order).
+    pub failing_tests: Vec<String>,
+    /// Assertion / panic evidence lines (trimmed short strings).
+    pub assertion_diffs: Vec<String>,
+    /// The last [`OUTPUT_TAIL_LINES`] lines of the raw output, joined by `\n`.
+    pub output_tail: String,
+}
+
+/// Distill a failing command's raw output into a [`FailureDigest`].
+///
+/// Pure and deterministic: no LLM, no network, no filesystem, no clock. Handles
+/// empty / garbage / non-cargo input gracefully (empty vecs, whatever tail
+/// exists) and never panics.
+///
+/// - `failing_tests`: names from cargo-test `test <name> ... FAILED` lines and
+///   from the indented `failures:` summary block. Deduplicated, first-seen order.
+/// - `assertion_diffs`: `assertion \`...\` failed` lines, following `left:` /
+///   `right:` lines, and `panicked at ...` / `thread '...' panicked` lines.
+/// - `output_tail`: the last [`OUTPUT_TAIL_LINES`] lines (or all, if shorter).
+pub fn distill_failure(raw_output: &str) -> FailureDigest {
+    let mut failing_tests: Vec<String> = Vec::new();
+    let mut assertion_diffs: Vec<String> = Vec::new();
+
+    let push_unique = |v: &mut Vec<String>, s: String| {
+        if !s.is_empty() && !v.contains(&s) {
+            v.push(s);
+        }
+    };
+
+    // First pass: `test <name> ... FAILED` result lines.
+    for line in raw_output.lines() {
+        let t = line.trim();
+        if let Some(name) = parse_test_result_failed(t) {
+            push_unique(&mut failing_tests, name);
+        }
+    }
+
+    // Second pass: the `failures:` summary block lists each failing test name on
+    // its own indented line, terminated by a blank line or a `test result:` line.
+    let mut in_failures_block = false;
+    for line in raw_output.lines() {
+        let t = line.trim();
+        if t == "failures:" {
+            in_failures_block = true;
+            continue;
+        }
+        if in_failures_block {
+            // The block ends at a blank line, a `test result:` summary, or the
+            // start of the error-detail sub-listing that cargo repeats.
+            if t.is_empty() || t.starts_with("test result:") {
+                in_failures_block = false;
+                continue;
+            }
+            // Names in the summary are bare identifiers (e.g. `foo::bar`); ignore
+            // any lines that look like prose/evidence rather than a test path.
+            if is_test_name_line(t) {
+                push_unique(&mut failing_tests, t.to_string());
+            }
+        }
+    }
+
+    // Assertion / panic evidence: the "why" beyond the boolean.
+    for line in raw_output.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let is_assertion = t.contains("assertion") && t.contains("failed");
+        let is_left = t.starts_with("left:");
+        let is_right = t.starts_with("right:");
+        let is_panic =
+            t.starts_with("panicked at") || (t.starts_with("thread '") && t.contains("panicked"));
+        if is_assertion || is_left || is_right || is_panic {
+            push_unique(&mut assertion_diffs, t.to_string());
+        }
+    }
+
+    let output_tail = tail_lines(raw_output, OUTPUT_TAIL_LINES);
+
+    FailureDigest {
+        failing_tests,
+        assertion_diffs,
+        output_tail,
+    }
+}
+
+/// Parse a cargo-test result line `test <name> ... FAILED`, returning `<name>`.
+/// Tolerates a leading log prefix by matching on the `test ` token boundary and
+/// the trailing ` ... FAILED`. Returns `None` for non-matching lines.
+fn parse_test_result_failed(trimmed: &str) -> Option<String> {
+    let rest = trimmed.strip_prefix("test ")?;
+    // Must end in the FAILED result marker (cargo emits `... FAILED`).
+    if !rest.ends_with("FAILED") {
+        return None;
+    }
+    let name_part = rest.split(" ... ").next()?.trim();
+    if name_part.is_empty() || name_part == "result:" {
+        return None;
+    }
+    Some(name_part.to_string())
+}
+
+/// Heuristic: does a `failures:`-block line look like a bare test-name path
+/// (e.g. `foo::bar`) rather than prose or evidence?
+fn is_test_name_line(t: &str) -> bool {
+    !t.is_empty()
+        && !t.contains(' ')
+        && t.chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == ':' || c == '-')
+}
+
+/// Return the last `n` lines of `s` joined by `\n`. If `s` has `n` or fewer
+/// lines, all of them are returned. Empty input yields an empty string.
+fn tail_lines(s: &str, n: usize) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
 /// Known model tiers, cheapest → strongest.
 const TIERS: [&str; 3] = ["haiku", "sonnet", "opus"];
 
@@ -170,7 +307,7 @@ pub fn mechanical_skip_verdict(
         return (out, false);
     };
     let (passed, output) = run(cmd);
-    let out = serde_json::json!({
+    let mut out = serde_json::json!({
         "mechanical": true,
         "behavioral": false,
         "passed": passed,
@@ -178,6 +315,17 @@ pub fn mechanical_skip_verdict(
         "cmd": cmd,
         "output": output,
     });
+    // On failure, attach the deterministic structured digest alongside the raw
+    // output so the verifier→worker reflux carries the *why*, not just a boolean.
+    // The passing-case shape is left unchanged.
+    if !passed {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert(
+                "failure_digest".to_string(),
+                serde_json::to_value(distill_failure(&output)).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
     (out, !passed)
 }
 
@@ -391,6 +539,128 @@ mod tests {
         assert_eq!(v_fail["skip_verifier"], serde_json::json!(false));
         assert_eq!(v_fail["passed"], serde_json::json!(false));
         assert!(failed_fail, "a failing mechanical check must fail the gate");
+    }
+
+    // ── Structured failure digest (verifier→worker reflux) ────────────────
+
+    /// A representative failing cargo-test output must yield detail BEYOND the
+    /// pass/fail boolean: the failing test name and the assertion evidence. A
+    /// neutered `distill_failure` returning an empty digest would fail this.
+    #[test]
+    fn distill_surfaces_test_name_and_assertion_diff() {
+        let raw = "\
+running 2 tests
+test foo::bar ... FAILED
+test foo::baz ... ok
+
+failures:
+
+---- foo::bar stdout ----
+thread 'foo::bar' panicked at src/lib.rs:42:5:
+assertion `left == right` failed
+  left: 3
+ right: 4
+
+failures:
+    foo::bar
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored";
+        let d = distill_failure(raw);
+        // (a) the failing test name is surfaced.
+        assert!(
+            d.failing_tests.iter().any(|t| t == "foo::bar"),
+            "expected failing test 'foo::bar' in {:?}",
+            d.failing_tests
+        );
+        // (b) assertion evidence is surfaced (the "why" beyond the boolean).
+        assert!(
+            d.assertion_diffs
+                .iter()
+                .any(|a| a.contains("assertion `left == right` failed")),
+            "expected the assertion line in {:?}",
+            d.assertion_diffs
+        );
+        // left/right evidence is captured too.
+        assert!(
+            d.assertion_diffs.iter().any(|a| a.starts_with("left:")),
+            "expected the left value line in {:?}",
+            d.assertion_diffs
+        );
+        assert!(
+            d.assertion_diffs.iter().any(|a| a.starts_with("right:")),
+            "expected the right value line in {:?}",
+            d.assertion_diffs
+        );
+        // The panic location is captured as evidence.
+        assert!(
+            d.assertion_diffs.iter().any(|a| a.contains("panicked at")),
+            "expected the panic line in {:?}",
+            d.assertion_diffs
+        );
+        // The tail retains the last lines of output.
+        assert!(
+            d.output_tail.contains("test result: FAILED"),
+            "output_tail must retain the trailing summary: {:?}",
+            d.output_tail
+        );
+        // Names are deduplicated: 'foo::bar' appears in both the result line and
+        // the summary block, but must be listed once.
+        assert_eq!(
+            d.failing_tests.iter().filter(|t| *t == "foo::bar").count(),
+            1,
+            "failing test names must be deduplicated: {:?}",
+            d.failing_tests
+        );
+    }
+
+    /// Empty input must not panic and must yield empty vecs + empty tail.
+    #[test]
+    fn distill_empty_input_is_graceful() {
+        let d = distill_failure("");
+        assert!(d.failing_tests.is_empty());
+        assert!(d.assertion_diffs.is_empty());
+        assert_eq!(d.output_tail, "");
+    }
+
+    /// Garbage / non-cargo input must not panic and yields no false positives,
+    /// but still keeps the tail.
+    #[test]
+    fn distill_garbage_input_is_graceful() {
+        let raw = "some unrelated log line\nanother line without markers";
+        let d = distill_failure(raw);
+        assert!(d.failing_tests.is_empty());
+        assert!(d.assertion_diffs.is_empty());
+        assert_eq!(d.output_tail, raw);
+    }
+
+    /// The mechanical verdict embeds the digest on failure and omits it on pass.
+    #[test]
+    fn mechanical_verdict_embeds_digest_only_on_failure() {
+        let cls = Classification {
+            behavioral: false,
+            mechanical_cmd: Some(vec!["cargo".to_string(), "test".to_string()]),
+            skip_eligible: true,
+        };
+        // Passing case: no failure_digest field (shape unchanged).
+        let (v_pass, _) = mechanical_skip_verdict(&cls, |_c| (true, "all good".into()));
+        assert!(
+            v_pass.get("failure_digest").is_none(),
+            "passing verdict must not carry a failure_digest: {v_pass}"
+        );
+        // Failing case: failure_digest present and populated.
+        let (v_fail, failed) =
+            mechanical_skip_verdict(&cls, |_c| (false, "test foo::bar ... FAILED".into()));
+        assert!(failed);
+        let digest = v_fail
+            .get("failure_digest")
+            .expect("failing verdict must carry a failure_digest");
+        assert_eq!(
+            digest["failing_tests"],
+            serde_json::json!(["foo::bar"]),
+            "digest must surface the failing test: {v_fail}"
+        );
+        // The raw output is still present alongside the digest.
+        assert!(v_fail.get("output").is_some());
     }
 
     /// Japanese behavioral markers are recognised too.
