@@ -53,7 +53,8 @@ The skill drives the loop; the binary only injects the SessionStart proposal dir
 3. 実行ループ — 優先度順にピック → /condukt → 検証 → sink
        ピック順: compass 主筋
                  → measure step（awaiting-measurement の仮説を計測して validate/reject で閉じる）
-                 → `backlog next`
+                 → `backlog`（複数 ready 課題は順列でなく 1 condukt run に束ね、並列/直列は condukt の
+                    schedule.rs に委譲＝非衝突は並列・衝突/危険は自動で直列。sink は item ごと）
                  → 新規 open 仮説（その仮説を検証する実験を build）
        成功 sink: backlog done
                  / compass は `compass outcome` で measuring_stick 判定（前進/不変/後退）を記録
