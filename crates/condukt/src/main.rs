@@ -393,13 +393,29 @@ enum VerifyAction {
     /// soft — the turn is never broken. The pass/fail + runtime_digest verdict is
     /// printed as pretty JSON and the process ALWAYS exits 0 (fail-soft); the fix
     /// DECISION stays with the LLM worker.
+    ///
+    /// With `--health-url`, the target is treated as a *server*: instead of
+    /// waiting for it to exit, we poll a raw HTTP/1.1 `GET <health-url>` until it
+    /// returns 200 (pass) or `--startup-timeout` elapses (fail-soft), then tear
+    /// the process down. Without `--health-url` the legacy exit-wait behavior is
+    /// unchanged.
     Launch {
         /// The command to launch (run via `sh -c`). Required.
         #[arg(long)]
         cmd: String,
         /// Timeout in seconds before the launched process is killed (fail-soft).
+        /// Only used for the exit-wait path (no `--health-url`).
         #[arg(long, default_value_t = 30)]
         timeout: u64,
+        /// Health endpoint to probe (e.g. `http://127.0.0.1:8080/health`). When
+        /// set, switches to the server path: poll until HTTP 200 or startup
+        /// timeout, then tear the process down.
+        #[arg(long)]
+        health_url: Option<String>,
+        /// Seconds to poll `--health-url` for a 200 before failing soft. Only
+        /// used when `--health-url` is set.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout: u64,
     },
 }
 
@@ -529,10 +545,20 @@ fn run_user(cmd: Command) -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&digest)?);
                 }
             }
-            VerifyAction::Launch { cmd, timeout } => {
-                // Fail-soft by contract: launch_and_reflux never panics and always
-                // returns a verdict, so we always print it and exit 0.
-                let verdict = verify::launch_and_reflux(&cmd, timeout);
+            VerifyAction::Launch {
+                cmd,
+                timeout,
+                health_url,
+                startup_timeout,
+            } => {
+                // Fail-soft by contract: both launch paths never panic and always
+                // return a verdict, so we always print it and exit 0. With a
+                // health URL we probe a server for a 200; without one we keep the
+                // legacy exit-wait behavior.
+                let verdict = match health_url {
+                    Some(url) => verify::launch_server_and_probe(&cmd, &url, startup_timeout),
+                    None => verify::launch_and_reflux(&cmd, timeout),
+                };
                 println!("{}", serde_json::to_string_pretty(&verdict)?);
             }
         },
