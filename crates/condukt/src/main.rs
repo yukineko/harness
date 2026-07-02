@@ -11,6 +11,7 @@ mod config;
 mod consensus;
 mod hooks;
 mod install;
+mod lock;
 mod model;
 mod oracle;
 mod schedule;
@@ -613,6 +614,11 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             model,
             cost,
         } => {
+            // Hold the per-run state lock across the entire load → oracle-gate →
+            // mutate → save cycle so a concurrent session/worktree cannot lose
+            // this update (last-writer-wins TOCTOU). Fail-soft: degrades to
+            // unlocked on contention rather than failing the update.
+            let _lock = lock::RunLock::acquire(cfg, cwd, &run);
             let mut rs = state::RunState::load(cfg, cwd, &run)?;
             let st: state::Status = status.parse()?;
 

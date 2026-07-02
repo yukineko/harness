@@ -168,20 +168,31 @@ pub fn open_runs(cfg: &Config, cwd: &Path) -> Vec<RunState> {
         .collect()
 }
 
-/// Mark a run as paused. Returns Err if the run does not exist.
-pub fn pause_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+/// Serialized load → mutate → save for a run. The per-run state lock is held
+/// across all three steps so two concurrent sessions/worktrees cannot lose an
+/// update (the load→mutate→save windows can no longer interleave; it is a
+/// compare-and-swap scoped to this one run). The lock is fail-soft: if it cannot
+/// be acquired it degrades to proceeding unlocked (logged) rather than failing
+/// the update, and never panics. `mutate` runs while the lock is held.
+pub fn with_run_locked<F>(cfg: &Config, cwd: &Path, run_id: &str, mutate: F) -> Result<()>
+where
+    F: FnOnce(&mut RunState),
+{
+    let _lock = crate::lock::RunLock::acquire(cfg, cwd, run_id);
     let mut rs = RunState::load(cfg, cwd, run_id)?;
-    rs.paused = true;
+    mutate(&mut rs);
     rs.save(cfg, cwd)?;
     Ok(())
 }
 
+/// Mark a run as paused. Returns Err if the run does not exist.
+pub fn pause_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+    with_run_locked(cfg, cwd, run_id, |rs| rs.paused = true)
+}
+
 /// Clear the paused flag on a run. Returns Err if the run does not exist.
 pub fn resume_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
-    let mut rs = RunState::load(cfg, cwd, run_id)?;
-    rs.paused = false;
-    rs.save(cfg, cwd)?;
-    Ok(())
+    with_run_locked(cfg, cwd, run_id, |rs| rs.paused = false)
 }
 
 /// All runs (complete and incomplete) for this project, sorted by run_id.
@@ -1217,6 +1228,71 @@ mod tests {
         assert_eq!(loaded.goal, rs.goal);
         assert_eq!(loaded.tasks.len(), 1);
         assert_eq!(loaded.tasks[0].id, "t1");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// TOCTOU reproduction: two concurrent load→mutate→save cycles on the SAME
+    /// run, each mutating a DIFFERENT field. Each cycle acquires the per-run
+    /// lock, loads, then sleeps to widen the load→save window before saving.
+    ///
+    /// WITHOUT the lock both threads load the same snapshot and the later save
+    /// clobbers the earlier one (last-writer-wins) — one field's update is lost,
+    /// so the final-assert fails (RED). WITH the lock the cycles serialize: the
+    /// second thread cannot load until the first has saved and released, so both
+    /// updates survive (GREEN).
+    #[test]
+    fn concurrent_rmw_does_not_lose_updates() {
+        use std::time::Duration;
+
+        let tmp = make_tmp_dir("concurrent-rmw");
+        let cfg = make_test_cfg(&tmp);
+        let run_id = "run-race";
+
+        // Seed the run: goal and terminal_label both at their initial values.
+        RunState {
+            run_id: run_id.into(),
+            goal: "seed".into(),
+            tasks: vec![],
+            paused: false,
+            terminal_label: None,
+            recorded_at: None,
+        }
+        .save(&cfg, &tmp)
+        .unwrap();
+
+        // One RMW cycle mutating a chosen field, holding the real per-run lock
+        // across load → (widened window) → save, exactly like the production
+        // pause/resume/Set paths do.
+        let rmw = |which: char| {
+            let _lock = crate::lock::RunLock::acquire(&cfg, &tmp, run_id);
+            let mut rs = RunState::load(&cfg, &tmp, run_id).unwrap();
+            // Widen the load→save window so the race is deterministic without
+            // the lock (both threads load before either saves).
+            std::thread::sleep(Duration::from_millis(200));
+            match which {
+                'A' => rs.goal = "A".into(),
+                _ => rs.terminal_label = Some("B".into()),
+            }
+            rs.save(&cfg, &tmp).unwrap();
+        };
+
+        std::thread::scope(|s| {
+            s.spawn(|| rmw('A'));
+            s.spawn(|| rmw('B'));
+        });
+
+        // Both independent updates must survive; neither may be lost.
+        let final_state = RunState::load(&cfg, &tmp, run_id).unwrap();
+        assert_eq!(
+            final_state.goal, "A",
+            "thread A's goal update was lost (last-writer-wins race)"
+        );
+        assert_eq!(
+            final_state.terminal_label.as_deref(),
+            Some("B"),
+            "thread B's terminal_label update was lost (last-writer-wins race)"
+        );
+
         std::fs::remove_dir_all(&tmp).ok();
     }
 
