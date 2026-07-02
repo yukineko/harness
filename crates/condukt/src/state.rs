@@ -1164,6 +1164,7 @@ mod tests {
             consensus_enabled: false,
             consensus_samples: crate::consensus::DEFAULT_SAMPLES,
             consensus_threshold: crate::consensus::DEFAULT_THRESHOLD,
+            single_worktree: false,
         }
     }
 

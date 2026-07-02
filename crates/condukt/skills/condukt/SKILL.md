@@ -332,6 +332,17 @@ BASELINE_EXIT=$?
 - `reproduction_tests` が worktree 内での実行を前提とする場合
 
 ### Phase 5 — 並列実装 (batches を順に)
+
+**まず実行モードを判定する**（`schedule` は共通、実行の仕方だけ分岐）:
+```
+condukt state worktree-mode-check   # exit 0 + {"single_worktree":true} → 単一 worktree / exit 1 → 従来の per-task worktree
+```
+- **exit 1（従来・既定）** → 下の「A. per-task worktree モード」（各 parallel タスクに専用 worktree+branch、Phase 7 で merge）。**後方互換で挙動不変**。
+- **exit 0（単一 worktree モード）** → 「B. 単一 worktree モード」。存在しない旧版（exit 127）は exit 1 と同じ＝従来モード。
+
+---
+
+#### A. per-task worktree モード（既定）
 `schedule.batches` を**先頭から順に** 処理する (バッチ間は依存順、バッチ内は並列):
 
 バッチ内の各タスク `t` について:
@@ -348,11 +359,34 @@ BASELINE_EXIT=$?
 
 バッチ内は 1 メッセージで複数 `Task` を同時発行して並列化する。worker が完了するたびに即 verifier を起動し、worker 完了の待ち合わせはしない（後続 worker が動いている間に先行タスクの検証が進む）。`serial` タスクは worktree に出さず main で順に実装し commit。
 
+---
+
+#### B. 単一 worktree モード（`single_worktree` 有効時）
+**全タスクを main の作業ツリー1つで実行**する。per-task worktree/branch は作らず、Phase 7 の merge/remove も行わない。
+並列/直列の判定は A と同じ `schedule` に従う（**衝突タスクは既に serial に分離済み**＝「ファイルが競合するタスク同士は直列」がここで保証される）。ハザードだった「各 worker の commit 前 `cargo check` が peer の未完成編集を巻き込む」問題は、**check/commit を worker から外し batch 境界へ集約**して回避する。
+
+`schedule.batches` を**先頭から順に**処理する。各バッチ（＝非衝突・disjoint files）について:
+
+1. **並列編集（check/commit なし）**: バッチ内の各タスク `t` を 1 メッセージで同時 `Task` 起動する。ただし worker には:
+   - 作業ディレクトリ = **main repo dir**（専用 worktree なし）。
+   - **自分の `touched_files` だけを編集**（`peer_tasks` で他タスクのスコープを渡し衝突回避）。
+   - **`commit_mode: staged-no-commit`**: 実装したら `git add <touched_files>`（**`-A` は使わない**＝peer の編集を巻き込まない）で**ステージするところまで**。**個別の `cargo check`・`git commit` はしない**（batch 集約でやる）。
+   - `condukt state set --run $RID --task <t.id> --status running`（worktree/branch なし）。
+2. **バッチ集約 `cargo check`（1 回）**: バッチ内 worker が全員ステージ完了したら、**オーケストレータが `cargo check`（影響 crate または workspace）を 1 回**実行する。独立タスクは別依存レイヤなので相互参照は無く、各タスクが正しければ green になる。
+3. **判定**:
+   - **green** → タスクごとに `git add <touched_files> && git commit`（選択コミットで per-task 帰属を保つ）→ `condukt state set ... --status done` → 各タスクの Phase 6 verifier を起動。
+   - **red** → 失敗を出したファイルから**原因タスクを特定**し、そのタスクを `failed` に set（Phase 6 カスケードエスカレーションへ）。**原因でないタスクは通常どおり commit**（disjoint なので巻き添えにしない）。特定不能なら保守的にバッチ全体を `failed` にして直列再実行へ。
+4. **serial タスク**（`schedule.serial` / 衝突・shared-glob）→ 従来どおり main で1件ずつ実装・自前 `cargo check`・commit。
+5. **例外＝直列に落とすタスク**: `reproduction_tests` を持つ **TDD タスク**は実装中にテストを走らせる（red→green）ため batch 末尾集約に乗らない。single-worktree モードでは**この種のタスクだけ serial 扱い**にして1件ずつ実行する（純編集タスクは上記どおり並列のまま）。
+
+Phase 7（merge/remove）は単一 worktree モードでは**スキップ**（commit は既に既定ブランチ上）。Phase 6 verify と Phase 7 gate はそのまま通す。
+
 #### Worker プロンプト構成テンプレート (Phase 5 で毎回渡すフィールド一覧)
 
 | フィールド | 必須/省略可 | 収集方法 | 説明 |
 |---|---|---|---|
-| 作業ディレクトリ | 必須 | `condukt worktree create` の出力 (`$WP`) | worktree 内だけで作業・commit させる起点 |
+| 作業ディレクトリ | 必須 | 既定=`condukt worktree create` の出力 (`$WP`)／単一 worktree モード=**main repo dir** | worker が作業する起点 |
+| `commit_mode` | 単一 worktree モードで必須 | `staged-no-commit`（単一 worktree バッチ）を渡す。既定モードでは省略（従来の add -A && commit） | 並列編集の巻き込み防止＋check/commit のバッチ集約を worker に指示する |
 | `touched_files` | 必須 | Decomposition JSON の `t.touched_files` | worker が触れてよいファイルのスコープ |
 | `done_criteria` | 必須 | Decomposition JSON の `t.done_criteria` | verifier が照合する合格条件 |
 | `reproduction_tests` | 省略可 | Decomposition JSON の `t.reproduction_tests` | TDD ループ起点。渡すと worker が red→green サイクルを回す |
@@ -648,6 +682,8 @@ condukt state gate --run $RID      # exit 0 まで完了宣言しない
   - `failed` タスク → Phase 6 のカスケードエスカレーションへ戻す
   - worktree 残置 → `condukt worktree cleanup --remove` で掃除
   - 未コミット → 該当 worktree 内で commit させる
+- **単一 worktree モード（`condukt state worktree-mode-check` exit 0）ではこの merge/remove ブロックを丸ごとスキップ**する
+  （commit は既に既定ブランチ上にあり、per-task branch/worktree は存在しない）。gate 判定だけ行う。以下は per-task worktree モードのみ:
 - 各 verified タスクの worktree を **自分の turn 内で** 閉じる:
   `condukt worktree merge --branch condukt/<id>` → `condukt worktree remove --path "$WP" --branch condukt/<id>`。
   最後に `condukt worktree cleanup` で orphan が無いことを確認。

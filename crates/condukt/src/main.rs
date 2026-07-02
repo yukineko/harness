@@ -344,6 +344,12 @@ enum StateAction {
     /// autonomous, 1 when not — so the /condukt skill can branch on the exit code
     /// to skip human gates (e.g. the Phase 3 agreement) only when autonomous.
     AutonomyCheck,
+    /// Report whether condukt is in single-worktree mode (config.toml
+    /// `single_worktree` + `CONDUKT_SINGLE_WORKTREE` env). Prints
+    /// `{"single_worktree":<bool>}` and exits 0 when single-worktree, 1 when not
+    /// — so the /condukt skill branches on the exit code to run all tasks in the
+    /// main tree (selective staging, no per-task worktree/merge) only when on.
+    WorktreeModeCheck,
     /// Resolve the verifier model so it never equals the worker model (shared
     /// blind-spot guard). Prints the chosen model on stdout. A distinct
     /// --suggested is honoured; otherwise a distinct tier is picked.
@@ -1409,6 +1415,13 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             let autonomous = cfg.autonomous;
             println!("{{\"autonomous\":{autonomous}}}");
             if !autonomous {
+                std::process::exit(1);
+            }
+        }
+        StateAction::WorktreeModeCheck => {
+            let single = cfg.single_worktree;
+            println!("{{\"single_worktree\":{single}}}");
+            if !single {
                 std::process::exit(1);
             }
         }
