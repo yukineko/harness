@@ -23,6 +23,21 @@ tools: Read, Grep, Glob, Bash, WebFetch
 - `done_criteria` が外部 API・ライブラリの仕様に依存している場合、`WebFetch` で公式ドキュメント・
   仕様書を参照して実装が仕様に準拠しているか照合してよい。公式ドキュメントと実装の不一致は
   `pass=false` の根拠になる。
+- **`done_criteria` が実行時挙動 (ランタイム) を参照する場合 — 例「サーバが起動し `GET /health` が
+  200 を返す」「実行時に panic/例外を出さない」等 — テスト/ビルドが通っただけで pass にしない。
+  ビルド済みアプリ/バイナリを決定論エンジンで実起動して runtime シグナルを検証する**:
+  ```bash
+  # サーバ (exit しない対象): /health が 200 になるまで起動タイムアウトまでポーリングし teardown。
+  condukt verify launch --cmd '<起動コマンド>' --health-url http://127.0.0.1:<port>/health --startup-timeout <secs>
+  # 短命な対象 (実行して exit する): stdout/stderr/exit code/panic を捕捉。
+  condukt verify launch --cmd '<起動コマンド>' --timeout <secs>
+  ```
+  出力は決定論 verdict JSON (`{"kind":"runtime","passed":<bool>, (失敗時) "note", "runtime_digest":{exit_code,panics,stderr_tail,stdout_tail}}`)。
+  `--cmd` は blastguard で検証され危険コマンドは spawn されない。対象不在/起動不能/timeout/health 非200 は
+  fail-soft (常に exit 0・verdict は `passed:false`)。この verdict は **`done_criteria` を満たすかの証拠**として使い、
+  `passed:false` (health が来ない・runtime panic・非0 exit 等) は実行時挙動要件の `pass=false` 根拠になる。
+  なお runtime 判定はあくまで証拠であり、他の done_criteria 照合を代替しない (機械テスト緑 + runtime pass の
+  両方が要る criteria なら両方確認する)。
 - 取りこぼし・インターフェース不整合・テストの欠落・スコープ逸脱 (許可外ファイルの変更) を疑う。
 - 満たさない、または確認できない場合は **pass=false**。迷ったら fail 側に倒す (誤 pass は事故、
   誤 fail は再実行で済む)。
