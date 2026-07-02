@@ -13,6 +13,11 @@ pub struct Config {
     /// Max times to prompt /backlog before giving up (Phase::Done).
     /// Prevents infinite loops when the skill or command fails.
     pub max_backlog_prompts: u32,
+    /// When true (default), a `/compact` performed while THIS session holds the
+    /// backlog lock drops a marker so the next UserPromptSubmit re-injects a
+    /// "resume /flow" instruction (PreCompact/PostCompact can't inject directly).
+    /// Opt out by setting `resume_flow_on_compact = false`.
+    pub resume_flow_on_compact: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -22,6 +27,7 @@ struct FileConfig {
     min_tool_events: Option<u64>,
     state_dir: Option<String>,
     max_backlog_prompts: Option<u32>,
+    resume_flow_on_compact: Option<bool>,
 }
 
 impl Config {
@@ -33,6 +39,7 @@ impl Config {
             min_tool_events: 3,
             state_dir: base.join("state"),
             max_backlog_prompts: 2,
+            resume_flow_on_compact: true,
         };
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
             if let Ok(fc) = toml::from_str::<FileConfig>(&txt) {
@@ -50,6 +57,9 @@ impl Config {
                 }
                 if let Some(v) = fc.max_backlog_prompts {
                     cfg.max_backlog_prompts = v;
+                }
+                if let Some(v) = fc.resume_flow_on_compact {
+                    cfg.resume_flow_on_compact = v;
                 }
             }
         }

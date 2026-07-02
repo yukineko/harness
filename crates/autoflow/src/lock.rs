@@ -18,6 +18,9 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 struct LockInfo {
     pid: u32,
+    /// The session that acquired the lock. Absent in legacy locks → "".
+    #[serde(default)]
+    session_id: String,
 }
 
 /// True if another live process currently holds the backlog run lock. A stale
@@ -31,6 +34,30 @@ pub fn backlog_driver_active() -> bool {
         return false; // unparseable → don't wedge autoflow on garbage
     };
     pid_alive(info.pid)
+}
+
+/// True if the backlog run lock is held by *this* session — i.e. a `/flow` (or
+/// `/backlog`) driver is running the queue from within this very Claude session.
+/// This is the mirror of [`backlog_driver_active`] (which asks "is *another*
+/// process driving?"): here we ask "am *I* the driver?", by matching the lock's
+/// `session_id` against the current session.
+///
+/// Used by the PreCompact hook to decide whether to drop a resume-flow marker —
+/// we only want to auto-resume `/flow` after a `/compact` when the flow loop was
+/// actually running in this session. An empty `session_id`, a missing/garbage
+/// lock file, or a mismatched owner all read as `false` (never resume blindly).
+pub fn this_session_holds_lock(session_id: &str) -> bool {
+    if session_id.is_empty() {
+        return false;
+    }
+    let path = base_dir("backlog").join("run.lock");
+    let Ok(txt) = std::fs::read_to_string(&path) else {
+        return false; // no lock file → this session holds nothing
+    };
+    let Ok(info) = serde_json::from_str::<LockInfo>(&txt) else {
+        return false; // unparseable → don't resume on garbage
+    };
+    !info.session_id.is_empty() && info.session_id == session_id
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -54,17 +81,12 @@ fn pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
 
-    // Both tests mutate the process-global HOME env var; cargo runs tests in a
-    // binary concurrently, so serialize the HOME-mutating ones behind a mutex
-    // (recovering from poison if one panics) to avoid a flaky cross-test race.
-    fn home_guard() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
+    // These tests mutate the process-global HOME env var; cargo runs tests in a
+    // binary concurrently, so they serialize behind the crate-wide
+    // `test_home_guard` mutex (shared with main.rs's hook tests, which also read
+    // `$HOME/.backlog/run.lock`) to avoid a flaky cross-test race.
 
     // `_dir` is a `tempfile::TempDir`: a unique, collision-free temp dir that
     // removes itself on drop (no pid-based path, no manual cleanup). `_guard`
@@ -78,7 +100,7 @@ mod tests {
     }
     impl TmpHome {
         fn new() -> Self {
-            let guard = home_guard();
+            let guard = crate::test_home_guard();
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().to_path_buf();
             std::fs::create_dir_all(path.join(".backlog")).unwrap();
@@ -125,6 +147,48 @@ mod tests {
         // Garbage parses to inactive.
         std::fs::write(h.lock_path(), b"not json").unwrap();
         assert!(!backlog_driver_active(), "unparseable → inactive");
+        drop(h);
+    }
+
+    #[test]
+    fn this_session_holds_lock_matches_owner_only() {
+        let h = TmpHome::new();
+        // No lock file yet → this session holds nothing.
+        assert!(!this_session_holds_lock("sess-a"), "no lock → false");
+
+        // Lock owned by this very session id → true.
+        std::fs::write(
+            h.lock_path(),
+            format!(
+                r#"{{"pid":{},"session_id":"sess-a","project":"/p","acquired_at":0}}"#,
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        assert!(
+            this_session_holds_lock("sess-a"),
+            "own session → holds lock"
+        );
+
+        // Lock owned by a DIFFERENT session id → false.
+        assert!(
+            !this_session_holds_lock("sess-b"),
+            "other session's lock → false"
+        );
+
+        // An empty session id never matches (even against an empty owner).
+        assert!(!this_session_holds_lock(""), "empty session id → false");
+
+        // A lock with no session_id field (legacy) matches nobody.
+        std::fs::write(h.lock_path(), r#"{"pid":123}"#).unwrap();
+        assert!(
+            !this_session_holds_lock("sess-a"),
+            "legacy lock (no session_id) → false"
+        );
+
+        // Garbage lock → false (never resume on garbage).
+        std::fs::write(h.lock_path(), b"not json").unwrap();
+        assert!(!this_session_holds_lock("sess-a"), "unparseable → false");
         drop(h);
     }
 }
