@@ -15,6 +15,7 @@ mod lock;
 mod model;
 mod oracle;
 mod pr;
+mod replan;
 mod schedule;
 mod state;
 mod status;
