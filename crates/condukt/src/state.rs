@@ -249,6 +249,97 @@ pub fn load_decomposition(cfg: &Config, cwd: &Path, run_id: &str) -> Result<Stri
         .with_context(|| format!("no decomposition for run '{run_id}' at {}", path.display()))
 }
 
+// ── Replan decision log ─────────────────────────────────────────────────────
+
+/// One recorded replan decision, appended as a JSONL record every time
+/// `condukt replan handoff --run <RID>` computes a directive. Purely an
+/// observability trail — it never feeds back into the decision itself.
+/// `directive` is kept as a plain snake_case `String` (not the `Directive`
+/// enum) so loading a log with future/unknown directive values never fails
+/// to parse (fail-soft: `aggregate_replan_stats` just ignores unknown values).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplanLogRecord {
+    /// "escalate_model" | "replan" | "escalate_to_user".
+    pub directive: String,
+    /// The classification reason that produced this directive.
+    pub reason: String,
+    /// The canonical model tier the task was running under when replanned.
+    pub reached_tier: String,
+    /// The task's replan count at the time this decision was made.
+    pub replan_count: usize,
+    /// Unix timestamp (seconds) when this decision was recorded.
+    pub recorded_at: i64,
+}
+
+fn replan_log_path(cfg: &Config, cwd: &Path, run_id: &str) -> PathBuf {
+    project_dir(cfg, cwd).join(format!("{run_id}.replan-log.jsonl"))
+}
+
+/// Append one replan decision record to the run's JSONL log. Creates the
+/// project dir and file as needed; never truncates existing history.
+pub fn record_replan_decision(
+    cfg: &Config,
+    cwd: &Path,
+    run_id: &str,
+    record: &ReplanLogRecord,
+) -> Result<()> {
+    use std::io::Write;
+    let path = replan_log_path(cfg, cwd, run_id);
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("replan log path {} has no parent", path.display()))?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating state dir {}", dir.display()))?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening replan log {}", path.display()))?;
+    let line = serde_json::to_string(record).context("serializing replan log record")?;
+    writeln!(f, "{line}").with_context(|| format!("writing to {}", path.display()))?;
+    Ok(())
+}
+
+/// Load all replan decision records for a run. Missing file → empty vec.
+/// Fail-soft: malformed lines are skipped rather than erroring or panicking,
+/// mirroring `open_runs`/`all_runs`'s tolerance of unparseable state files.
+pub fn load_replan_records(cfg: &Config, cwd: &Path, run_id: &str) -> Vec<ReplanLogRecord> {
+    let path = replan_log_path(cfg, cwd, run_id);
+    let txt = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    txt.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<ReplanLogRecord>(l).ok())
+        .collect()
+}
+
+/// Aggregate counts of replan decisions by directive category. Used by
+/// `condukt replan stats`.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct ReplanStats {
+    pub replan: usize,
+    pub escalate_model: usize,
+    pub escalate_to_user: usize,
+}
+
+/// Pure function: classify each record's `directive` string into the three
+/// known categories and count them. Unknown/garbage directive values are
+/// ignored (never panics, never bumps an "other" bucket that doesn't exist).
+pub fn aggregate_replan_stats(records: &[ReplanLogRecord]) -> ReplanStats {
+    let mut stats = ReplanStats::default();
+    for r in records {
+        match r.directive.as_str() {
+            "replan" => stats.replan += 1,
+            "escalate_model" => stats.escalate_model += 1,
+            "escalate_to_user" => stats.escalate_to_user += 1,
+            _ => {}
+        }
+    }
+    stats
+}
+
 // ── Reconcile ─────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -2137,6 +2228,115 @@ mod tests {
             !reasons.iter().any(|r| r.contains("legacy")),
             "task with None verdict must not be flagged: {reasons:?}"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ── Replan decision log ──────────────────────────────────────────────
+
+    /// `aggregate_replan_stats` must classify each of the three directive
+    /// categories into a distinct, correctly-counted bucket.
+    #[test]
+    fn aggregate_replan_stats_distinguishes_categories() {
+        let records = vec![
+            ReplanLogRecord {
+                directive: "replan".into(),
+                reason: "r1".into(),
+                reached_tier: "sonnet".into(),
+                replan_count: 1,
+                recorded_at: 1,
+            },
+            ReplanLogRecord {
+                directive: "escalate_model".into(),
+                reason: "r2".into(),
+                reached_tier: "sonnet".into(),
+                replan_count: 0,
+                recorded_at: 2,
+            },
+            ReplanLogRecord {
+                directive: "escalate_model".into(),
+                reason: "r3".into(),
+                reached_tier: "opus".into(),
+                replan_count: 0,
+                recorded_at: 3,
+            },
+            ReplanLogRecord {
+                directive: "escalate_to_user".into(),
+                reason: "r4".into(),
+                reached_tier: "opus".into(),
+                replan_count: 3,
+                recorded_at: 4,
+            },
+        ];
+        let stats = aggregate_replan_stats(&records);
+        assert_eq!(stats.replan, 1);
+        assert_eq!(stats.escalate_model, 2);
+        assert_eq!(stats.escalate_to_user, 1);
+    }
+
+    /// Unknown directive strings must be ignored rather than panicking or
+    /// polluting a known bucket.
+    #[test]
+    fn aggregate_replan_stats_ignores_unknown_directive() {
+        let records = vec![ReplanLogRecord {
+            directive: "bogus".into(),
+            reason: "r".into(),
+            reached_tier: "sonnet".into(),
+            replan_count: 0,
+            recorded_at: 1,
+        }];
+        let stats = aggregate_replan_stats(&records);
+        assert_eq!(stats, ReplanStats::default());
+    }
+
+    /// record_replan_decision → load_replan_records → aggregate_replan_stats
+    /// round-trips through the filesystem: multiple appended records must all
+    /// survive and aggregate to the expected counts.
+    #[test]
+    fn replan_log_record_and_load_roundtrip() {
+        let tmp = make_tmp_dir("replan-log-rt");
+        let cfg = make_test_cfg(&tmp);
+        let run_id = "run-replan-log";
+
+        let recs = [
+            ("replan", "reason a"),
+            ("escalate_model", "reason b"),
+            ("escalate_model", "reason c"),
+            ("escalate_to_user", "reason d"),
+        ];
+        for (directive, reason) in recs {
+            record_replan_decision(
+                &cfg,
+                &tmp,
+                run_id,
+                &ReplanLogRecord {
+                    directive: directive.into(),
+                    reason: reason.into(),
+                    reached_tier: "sonnet".into(),
+                    replan_count: 0,
+                    recorded_at: now_secs(),
+                },
+            )
+            .unwrap();
+        }
+
+        let loaded = load_replan_records(&cfg, &tmp, run_id);
+        assert_eq!(loaded.len(), 4, "all appended records must be loaded");
+
+        let stats = aggregate_replan_stats(&loaded);
+        assert_eq!(stats.replan, 1);
+        assert_eq!(stats.escalate_model, 2);
+        assert_eq!(stats.escalate_to_user, 1);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A run with no log file must load as an empty vec, not error/panic.
+    #[test]
+    fn load_replan_records_missing_file_returns_empty() {
+        let tmp = make_tmp_dir("replan-log-missing");
+        let cfg = make_test_cfg(&tmp);
+        let loaded = load_replan_records(&cfg, &tmp, "no-such-run");
+        assert!(loaded.is_empty());
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

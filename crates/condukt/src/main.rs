@@ -451,6 +451,21 @@ enum ReplanAction {
     Handoff {
         #[arg(long)]
         file: Option<PathBuf>,
+        /// When set, append this decision as a JSONL record to the run's
+        /// replan decision log (`<run>.replan-log.jsonl`) for later
+        /// aggregation via `condukt replan stats --run <RID>`. Omitted =
+        /// no record is written (backward-compatible: stdout output is
+        /// unchanged either way).
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Aggregate the replan decision log for a run into per-directive counts
+    /// (`{replan, escalate_model, escalate_to_user}`) and print them as JSON.
+    /// Reads records written by `replan handoff --run <RID>`; an empty/missing
+    /// log yields all-zero counts (never errors).
+    Stats {
+        #[arg(long)]
+        run: String,
     },
 }
 
@@ -598,7 +613,7 @@ fn run_user(cmd: Command) -> Result<()> {
             }
         },
         Command::Replan { action } => match action {
-            ReplanAction::Handoff { file } => {
+            ReplanAction::Handoff { file, run } => {
                 let raw = match file {
                     Some(p) => std::fs::read_to_string(&p)
                         .with_context(|| format!("reading {}", p.display()))?,
@@ -618,7 +633,35 @@ fn run_user(cmd: Command) -> Result<()> {
                     &input.task_summary,
                     input.replan_count,
                 );
+                // Structured observability record — a side effect on top of the
+                // (unchanged) stdout directive JSON below. Only written when the
+                // caller opts in via `--run` (backward-compatible: omitted =
+                // no record, matching the pre-existing stateless behavior).
+                if let Some(rid) = &run {
+                    let directive_str = match directive.directive {
+                        replan::Directive::EscalateModel => "escalate_model",
+                        replan::Directive::Replan => "replan",
+                        replan::Directive::EscalateToUser => "escalate_to_user",
+                    };
+                    let record = state::ReplanLogRecord {
+                        directive: directive_str.to_string(),
+                        reason: directive.classification.reason.clone(),
+                        reached_tier: canonical_tier_for_log(&input.model_tier),
+                        replan_count: directive.replan_count,
+                        recorded_at: state::now_secs(),
+                    };
+                    // Fail-soft: a logging failure must never break the reflux
+                    // cascade's stdout contract.
+                    if let Err(e) = state::record_replan_decision(&cfg, &cwd, rid, &record) {
+                        eprintln!("condukt: warning: failed to record replan decision: {e}");
+                    }
+                }
                 println!("{}", serde_json::to_string_pretty(&directive)?);
+            }
+            ReplanAction::Stats { run } => {
+                let records = state::load_replan_records(&cfg, &cwd, &run);
+                let stats = state::aggregate_replan_stats(&records);
+                println!("{}", serde_json::to_string_pretty(&stats)?);
             }
         },
         Command::Consensus { action } => run_consensus(&cfg, action)?,
@@ -749,6 +792,22 @@ struct ReplanHandoffInput {
     done_criteria: String,
     task_summary: String,
     replan_count: usize,
+}
+
+/// Collapse a model tier string to its canonical keyword for the replan
+/// decision log (mirrors `replan::canonical_tier`'s collapsing logic without
+/// reaching into `replan.rs`'s private helper — this is purely a display/log
+/// normalization, not part of the replan decision itself). Never panics on
+/// empty/garbage input.
+fn canonical_tier_for_log(model_tier: &str) -> String {
+    const TIERS: [&str; 3] = ["haiku", "sonnet", "opus"];
+    let m = model_tier.trim().to_lowercase();
+    for t in TIERS {
+        if m.contains(t) {
+            return t.to_string();
+        }
+    }
+    m
 }
 
 fn run_consensus(cfg: &Config, action: ConsensusAction) -> Result<()> {
