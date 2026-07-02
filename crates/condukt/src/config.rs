@@ -49,6 +49,17 @@ pub struct Config {
     pub consensus_samples: usize,
     /// Agreement threshold below which a task escalates to opus. Defaults to 0.5.
     pub consensus_threshold: f64,
+    /// Single-worktree execution mode. When true, the /condukt skill runs ALL
+    /// tasks in the main repo working tree instead of creating one isolated
+    /// worktree+branch per parallel task. File-conflicting tasks still serialize
+    /// (schedule.rs already forces that); non-conflicting tasks run concurrently
+    /// in the one tree, each staging ONLY its own `touched_files` (`git add
+    /// <files>`, not `-A`) so peers' in-flight edits are never swept into a
+    /// commit — and the per-task merge/remove dance (Phase 7) is skipped entirely.
+    /// OFF by default (every existing run keeps per-task worktree isolation —
+    /// fully backward compatible). Read by `condukt state worktree-mode-check`.
+    /// Overridable via `CONDUKT_SINGLE_WORKTREE`.
+    pub single_worktree: bool,
 }
 
 /// Which test-fix cycle sequence to use for a module type.
@@ -114,6 +125,7 @@ struct FileConfig {
     #[serde(rename = "loop")]
     loop_cfg: Option<FileLoopConfig>,
     consensus: Option<FileConsensusConfig>,
+    single_worktree: Option<bool>,
 }
 
 /// Parse the `CONDUKT_AUTONOMOUS` env override. Accepts common truthy/falsy
@@ -151,6 +163,7 @@ impl Config {
             consensus_enabled: false,
             consensus_samples: crate::consensus::DEFAULT_SAMPLES,
             consensus_threshold: crate::consensus::DEFAULT_THRESHOLD,
+            single_worktree: false,
         };
 
         if let Ok(txt) = std::fs::read_to_string(base.join("config.toml")) {
@@ -201,6 +214,9 @@ impl Config {
                         cfg.consensus_threshold = v;
                     }
                 }
+                if let Some(v) = fc.single_worktree {
+                    cfg.single_worktree = v;
+                }
             }
         }
 
@@ -230,6 +246,13 @@ impl Config {
         if let Ok(v) = std::env::var("CONDUKT_CONSENSUS") {
             if let Some(b) = parse_autonomous_env(&v) {
                 cfg.consensus_enabled = b;
+            }
+        }
+        // Reuses the generic truthy/falsy parser to force single-worktree mode
+        // from the environment, overriding config.toml.
+        if let Ok(v) = std::env::var("CONDUKT_SINGLE_WORKTREE") {
+            if let Some(b) = parse_autonomous_env(&v) {
+                cfg.single_worktree = b;
             }
         }
         cfg
@@ -301,6 +324,18 @@ max_iters = 5
     fn autonomous_defaults_none_when_absent() {
         let fc: FileConfig = toml::from_str("").expect("should parse");
         assert_eq!(fc.autonomous, None);
+    }
+
+    #[test]
+    fn single_worktree_parses_from_toml() {
+        let fc: FileConfig = toml::from_str("single_worktree = true").expect("should parse");
+        assert_eq!(fc.single_worktree, Some(true));
+    }
+
+    #[test]
+    fn single_worktree_defaults_none_when_absent() {
+        let fc: FileConfig = toml::from_str("").expect("should parse");
+        assert_eq!(fc.single_worktree, None);
     }
 
     #[test]

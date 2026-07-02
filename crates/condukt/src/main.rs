@@ -14,9 +14,12 @@ mod editgate;
 mod gatelog;
 mod hooks;
 mod install;
+mod lock;
 mod model;
 mod oracle;
 mod policy;
+mod pr;
+mod replan;
 mod schedule;
 mod state;
 mod status;
@@ -81,6 +84,19 @@ enum Command {
         #[command(subcommand)]
         action: PolicyAction,
     },
+    /// Deterministic verifier-stage helpers (formatting only; the fix DECISION
+    /// stays with the LLM worker).
+    Verify {
+        #[command(subcommand)]
+        action: VerifyAction,
+    },
+    /// Deterministic reflux-cascade helpers: classify a failing task's reflux
+    /// facts into "escalate the model" vs "replan" (formatting/classification
+    /// only; the fix/re-decomposition DECISION stays with the LLM).
+    Replan {
+        #[command(subcommand)]
+        action: ReplanAction,
+    },
     /// Multi-sample self-consistency: plan an opt-in fan-out, or tally N verifier
     /// verdicts for one task into a majority winner + escalate-to-opus decision.
     Consensus {
@@ -98,6 +114,15 @@ enum Command {
     Uninstall,
     /// Print ~/.condukt/knowledge.md to stdout (empty output if absent).
     Knowledge,
+    /// Terminal external-loop step: open a PR via the gh CLI. Push/PR stays
+    /// BEHIND the GATED human approval — the actual `gh pr create` runs ONLY with
+    /// `--execute` (supplied by the /condukt skill after approval). Uses gh's own
+    /// auth (no API key). Fail-soft: gh absent/unauthenticated degrades to
+    /// local-commit-only and exits 0 (never breaks the turn).
+    Pr {
+        #[command(subcommand)]
+        action: PrAction,
+    },
     /// Show open runs and their tasks as an ASCII tree.
     Status {
         /// Include all runs, not just open ones.
@@ -358,6 +383,12 @@ enum StateAction {
         #[arg(long)]
         to: Option<u64>,
     },
+    /// Report whether condukt is in single-worktree mode (config.toml
+    /// `single_worktree` + `CONDUKT_SINGLE_WORKTREE` env). Prints
+    /// `{"single_worktree":<bool>}` and exits 0 when single-worktree, 1 when not
+    /// — so the /condukt skill branches on the exit code to run all tasks in the
+    /// main tree (selective staging, no per-task worktree/merge) only when on.
+    WorktreeModeCheck,
     /// Resolve the verifier model so it never equals the worker model (shared
     /// blind-spot guard). Prints the chosen model on stdout. A distinct
     /// --suggested is honoured; otherwise a distinct tier is picked.
@@ -427,6 +458,144 @@ enum PolicyAction {
         /// Directory holding the decision log (default: the state dir).
         #[arg(long)]
         journal_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum VerifyAction {
+    /// Distill raw test/verifier output (stdin or --file) into a structured
+    /// FailureDigest (failing tests, assertion diffs, output tail) as pretty
+    /// JSON on stdout, exit 0. Deterministic Rust formatting so the /condukt
+    /// skill can fold the *why* — not just pass/fail — into the retry reflux
+    /// prompt; the fix DECISION stays with the LLM worker.
+    Digest {
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Distill a target's *runtime* output into a structured RuntimeDigest
+    /// (exit code, panic/exception lines, stderr/stdout tails) as pretty JSON on
+    /// stdout, exit 0 — the phase-3 counterpart of `verify digest`. `--stdout`
+    /// / `--stderr` read from files; when `--stderr` is omitted stderr is read
+    /// from stdin (the primary input, mirroring `verify digest`). `--exit-code`
+    /// is threaded through verbatim (absent → null). With `--reflux` it instead
+    /// prints the verifier→worker reflux verdict (pass/fail + an embedded
+    /// runtime_digest on a runtime failure). Fail-soft: empty input yields an
+    /// empty digest and exits 0; the fix DECISION stays with the LLM worker.
+    Runtime {
+        /// File holding the target's stdout (empty stdout when omitted).
+        #[arg(long)]
+        stdout: Option<PathBuf>,
+        /// File holding the target's stderr; when omitted, stderr is read from
+        /// stdin (the primary input, symmetric to `verify digest`).
+        #[arg(long)]
+        stderr: Option<PathBuf>,
+        /// The target's process exit code (null when omitted, e.g. signal kill).
+        #[arg(long)]
+        exit_code: Option<i32>,
+        /// Print the reflux verdict (pass/fail + embedded runtime_digest on
+        /// failure) instead of the bare RuntimeDigest.
+        #[arg(long)]
+        reflux: bool,
+    },
+    /// Launch a real target process inside the blastguard-validated envelope and
+    /// reflux its runtime signals (stdout/stderr/exit code) through the same
+    /// verdict path as `verify runtime --reflux`. The `--cmd` is validated with
+    /// blastguard BEFORE spawning; a flagged/destructive command is refused
+    /// fail-closed (never run). Absent/unstartable targets and timeouts fail
+    /// soft — the turn is never broken. The pass/fail + runtime_digest verdict is
+    /// printed as pretty JSON and the process ALWAYS exits 0 (fail-soft); the fix
+    /// DECISION stays with the LLM worker.
+    ///
+    /// With `--health-url`, the target is treated as a *server*: instead of
+    /// waiting for it to exit, we poll a raw HTTP/1.1 `GET <health-url>` until it
+    /// returns 200 (pass) or `--startup-timeout` elapses (fail-soft), then tear
+    /// the process down. Without `--health-url` the legacy exit-wait behavior is
+    /// unchanged.
+    Launch {
+        /// The command to launch (run via `sh -c`). Required.
+        #[arg(long)]
+        cmd: String,
+        /// Timeout in seconds before the launched process is killed (fail-soft).
+        /// Only used for the exit-wait path (no `--health-url`).
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+        /// Health endpoint to probe (e.g. `http://127.0.0.1:8080/health`). When
+        /// set, switches to the server path: poll until HTTP 200 or startup
+        /// timeout, then tear the process down.
+        #[arg(long)]
+        health_url: Option<String>,
+        /// Seconds to poll `--health-url` for a 200 before failing soft. Only
+        /// used when `--health-url` is set.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReplanAction {
+    /// Classify a failing task's reflux facts (JSON on stdin or --file:
+    /// `{"reason":...,"failed_tests":...,"diff":...,"model_tier":...,
+    /// "done_criteria":...,"task_summary":...}`, all fields optional/default
+    /// empty) into `escalate_model` vs `replan`, and — ONLY when the
+    /// resolution is `replan` — build a `ReplanHandoff` that explicitly
+    /// instructs the interpreter to produce a NEW decomposition (different
+    /// approach, different scope) rather than re-running the original
+    /// decomposition. When the resolution is `escalate_model`, no handoff is
+    /// built; only the classification is printed (the cascade's existing
+    /// tier-escalation retry path handles that case, unchanged). Prints pretty
+    /// JSON on stdout, exit 0. Deterministic Rust formatting so the /condukt
+    /// skill's cascade can fold "what next?" into the reflux without an extra
+    /// LLM turn; the re-decomposition itself stays the interpreter's job.
+    Handoff {
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// When set, append this decision as a JSONL record to the run's
+        /// replan decision log (`<run>.replan-log.jsonl`) for later
+        /// aggregation via `condukt replan stats --run <RID>`. Omitted =
+        /// no record is written (backward-compatible: stdout output is
+        /// unchanged either way).
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Aggregate the replan decision log for a run into per-directive counts
+    /// (`{replan, escalate_model, escalate_to_user}`) and print them as JSON.
+    /// Reads records written by `replan handoff --run <RID>`; an empty/missing
+    /// log yields all-zero counts (never errors).
+    Stats {
+        #[arg(long)]
+        run: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrAction {
+    /// Prepare (dry-run) or, with --execute, open a PR via `gh pr create`.
+    ///
+    /// Without --execute this prints a Prepared JSON showing the exact argv that
+    /// WOULD run and exits 0 — the GATED dry-run. The /condukt skill passes
+    /// --execute ONLY after the human GATED approval, so unattended/autonomous
+    /// runs never open a PR on their own. When gh is absent or unauthenticated
+    /// the outcome degrades to DegradedLocalOnly and still exits 0 (fail-soft).
+    Create {
+        #[arg(long)]
+        title: String,
+        /// PR body text. Mutually complementary with --body-file; if both are
+        /// given, --body wins. Defaults to empty.
+        #[arg(long)]
+        body: Option<String>,
+        /// Read the PR body from a file (used when --body is absent).
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        /// Source branch. Defaults to the current branch when omitted.
+        #[arg(long)]
+        head: Option<String>,
+        /// Target branch. Defaults to the configured default branch.
+        #[arg(long)]
+        base: Option<String>,
+        /// GATED gate: actually run `gh pr create`. Only supplied after the
+        /// human GATED approval. Without it, the command is a dry-run.
+        #[arg(long)]
+        execute: bool,
     },
 }
 
@@ -546,6 +715,113 @@ fn run_user(cmd: Command) -> Result<()> {
         }
         Command::Worktree { action } => run_worktree(&cfg, &cwd, action)?,
         Command::State { action } => run_state(&cfg, &cwd, action)?,
+        Command::Verify { action } => match action {
+            VerifyAction::Digest { file } => {
+                let raw = match file {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => read_stdin(),
+                };
+                let digest = verify::distill_failure(&raw);
+                println!("{}", serde_json::to_string_pretty(&digest)?);
+            }
+            VerifyAction::Runtime {
+                stdout,
+                stderr,
+                exit_code,
+                reflux,
+            } => {
+                // stdout: read the file when given, else empty. stderr: read the
+                // file when given, else read stdin (the primary input, so empty
+                // stdin fails soft to an empty digest and exit 0).
+                let stdout_raw = match stdout {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => String::new(),
+                };
+                let stderr_raw = match stderr {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => read_stdin(),
+                };
+                if reflux {
+                    let verdict =
+                        verify::runtime_reflux_verdict(&stdout_raw, &stderr_raw, exit_code);
+                    println!("{}", serde_json::to_string_pretty(&verdict)?);
+                } else {
+                    let digest = verify::distill_runtime(&stdout_raw, &stderr_raw, exit_code);
+                    println!("{}", serde_json::to_string_pretty(&digest)?);
+                }
+            }
+            VerifyAction::Launch {
+                cmd,
+                timeout,
+                health_url,
+                startup_timeout,
+            } => {
+                // Fail-soft by contract: both launch paths never panic and always
+                // return a verdict, so we always print it and exit 0. With a
+                // health URL we probe a server for a 200; without one we keep the
+                // legacy exit-wait behavior.
+                let verdict = match health_url {
+                    Some(url) => verify::launch_server_and_probe(&cmd, &url, startup_timeout),
+                    None => verify::launch_and_reflux(&cmd, timeout),
+                };
+                println!("{}", serde_json::to_string_pretty(&verdict)?);
+            }
+        },
+        Command::Replan { action } => match action {
+            ReplanAction::Handoff { file, run } => {
+                let raw = match file {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => read_stdin(),
+                };
+                let input: ReplanHandoffInput = if raw.trim().is_empty() {
+                    ReplanHandoffInput::default()
+                } else {
+                    serde_json::from_str(&raw).context("parsing replan handoff JSON")?
+                };
+                let directive = replan::decide_replan(
+                    &input.reason,
+                    &input.failed_tests,
+                    &input.diff,
+                    &input.model_tier,
+                    &input.done_criteria,
+                    &input.task_summary,
+                    input.replan_count,
+                );
+                // Structured observability record — a side effect on top of the
+                // (unchanged) stdout directive JSON below. Only written when the
+                // caller opts in via `--run` (backward-compatible: omitted =
+                // no record, matching the pre-existing stateless behavior).
+                if let Some(rid) = &run {
+                    let directive_str = match directive.directive {
+                        replan::Directive::EscalateModel => "escalate_model",
+                        replan::Directive::Replan => "replan",
+                        replan::Directive::EscalateToUser => "escalate_to_user",
+                    };
+                    let record = state::ReplanLogRecord {
+                        directive: directive_str.to_string(),
+                        reason: directive.classification.reason.clone(),
+                        reached_tier: canonical_tier_for_log(&input.model_tier),
+                        replan_count: directive.replan_count,
+                        recorded_at: state::now_secs(),
+                    };
+                    // Fail-soft: a logging failure must never break the reflux
+                    // cascade's stdout contract.
+                    if let Err(e) = state::record_replan_decision(&cfg, &cwd, rid, &record) {
+                        eprintln!("condukt: warning: failed to record replan decision: {e}");
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&directive)?);
+            }
+            ReplanAction::Stats { run } => {
+                let records = state::load_replan_records(&cfg, &cwd, &run);
+                let stats = state::aggregate_replan_stats(&records);
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+            }
+        },
         Command::Consensus { action } => run_consensus(&cfg, action)?,
         Command::Init => init(&cfg)?,
         Command::Install { dry_run } => {
@@ -562,6 +838,7 @@ fn run_user(cmd: Command) -> Result<()> {
                 print!("{}", std::fs::read_to_string(&path)?);
             }
         }
+        Command::Pr { action } => run_pr(&cfg, action)?,
         Command::Loop {
             module,
             iteration,
@@ -763,6 +1040,41 @@ enum ConsensusInput {
     Bare(Vec<consensus::Verdict>),
 }
 
+/// JSON input for `replan handoff`: the reflux facts plus the original
+/// task's done_criteria/summary. All fields optional, defaulting to empty
+/// strings (mirrors `failure_context`'s shape used elsewhere in the /condukt
+/// skill's cascade; `model_tier`/`done_criteria`/`task_summary` are the extra
+/// fields this subcommand needs beyond the bare `failure_context`).
+/// `replan_count` tracks how many times this task has been replanned (default 0,
+/// backward-compatible).
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct ReplanHandoffInput {
+    reason: String,
+    failed_tests: String,
+    diff: String,
+    model_tier: String,
+    done_criteria: String,
+    task_summary: String,
+    replan_count: usize,
+}
+
+/// Collapse a model tier string to its canonical keyword for the replan
+/// decision log (mirrors `replan::canonical_tier`'s collapsing logic without
+/// reaching into `replan.rs`'s private helper — this is purely a display/log
+/// normalization, not part of the replan decision itself). Never panics on
+/// empty/garbage input.
+fn canonical_tier_for_log(model_tier: &str) -> String {
+    const TIERS: [&str; 3] = ["haiku", "sonnet", "opus"];
+    let m = model_tier.trim().to_lowercase();
+    for t in TIERS {
+        if m.contains(t) {
+            return t.to_string();
+        }
+    }
+    m
+}
+
 fn run_consensus(cfg: &Config, action: ConsensusAction) -> Result<()> {
     match action {
         ConsensusAction::Plan { risk } => {
@@ -812,6 +1124,133 @@ fn run_consensus(cfg: &Config, action: ConsensusAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Spawn `gh <argv>` and map it to the injected-runner shape `detect_gh` expects:
+/// `Some((success, combined_output))`, or `None` when the binary can't be spawned
+/// (gh absent). Never panics — a spawn failure is the fail-soft "absent" signal.
+fn gh_probe(argv: &[&str]) -> Option<(bool, String)> {
+    let out = std::process::Command::new("gh").args(argv).output().ok()?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some((out.status.success(), combined))
+}
+
+/// Extract the PR URL from `gh pr create` stdout: gh prints the URL (typically
+/// the last non-empty line). Falls back to the trimmed stdout when no
+/// `http(s)://` line is found.
+fn parse_pr_url(stdout: &str) -> String {
+    for line in stdout.lines().rev() {
+        let t = line.trim();
+        if t.starts_with("http://") || t.starts_with("https://") {
+            return t.to_string();
+        }
+    }
+    stdout.trim().to_string()
+}
+
+/// Keep the last `n` non-empty trailing chars of gh stderr for a degrade reason,
+/// so the DegradedLocalOnly reason is informative but bounded.
+fn stderr_tail(s: &str, max: usize) -> String {
+    let t = s.trim();
+    if t.len() <= max {
+        return t.to_string();
+    }
+    let start = t.len().saturating_sub(max);
+    // Respect char boundaries (t is UTF-8): find the next boundary at/after start.
+    let start = (start..=t.len())
+        .find(|i| t.is_char_boundary(*i))
+        .unwrap_or(t.len());
+    t[start..].to_string()
+}
+
+fn run_pr(cfg: &Config, action: PrAction) -> Result<()> {
+    match action {
+        PrAction::Create {
+            title,
+            body,
+            body_file,
+            head,
+            base,
+            execute,
+        } => {
+            // Resolve the body: --body wins; else --body-file; else empty.
+            let body = match (body, body_file) {
+                (Some(b), _) => b,
+                (None, Some(p)) => std::fs::read_to_string(&p)
+                    .with_context(|| format!("reading body file {}", p.display()))?,
+                (None, None) => String::new(),
+            };
+            // Resolve head: --head, else the current git branch, else empty
+            // (gh infers the current branch when --head is empty anyway).
+            let head = head.unwrap_or_else(current_branch);
+            let base = base.unwrap_or_else(|| cfg.default_branch.clone());
+
+            let plan = pr::PrPlan {
+                title,
+                body,
+                head,
+                base,
+            };
+
+            // Detect gh via real spawns, mapped through the pure detector.
+            let status = pr::detect_gh(gh_probe);
+            let outcome = pr::decide_pr(&status, &plan, execute);
+
+            // Execute path (the GATED gate): only when --execute AND gh is usable
+            // did decide_pr return Prepared for a usable gh. Run gh with the args,
+            // parse the URL into Created; degrade soft on any gh failure.
+            let final_outcome = match (&outcome, execute) {
+                (pr::PrOutcome::Prepared { args }, true) => run_gh_create(args),
+                _ => outcome,
+            };
+
+            // All paths print a JSON PrOutcome and exit 0 (never break the turn).
+            println!("{}", serde_json::to_string_pretty(&final_outcome)?);
+        }
+    }
+    Ok(())
+}
+
+/// Run `gh <args>` for the executed PR-create path. On success, parse the URL
+/// into [`pr::PrOutcome::Created`]; on any failure (spawn or non-zero exit),
+/// degrade soft to [`pr::PrOutcome::DegradedLocalOnly`] so the turn is not broken.
+fn run_gh_create(args: &[String]) -> pr::PrOutcome {
+    match std::process::Command::new("gh").args(args).output() {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            pr::PrOutcome::Created {
+                url: parse_pr_url(&stdout),
+            }
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            pr::PrOutcome::DegradedLocalOnly {
+                reason: format!(
+                    "gh pr create failed; left work as local commits: {}",
+                    stderr_tail(&stderr, 200)
+                ),
+            }
+        }
+        Err(e) => pr::PrOutcome::DegradedLocalOnly {
+            reason: format!("gh pr create could not be spawned; left work as local commits: {e}"),
+        },
+    }
+}
+
+/// Best-effort current git branch (`git rev-parse --abbrev-ref HEAD`), trimmed.
+/// Empty string on any failure — gh then infers the current branch itself.
+fn current_branch() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
@@ -878,6 +1317,11 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             model,
             cost,
         } => {
+            // Hold the per-run state lock across the entire load → oracle-gate →
+            // mutate → save cycle so a concurrent session/worktree cannot lose
+            // this update (last-writer-wins TOCTOU). Fail-soft: degrades to
+            // unlocked on contention rather than failing the update.
+            let _lock = lock::RunLock::acquire(cfg, cwd, &run);
             let mut rs = state::RunState::load(cfg, cwd, &run)?;
             let st: state::Status = status.parse()?;
 
@@ -1273,21 +1717,13 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             }
 
             // Purely mechanical criteria: the verifier may be skipped iff the
-            // command passes. A failing mechanical check fails this gate.
-            let cmd = cls
-                .mechanical_cmd
-                .expect("skip_eligible implies a mechanical command");
-            let (passed, output) = run_mechanical(&cmd, &run_dir);
-            let out = serde_json::json!({
-                "mechanical": true,
-                "behavioral": false,
-                "passed": passed,
-                "skip_verifier": passed,
-                "cmd": cmd,
-                "output": output,
-            });
+            // command passes. A failing mechanical check fails this gate. If the
+            // skip_eligible invariant is ever violated (no command), this fails
+            // soft to skip_verifier:false rather than panicking an unattended run.
+            let (out, gate_failed) =
+                verify::mechanical_skip_verdict(&cls, |cmd| run_mechanical(cmd, &run_dir));
             println!("{}", serde_json::to_string(&out)?);
-            if !passed {
+            if gate_failed {
                 std::process::exit(1);
             }
         }
@@ -1369,6 +1805,13 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
                 "rolled run '{run}' back to checkpoint {} ({depth} journal events)",
                 cp.seq
             );
+        }
+        StateAction::WorktreeModeCheck => {
+            let single = cfg.single_worktree;
+            println!("{{\"single_worktree\":{single}}}");
+            if !single {
+                std::process::exit(1);
+            }
         }
     }
     Ok(())

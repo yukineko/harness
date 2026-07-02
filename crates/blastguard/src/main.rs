@@ -7,13 +7,9 @@
 //! empty/invalid input, an unmatched tool, or any panic we stay silent and exit
 //! 0. `harness_core::hook::run_hook` enforces the panic half of that invariant.
 
-mod detect;
-mod exclude;
-mod hookio;
-mod model;
-
+use blastguard::model::Decision;
+use blastguard::{detect, hookio};
 use harness_core::hook::{self, HookInput};
-use model::Decision;
 use std::process::exit;
 
 fn main() {

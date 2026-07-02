@@ -43,3 +43,31 @@ pub fn load(state_dir: &Path, session_id: &str) -> SessionState {
 pub fn save(state_dir: &Path, session_id: &str, s: &SessionState) {
     harness_core::store::save_json(&state_path(state_dir, session_id), s);
 }
+
+/// Path of the "resume /flow after /compact" marker for a session, keyed on the
+/// (sanitised) session id under `state_dir`. Mirrors ctxrot's
+/// `<state_dir>/<safe>.distilled` idiom: PreCompact drops it, the next
+/// UserPromptSubmit consumes it. `safe_session` guarantees the id stays a single
+/// component (no `../` traversal).
+pub fn resume_marker_path(state_dir: &Path, session_id: &str) -> PathBuf {
+    state_dir.join(format!(
+        "{}.resume-flow",
+        harness_core::store::safe_session(session_id)
+    ))
+}
+
+/// Drop the resume-flow marker for this session (best-effort; a failed write just
+/// means no auto-resume next turn — never breaks the compaction).
+pub fn write_resume_marker(state_dir: &Path, session_id: &str) {
+    let _ = std::fs::create_dir_all(state_dir);
+    let _ = std::fs::write(resume_marker_path(state_dir, session_id), b"1");
+}
+
+/// Consume (delete) this session's resume-flow marker, returning `true` iff it
+/// existed. Deleting on read makes re-injection fire exactly once per `/compact`
+/// (idempotent): a non-existent marker returns `false` with no side effect.
+pub fn consume_resume_marker(state_dir: &Path, session_id: &str) -> bool {
+    // remove_file → Ok only when a file was actually removed; NotFound → Err →
+    // false. This avoids an exists()+remove TOCTOU and is the single "consume".
+    std::fs::remove_file(resume_marker_path(state_dir, session_id)).is_ok()
+}

@@ -168,20 +168,31 @@ pub fn open_runs(cfg: &Config, cwd: &Path) -> Vec<RunState> {
         .collect()
 }
 
-/// Mark a run as paused. Returns Err if the run does not exist.
-pub fn pause_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+/// Serialized load → mutate → save for a run. The per-run state lock is held
+/// across all three steps so two concurrent sessions/worktrees cannot lose an
+/// update (the load→mutate→save windows can no longer interleave; it is a
+/// compare-and-swap scoped to this one run). The lock is fail-soft: if it cannot
+/// be acquired it degrades to proceeding unlocked (logged) rather than failing
+/// the update, and never panics. `mutate` runs while the lock is held.
+pub fn with_run_locked<F>(cfg: &Config, cwd: &Path, run_id: &str, mutate: F) -> Result<()>
+where
+    F: FnOnce(&mut RunState),
+{
+    let _lock = crate::lock::RunLock::acquire(cfg, cwd, run_id);
     let mut rs = RunState::load(cfg, cwd, run_id)?;
-    rs.paused = true;
+    mutate(&mut rs);
     rs.save(cfg, cwd)?;
     Ok(())
 }
 
+/// Mark a run as paused. Returns Err if the run does not exist.
+pub fn pause_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
+    with_run_locked(cfg, cwd, run_id, |rs| rs.paused = true)
+}
+
 /// Clear the paused flag on a run. Returns Err if the run does not exist.
 pub fn resume_run(cfg: &Config, cwd: &Path, run_id: &str) -> Result<()> {
-    let mut rs = RunState::load(cfg, cwd, run_id)?;
-    rs.paused = false;
-    rs.save(cfg, cwd)?;
-    Ok(())
+    with_run_locked(cfg, cwd, run_id, |rs| rs.paused = false)
 }
 
 /// All runs (complete and incomplete) for this project, sorted by run_id.
@@ -236,6 +247,97 @@ pub fn load_decomposition(cfg: &Config, cwd: &Path, run_id: &str) -> Result<Stri
     let path = decomposition_path(cfg, cwd, run_id);
     std::fs::read_to_string(&path)
         .with_context(|| format!("no decomposition for run '{run_id}' at {}", path.display()))
+}
+
+// ── Replan decision log ─────────────────────────────────────────────────────
+
+/// One recorded replan decision, appended as a JSONL record every time
+/// `condukt replan handoff --run <RID>` computes a directive. Purely an
+/// observability trail — it never feeds back into the decision itself.
+/// `directive` is kept as a plain snake_case `String` (not the `Directive`
+/// enum) so loading a log with future/unknown directive values never fails
+/// to parse (fail-soft: `aggregate_replan_stats` just ignores unknown values).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplanLogRecord {
+    /// "escalate_model" | "replan" | "escalate_to_user".
+    pub directive: String,
+    /// The classification reason that produced this directive.
+    pub reason: String,
+    /// The canonical model tier the task was running under when replanned.
+    pub reached_tier: String,
+    /// The task's replan count at the time this decision was made.
+    pub replan_count: usize,
+    /// Unix timestamp (seconds) when this decision was recorded.
+    pub recorded_at: i64,
+}
+
+fn replan_log_path(cfg: &Config, cwd: &Path, run_id: &str) -> PathBuf {
+    project_dir(cfg, cwd).join(format!("{run_id}.replan-log.jsonl"))
+}
+
+/// Append one replan decision record to the run's JSONL log. Creates the
+/// project dir and file as needed; never truncates existing history.
+pub fn record_replan_decision(
+    cfg: &Config,
+    cwd: &Path,
+    run_id: &str,
+    record: &ReplanLogRecord,
+) -> Result<()> {
+    use std::io::Write;
+    let path = replan_log_path(cfg, cwd, run_id);
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("replan log path {} has no parent", path.display()))?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating state dir {}", dir.display()))?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening replan log {}", path.display()))?;
+    let line = serde_json::to_string(record).context("serializing replan log record")?;
+    writeln!(f, "{line}").with_context(|| format!("writing to {}", path.display()))?;
+    Ok(())
+}
+
+/// Load all replan decision records for a run. Missing file → empty vec.
+/// Fail-soft: malformed lines are skipped rather than erroring or panicking,
+/// mirroring `open_runs`/`all_runs`'s tolerance of unparseable state files.
+pub fn load_replan_records(cfg: &Config, cwd: &Path, run_id: &str) -> Vec<ReplanLogRecord> {
+    let path = replan_log_path(cfg, cwd, run_id);
+    let txt = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    txt.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<ReplanLogRecord>(l).ok())
+        .collect()
+}
+
+/// Aggregate counts of replan decisions by directive category. Used by
+/// `condukt replan stats`.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct ReplanStats {
+    pub replan: usize,
+    pub escalate_model: usize,
+    pub escalate_to_user: usize,
+}
+
+/// Pure function: classify each record's `directive` string into the three
+/// known categories and count them. Unknown/garbage directive values are
+/// ignored (never panics, never bumps an "other" bucket that doesn't exist).
+pub fn aggregate_replan_stats(records: &[ReplanLogRecord]) -> ReplanStats {
+    let mut stats = ReplanStats::default();
+    for r in records {
+        match r.directive.as_str() {
+            "replan" => stats.replan += 1,
+            "escalate_model" => stats.escalate_model += 1,
+            "escalate_to_user" => stats.escalate_to_user += 1,
+            _ => {}
+        }
+    }
+    stats
 }
 
 // ── Reconcile ─────────────────────────────────────────────────────────────
@@ -1252,6 +1354,7 @@ mod tests {
             consensus_enabled: false,
             consensus_samples: crate::consensus::DEFAULT_SAMPLES,
             consensus_threshold: crate::consensus::DEFAULT_THRESHOLD,
+            single_worktree: false,
         }
     }
 
@@ -1316,6 +1419,71 @@ mod tests {
         assert_eq!(loaded.goal, rs.goal);
         assert_eq!(loaded.tasks.len(), 1);
         assert_eq!(loaded.tasks[0].id, "t1");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// TOCTOU reproduction: two concurrent load→mutate→save cycles on the SAME
+    /// run, each mutating a DIFFERENT field. Each cycle acquires the per-run
+    /// lock, loads, then sleeps to widen the load→save window before saving.
+    ///
+    /// WITHOUT the lock both threads load the same snapshot and the later save
+    /// clobbers the earlier one (last-writer-wins) — one field's update is lost,
+    /// so the final-assert fails (RED). WITH the lock the cycles serialize: the
+    /// second thread cannot load until the first has saved and released, so both
+    /// updates survive (GREEN).
+    #[test]
+    fn concurrent_rmw_does_not_lose_updates() {
+        use std::time::Duration;
+
+        let tmp = make_tmp_dir("concurrent-rmw");
+        let cfg = make_test_cfg(&tmp);
+        let run_id = "run-race";
+
+        // Seed the run: goal and terminal_label both at their initial values.
+        RunState {
+            run_id: run_id.into(),
+            goal: "seed".into(),
+            tasks: vec![],
+            paused: false,
+            terminal_label: None,
+            recorded_at: None,
+        }
+        .save(&cfg, &tmp)
+        .unwrap();
+
+        // One RMW cycle mutating a chosen field, holding the real per-run lock
+        // across load → (widened window) → save, exactly like the production
+        // pause/resume/Set paths do.
+        let rmw = |which: char| {
+            let _lock = crate::lock::RunLock::acquire(&cfg, &tmp, run_id);
+            let mut rs = RunState::load(&cfg, &tmp, run_id).unwrap();
+            // Widen the load→save window so the race is deterministic without
+            // the lock (both threads load before either saves).
+            std::thread::sleep(Duration::from_millis(200));
+            match which {
+                'A' => rs.goal = "A".into(),
+                _ => rs.terminal_label = Some("B".into()),
+            }
+            rs.save(&cfg, &tmp).unwrap();
+        };
+
+        std::thread::scope(|s| {
+            s.spawn(|| rmw('A'));
+            s.spawn(|| rmw('B'));
+        });
+
+        // Both independent updates must survive; neither may be lost.
+        let final_state = RunState::load(&cfg, &tmp, run_id).unwrap();
+        assert_eq!(
+            final_state.goal, "A",
+            "thread A's goal update was lost (last-writer-wins race)"
+        );
+        assert_eq!(
+            final_state.terminal_label.as_deref(),
+            Some("B"),
+            "thread B's terminal_label update was lost (last-writer-wins race)"
+        );
+
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -2297,6 +2465,115 @@ mod tests {
             !reasons.iter().any(|r| r.contains("legacy")),
             "task with None verdict must not be flagged: {reasons:?}"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ── Replan decision log ──────────────────────────────────────────────
+
+    /// `aggregate_replan_stats` must classify each of the three directive
+    /// categories into a distinct, correctly-counted bucket.
+    #[test]
+    fn aggregate_replan_stats_distinguishes_categories() {
+        let records = vec![
+            ReplanLogRecord {
+                directive: "replan".into(),
+                reason: "r1".into(),
+                reached_tier: "sonnet".into(),
+                replan_count: 1,
+                recorded_at: 1,
+            },
+            ReplanLogRecord {
+                directive: "escalate_model".into(),
+                reason: "r2".into(),
+                reached_tier: "sonnet".into(),
+                replan_count: 0,
+                recorded_at: 2,
+            },
+            ReplanLogRecord {
+                directive: "escalate_model".into(),
+                reason: "r3".into(),
+                reached_tier: "opus".into(),
+                replan_count: 0,
+                recorded_at: 3,
+            },
+            ReplanLogRecord {
+                directive: "escalate_to_user".into(),
+                reason: "r4".into(),
+                reached_tier: "opus".into(),
+                replan_count: 3,
+                recorded_at: 4,
+            },
+        ];
+        let stats = aggregate_replan_stats(&records);
+        assert_eq!(stats.replan, 1);
+        assert_eq!(stats.escalate_model, 2);
+        assert_eq!(stats.escalate_to_user, 1);
+    }
+
+    /// Unknown directive strings must be ignored rather than panicking or
+    /// polluting a known bucket.
+    #[test]
+    fn aggregate_replan_stats_ignores_unknown_directive() {
+        let records = vec![ReplanLogRecord {
+            directive: "bogus".into(),
+            reason: "r".into(),
+            reached_tier: "sonnet".into(),
+            replan_count: 0,
+            recorded_at: 1,
+        }];
+        let stats = aggregate_replan_stats(&records);
+        assert_eq!(stats, ReplanStats::default());
+    }
+
+    /// record_replan_decision → load_replan_records → aggregate_replan_stats
+    /// round-trips through the filesystem: multiple appended records must all
+    /// survive and aggregate to the expected counts.
+    #[test]
+    fn replan_log_record_and_load_roundtrip() {
+        let tmp = make_tmp_dir("replan-log-rt");
+        let cfg = make_test_cfg(&tmp);
+        let run_id = "run-replan-log";
+
+        let recs = [
+            ("replan", "reason a"),
+            ("escalate_model", "reason b"),
+            ("escalate_model", "reason c"),
+            ("escalate_to_user", "reason d"),
+        ];
+        for (directive, reason) in recs {
+            record_replan_decision(
+                &cfg,
+                &tmp,
+                run_id,
+                &ReplanLogRecord {
+                    directive: directive.into(),
+                    reason: reason.into(),
+                    reached_tier: "sonnet".into(),
+                    replan_count: 0,
+                    recorded_at: now_secs(),
+                },
+            )
+            .unwrap();
+        }
+
+        let loaded = load_replan_records(&cfg, &tmp, run_id);
+        assert_eq!(loaded.len(), 4, "all appended records must be loaded");
+
+        let stats = aggregate_replan_stats(&loaded);
+        assert_eq!(stats.replan, 1);
+        assert_eq!(stats.escalate_model, 2);
+        assert_eq!(stats.escalate_to_user, 1);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A run with no log file must load as an empty vec, not error/panic.
+    #[test]
+    fn load_replan_records_missing_file_returns_empty() {
+        let tmp = make_tmp_dir("replan-log-missing");
+        let cfg = make_test_cfg(&tmp);
+        let loaded = load_replan_records(&cfg, &tmp, "no-such-run");
+        assert!(loaded.is_empty());
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

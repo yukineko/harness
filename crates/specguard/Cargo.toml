@@ -19,6 +19,7 @@ path = "src/forge/main.rs"
 
 [dependencies]
 harness-core = { path = "../harness-core" }
+blastguard = { path = "../blastguard" }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -283,6 +283,7 @@ name = "condukt"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "blastguard",
  "chrono",
  "clap",
  "globset",
@@ -293,6 +294,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -1152,6 +1154,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ship"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "harness-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1168,6 +1182,7 @@ name = "specguard"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "blastguard",
  "chrono",
  "clap",
  "globset",

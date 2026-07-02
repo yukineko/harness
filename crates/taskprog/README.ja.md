@@ -9,9 +9,9 @@ taskprog は、プロジェクトに `.claude/progress.md` を 1 つ持たせ、
 役割は 2 つのフックに集約される。
 
 - **SessionStart** で、進捗ファイルを `additionalContext` として注入する。新しいセッションは、開始した瞬間に「何が完了したか・何が残っているか・何がブロックされているか」を把握できる。
-- **SessionEnd** で、いま起きたことを反映するよう進捗ファイルの更新をエージェントに促す。
+- **Stop** で、いま起きたことを反映するよう進捗ファイルの更新をエージェントに促す。
 
-単一の Rust バイナリと 2 つのフック（SessionStart + SessionEnd）だけで動き、サブスクリプションネイティブである。`ANTHROPIC_API_KEY` も追加のインストールも要らない。
+単一の Rust バイナリと 2 つのフック（SessionStart + Stop）だけで動き、サブスクリプションネイティブである。`ANTHROPIC_API_KEY` も追加のインストールも要らない。
 
 管理対象の `.claude/progress.md` は次のような構造を持つ（コードと一緒にコミットしてもよい）。
 
@@ -64,7 +64,7 @@ taskprog install
 
 ```sh
 taskprog session-start   # SessionStart フック: 進捗ファイルを注入する（stdin の JSON を読む）
-taskprog stop            # SessionEnd フック: 進捗ファイルの更新をエージェントに促す
+taskprog stop            # Stop フック: 進捗ファイルの更新をエージェントに促す
 taskprog show            # 現在の進捗ファイルを表示する
 taskprog write --cwd .   # stdin から progress.md を書き込む
 taskprog init            # 雛形の taskprog.toml を書き出す

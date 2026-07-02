@@ -41,7 +41,12 @@ for arg in "$@"; do
 done
 
 CACHE="${CLAUDE_PLUGIN_CACHE:-$HOME/.claude/plugins/cache/yukineko}"
-REL="$REPO/target/release"
+# Ask cargo where it actually puts artifacts rather than assuming
+# $REPO/target/release — CARGO_TARGET_DIR or a target-dir override in
+# .cargo/config.toml (e.g. redirecting off a full C: drive under WSL) changes
+# this without changing where cargo build itself writes.
+TARGET_DIR="$(cargo metadata --no-deps --format-version=1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+REL="${TARGET_DIR:-$REPO/target}/release"
 
 # host <os>-<arch>, matching the launcher's `uname` dispatch and build-plugin-bin.sh
 triple="$(rustc -vV | sed -n 's/^host: //p')"
@@ -59,6 +64,7 @@ esac
 SUF="$os-$arch"
 
 echo "repo:        $REPO"
+echo "build dir:   $REL"
 echo "cache:       $CACHE"
 echo "host target: $triple  ->  $SUF"
 echo "clean:       $([ $clean = 1 ] && echo yes || echo 'no (incremental)')   stage-repo: $([ $stage_repo = 1 ] && echo yes || echo no)   dry-run: $([ $dry = 1 ] && echo yes || echo no)"

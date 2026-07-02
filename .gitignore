@@ -3,6 +3,10 @@
 Cargo.lock.bak
 .DS_Store
 
+# machine-local cargo overrides (e.g. target-dir redirect for a full C: drive
+# under WSL) — not something every contributor's machine needs
+/.cargo/
+
 # precommit-audit runtime telemetry (append-only, machine-local)
 .claude/audit-log.jsonl
 

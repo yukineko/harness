@@ -1,26 +1,24 @@
 ## north_star
-ideate→implement→verify (scout→backlog→flow→condukt) を人間0介入で完走できる autonomy モードを設ける。停止は (a) 情報不足=worker blocked と (b) 外向き不可逆=deploy/push 承認 の2種のみ。それ以外の AskUserQuestion(機械的承認＋意図的HOTL不変)は autonomy 有効時に決定論的既定へ縮退させる。
+phase-5=replan 経路の実運用計測(build ≠ validate)。phase-4 で失敗回復の真の再計画(classify_failure→decide_replan→handoff, cap+fail-soft)を*実装*したが、実タスクで一度も発火・検証されていない——純関数の lib test(29件)が入出力を assert するだけで、「実行時に replan が実際にトリガーされ、model 昇格では回復できない decomposition 誤り型の失敗を再分解で回復する」証拠が無い。phase-5 は計測ループを閉じる: (1)replan 決定を実行時に構造化記録して実運用で可観測にし(決定論側)、(2)decomposition 誤りを意図的に起こす end-to-end fixture で「escalate では直らないが replan なら直る」回復を実証する(LLM 判断は再分解のみ)。可観測化・実証は Rust 決定論側、再解釈は LLM(interpreter)。subscription-native・LLM↔決定論分離・never-break-a-turn を崩さず追加する。sandbox・code RAG・cross-task学習・外部ベンチは yardstick として参照するのみ(parked 維持)。
 
 ## definition_of_done
-- 共通の autonomy スイッチ (各バイナリが読む autonomous:bool config か env) が存在し、無効(既定)時は現行の全 AskUserQuestion が従来どおり出る(後方互換)
-- autonomy 有効時: scout Phase4 選別 Ask を省き top-N を auto-queue する経路がある
-- autonomy 有効時: condukt Phase3 分解合意 Ask を省き schedule 結果をそのまま採用する経路がある
-- autonomy 有効時: flow の pivot-check=auto-persevere / lock競合・resume選択・連続失敗 を決定論的に解決し AskUserQuestion を出さない
-- autonomy 有効時に残る停止は worker blocked と deploy/push GATED 承認の2種のみ (テストまたは skill 監査で確認)
-- e2e: 1つの scout 施策が人間0介入で backlog→condukt実装→verify done まで到達する実証手順が green
-- cargo test --workspace 全 pass
+- decide_replan が実行時に走るたびに、その 3-way directive(escalate_model/replan/escalate_to_user)と根拠(分類 reason・到達ティア・replan_count)を構造化記録する経路が condukt にある(state もしくは tracekit・外部依存なし)。再現テスト: 実行を模した入力列を流すと各 replan 決定が記録され、後から「発火した/しなかった/縮退した」を集計・観測できることを assert して green
+- 「model 昇格では回復不能だが replan なら回復する」失敗を再現する end-to-end fixture がテストに存在し、decide_replan がそれを replan と分類→再分解 handoff→再分解タスクが pass、という F→(escalate fail)→(replan)→P の遷移を実証する再現テストが green(既存 fp_oracle_e2e と同じ tests/ 層・純関数 lib test の再掲ではない)
+- replan が発火しなかった(escalate_model)ケースと上限超過で fail-soft 縮退した(escalate_to_user)ケースも観測記録に区別可能な計測値として現れる。condukt の fmt と clippy が clean で既存テスト非回帰
+- cargo test workspace 全 pass 維持
 
 ## measuring_stick
 擁護可能性 × ゴールへの接近距離 ÷ コスト
 
 ## current_gap
-全13 human-gate が今も無条件 AskUserQuestion を出す。autonomy を選択的に縮退させる共通スイッチ機構が未実装で、各バイナリ(scout/condukt/flow)は「今 autonomous か」を決定論的に読む手段を持たない。最大の関門は condukt Phase3 分解合意——ここを縮退できれば scout選別・flow pivot も同じ縮退パターンを再利用できる。keystone = autonomy スイッチ + condukt Phase3 auto-agree の最小スライスで縮退パターンを1本 validate すること。
+phase-4 で replan の純関数群(classify_failure/decide_replan/build_replan_handoff・cap+fail-soft)と `replan handoff` CLI(main.rs:600-619)・SKILL Phase6 カスケード配線は入った。しかし (a)実行時に replan 決定を記録する経路が state.rs にも tracekit にも無く(grep 空)、「実際に発火したか・何回 replan したか・fail-soft に縮退したか」を後から計測できない。(b)「model 昇格では直らないが replan なら直る」ことを示す end-to-end 証拠が無い(tests/ には fp_oracle_e2e.rs / autonomy_invariant.rs のみで replan e2e は不在。29 replan tests は src/replan.rs の純関数 lib test で、実行時の発火も回復も通していない)。最大の梃子は DoD#1=replan 決定の構造化記録(可観測化)——tracekit span / state と同じ決定論側に自然に乗り、外部依存なし・size s〜m の ONE。end-to-end 回復実証が DoD#2、発火/不発火/縮退の区別が DoD#3。sandbox・code RAG・cross-task学習・外部ベンチは parked 維持。
 
 ## next_action
-keystone: condukt に autonomy スイッチを追加する。(1) condukt config に autonomous:bool (default false) + env override、(2) 既存 condukt state check-criteria に倣い condukt state autonomy-check サブコマンドで skill が決定論的に読めるようにする、(3) autonomous 有効時のみ condukt SKILL.md Phase3 の分解合意 AskUserQuestion をスキップし schedule 結果をそのまま採用、無効時は従来どおり、(4) 分岐を検証するテスト。size=m。scout auto-queue と flow pivot は同パターンで後続。
+DoD#1: decide_replan の 3-way directive を実行時に構造化記録する経路(state もしくは tracekit)を condukt に追加し、後から発火/不発火/縮退を集計できる再現テストを green にする。
 
 ## parked
-- scout Phase4 auto-queue (autonomy 有効時に top-N を選別Ask無しで backlog add)
-- flow autonomy: pivot auto-persevere / lock競合・resume・連続失敗 の決定論解決
-- e2e 実証手順: scout施策1件を人間0介入で done まで通す検証
-
+- #7 cross-task 学習: fugu-router episode store をタスク層へ拡張 (backlog 8086b5d0)
+- #4 code RAG(埋め込み無し版): playbook 検索を構造スコアリング・deepwiki接地・シンボル索引で強化 (backlog 32739700)
+- #1 サンドボックス実行 (backlog 3cd5ed15): Docker・VM は思想と乖離・blastguard+worktree が回答——無人ホスト損傷が現実化したら再訪
+- #10 外部ベンチハーネス (backlog de758e5d): フレームワーク機能でなく計測プロジェクト——公開検証フェーズで
+- foundation-hygiene: rebuild-plugins.sh が hooks と config も同期 (backlog 4a499fb9)

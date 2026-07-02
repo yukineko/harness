@@ -16,7 +16,8 @@ blocks a turn.
 | Hook | Records |
 |---|---|
 | **PostToolUse** | each tool call (per-tool counts, distinct files touched) — subcommand `record` |
-| **SessionEnd** | counts a turn and, opt-in, writes the Obsidian session note and the `/record` note — subcommands `stop` + `sessionend` |
+| **Stop** | counts a turn — subcommand `stop` |
+| **SessionEnd** | opt-in, writes the Obsidian session note and the `/record` note — subcommand `sessionend` |
 
 From that it derives:
 - **size**: XS / S / M / L / XL by total tool events (thresholds configurable)
@@ -121,7 +122,7 @@ The bundled `hooks/hooks.json` wires both hooks automatically. Drop a
 
 ```sh
 cargo install --path .
-session-insights install      # merge the PostToolUse + SessionEnd hooks
+session-insights install      # merge the PostToolUse + Stop + SessionEnd hooks
 session-insights report --all
 session-insights status        # resolved config
 session-insights uninstall

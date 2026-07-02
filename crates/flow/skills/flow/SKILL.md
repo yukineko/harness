@@ -158,19 +158,31 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
      - **まだ観測不能**（データ蓄積待ち等）→ awaiting-measurement のまま残し、
        「計測待ち（まだ観測不能）」として報告し次の候補へ進む（ここで無限ループしない）。
    - `hypothesis` バイナリが無い / 0 件なら skip。
-3. measure 対象（今観測可能なもの）が無ければ **backlog**（確定キュー）:
-   ```bash
-   backlog next [--project <path>]
-   ```
-   `backlog next`/`list` は **同一 priority 内を opportunity weight 降順**で並べる（priority→weight 降順→created_at）。
-   そのため backlog にタスクを**積む**とき、それが compass opportunity 由来なら **その opportunity の weight を
-   供給する**こと（weight が compass→backlog→flow と実際に流れ、影響度の高い機会が先に pick される）:
-   ```bash
-   W=$(compass gap | jq -r '.opportunities[0].weight // empty')   # active outcome の最重要 opportunity の weight
-   backlog add --title "<課題>" --project "$PWD" --priority p1 --weight "${W:-0}"
-   ```
-   weight を渡さなければ既定 0.0＝従来の (priority, created_at) 順（後方互換）。weight は順序を変えるだけで
-   priority を上書きしない（priority が第一鍵）。
+3. measure 対象（今観測可能なもの）が無ければ **backlog**（確定キュー）。
+   backlog に **複数の ready 課題がある場合は、順列（1件ずつ）ではなく 1 回の condukt run に束ねて並列処理**する。
+   **並列/直列の判定は flow がするのではなく、condukt の決定論スケジューラ（`schedule.rs`）に委譲**する
+   ＝ flow は独立候補を「束ねて渡すだけ」で、ファイル競合・`Serial`/`Gated` クラス・shared-glob・依存層は
+   condukt が判定し、非衝突タスクだけを並列バッチに、衝突・危険なものは自動で直列に落とす
+   （**「並列が危険/高コストなら直列」はこの層で保証**される＝conservative: 迷えば直列）。
+
+   a. **バッチを取り出す**（優先度順の上位 N 件。並びは priority→weight 降順→created_at）:
+      ```bash
+      backlog list --status pending --project "$PWD" --json   # 並び順どおりの JSON 配列
+      ```
+      先頭から最大 **N 件**（既定 N=condukt の `max_parallel`。無指定なら **4**）を候補バッチとする。
+      各件の `id` / `title` / `notes` を控える（sink で **id ごとに** `done`/`fail` するため必須）。
+      backlog が 1 件だけなら従来どおり単一課題として扱う（N=1）。
+   b. **コスト/危険ゲート（直列フォールバック）** — 次のどれかに該当する候補は**バッチから外して 1 件ずつ直列**に回す（安全側）:
+      - budgetguard が予算逼迫を示す → バッチ幅を絞る（極端なら N=1＝従来の直列に縮退）。
+      - notes から明らかに **相互依存**／同一領域・同一ファイルを触る／deploy・push（Gated 相当）を含むと読める。
+      判断に迷うものは**バッチに入れてよい**（condukt が衝突を検出して自動で直列化するため二重の安全網になる）。
+   c. **backlog に積む側**（このループが `backlog add` する場合）— compass opportunity 由来なら **その weight を供給**する
+      こと（weight が compass→backlog→flow と流れ、影響度の高い機会が先頭に来て同じ並列バッチに乗りやすくなる）:
+      ```bash
+      W=$(compass gap | jq -r '.opportunities[0].weight // empty')   # active outcome の最重要 opportunity の weight
+      backlog add --title "<課題>" --project "$PWD" --priority p1 --weight "${W:-0}"
+      ```
+      weight 無指定は既定 0.0＝従来の (priority, created_at) 順（後方互換）。weight は順序を変えるだけで priority は上書きしない。
 4. backlog も空なら **hypothesis（新規 discovery: open 仮説）**:
    ```bash
    hypothesis list --status open    # confidence 降順（同点 created_at 昇順）でソート済み。空なら次へ
@@ -190,8 +202,14 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
 5. compass 主筋・measure（観測可能なもの）・backlog・open 仮説のいずれも**実行可能なものが無い**
    → **ループを抜けて Step 4 へ**（awaiting-measurement にまだ観測不能な仮説が残っていても、
    それは「計測待ち」として残課題に計上しループは終える）。
-6. ピックしたタスクのタイトル＋ notes（仕様・制約・参照ファイル）を**課題文**に組み立てる。
-7. **選択を shared discovery store に記録**（未選択は `discovered` で次サイクルへ）:
+6. ピックしたタスクを**課題文**に組み立てる:
+   - **単一課題**（compass 主筋 / measure / hypothesis / 単発 backlog）→ タイトル＋ notes（仕様・制約・参照ファイル）で従来どおり 1 課題文。
+   - **backlog バッチ（3 の a/b で複数残った場合）→ 1 つの課題文に、各 backlog item を「独立した top-level タスク」として列挙**する。
+     各項目に **id・タイトル・notes・（分かるなら）触るファイル/領域**を明記し、「**これらは互いに独立。非衝突なものは並列に、
+     衝突・共有リソースを触るものは直列に scheduleしてよい**」と condukt に明示する（分解時に item 境界を保てるよう、
+     item 単位で done_criteria を切ってもらう）。**item id ↔ condukt タスク**の対応を控える（sink で id ごとに書き戻すため）。
+     並列上限は condukt の `max_parallel`（既定 4）が実効的に効くので flow 側で待ち合わせ制御はしない。
+7. **選択を shared discovery store に記録**（未選択は `discovered` で次サイクルへ。バッチなら選んだ各 item を記録）:
    ```bash
    compass discovery select --session-id "<SESSION_ID>" --title "<選んだタスクのタイトル>"
    ```
@@ -207,13 +225,22 @@ backlog lock acquire --session-id <SESSION_ID> --project <CWD>
 
 - `/condukt` は **`Task` ツールで非同期起動**（オーケストレーション継続のため）。
 - compass 由来の一手なら、`north_star / current_gap / measuring_stick` を文脈として課題文に添える。
+- **backlog バッチは 1 回の `/condukt` 呼び出し**（複数 condukt run を並走させない＝グローバル backlog ロック /
+  worktree / merge 競合を増やさない）。並列化は condukt 内部（Phase 5 の worktree 並列 + schedule.rs のバッチ）が担う。
+- **verify も自動で並列化される**: condukt の Phase 6 は worker 完了ごとに即 verifier を起動し待ち合わせしない
+  （pipeline 検証）。バッチで複数 item を渡せば、その検証も item 横断で並列に走る＝別途 flow 側で verify を並列化する必要はない。
 
 #### 3-3. 検証 → sink（結果の書き戻し）
 
 condukt の完了ゲートを通ったら結果を source に書き戻す:
 
+**バッチ（複数 backlog item を 1 run に束ねた場合）は item ごとに個別 sink する**: condukt の完了ゲートは
+タスク単位なので、6 で控えた **item id ↔ condukt タスク**の対応を使い、**通ったタスクの item は `done`、
+blocked/失敗の item は `fail`** と書き分ける（**部分成功をそのまま反映**＝一部が失敗しても通った分は done にする。
+バッチ全体を一括で成功/失敗扱いにしない）。以下は 1 item あたりの sink:
+
 - **成功**:
-  - backlog 由来 → `backlog done <id>`
+  - backlog 由来 → `backlog done <id>`（バッチなら通った各 item の id について実行）
   - compass 由来 → 完了した move を **measuring_stick で判定**し、その verdict を記録する（＝計測ループを閉じる）:
     ```bash
     compass outcome --verdict <forward|unchanged|backward> --evidence "<観測した成果>"
@@ -233,7 +260,7 @@ condukt の完了ゲートを通ったら結果を source に書き戻す:
     （`validate`/`reject` は証拠必須なので、観測値の無い「出荷だけ」では status を変えられない）。
   - fugu-router 併用時 → 検証結果（どのモデルが通ったか・コスト）を `record` で書き戻して方策を更新。
 - **失敗**（blocked / needs-serial 等）:
-  - backlog 由来 → `backlog fail <id> --reason "<概要>"`、スキップして次へ。
+  - backlog 由来 → `backlog fail <id> --reason "<概要>"`、スキップして次へ（バッチなら**失敗した item だけ** fail、他は上記どおり done）。
   - ユーザーに失敗を通知するが、ループは続行。
 
 #### 3-4. ループ継続判定
@@ -283,6 +310,10 @@ compass pivot-check   # {"recommendation":"persevere"|"pivot","streak":N,"thresh
 
 - **source/executor の役割を混ぜない**: 課題の選定は compass/backlog、実行は condukt。`/flow` 自身は判定とループだけ。
 - **driver は1本**: `/flow` 実行中は `/backlog` を併走させない（backlog ロックで物理的に直列化されるが、ユーザーにも明示する）。
+- **並列は「バッチを 1 condukt run に束ねる」で実現**（複数 condukt run を並走させない）: backlog に複数 ready 課題が
+  あれば順列ではなく 1 回の condukt run に束ねて渡し、**並列/直列の実判定は condukt の `schedule.rs`（ファイル競合・
+  Serial/Gated・shared-glob・依存層）に委譲**する。flow 自身は独立候補を束ねるだけで、危険/高コストなら condukt が
+  自動で直列化する（conservative＝迷えば直列）。予算逼迫や明白な相互依存が読めるときは flow 側でバッチ幅を絞る（極端は N=1）。
 - **盲目実行しない**: compass ゲートが鮮明でない限り、自動でキューを流し始めない。
 - **ロック解放を絶対に飛ばさない**（早期脱出・エラー時も）。
 - **自律モードでは human gate を `condukt policy answer` に通す（Step 0.5）**: `autonomy-check` exit 0 のとき、

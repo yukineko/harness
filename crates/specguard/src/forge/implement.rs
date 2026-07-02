@@ -84,10 +84,40 @@ struct TestRun {
     output_tail: String,
 }
 
+/// Validate an LLM-generated `test_cmd` before it is handed to `sh -c`.
+///
+/// Trust boundary: `test_cmd` arrives from an impl agent's stdout trailer — it is
+/// LLM-generated and MUST NOT be executed on the agent's word. We reuse
+/// blastguard's pure destructive-operation detector (the same one the PreToolUse
+/// hook uses) rather than reimplementing detection. A flagged command
+/// (`rm -rf …`, fork bomb, `> file` truncation, `dd of=…`, `git reset --hard`, …)
+/// returns `Err(reason)`; anything blastguard allows returns `Ok(())`.
+fn validate_test_cmd(test_cmd: &str) -> Result<(), String> {
+    let input = serde_json::json!({ "command": test_cmd });
+    match blastguard::detect::detect("Bash", Some(&input)) {
+        blastguard::model::Decision::Deny(reason) => Err(reason),
+        blastguard::model::Decision::Allow => Ok(()),
+    }
+}
+
 /// Run `test_cmd` via `sh -c` in `dir`, trusting its exit code. Returns `None`
 /// only if the command could not be spawned at all (treated as unverifiable — a
 /// non-zero exit is a *ran-and-failed*, which is verified evidence, not None).
+///
+/// Before spawning, the LLM-generated `test_cmd` is validated with
+/// [`validate_test_cmd`]. A destructive/flagged payload is refused fail-closed:
+/// we return a *failed* verdict WITHOUT invoking the shell, so a destructive
+/// command can never be executed nor promote a requirement to `done`.
 fn run_test_cmd(dir: &Path, test_cmd: &str) -> Option<TestRun> {
+    if let Err(reason) = validate_test_cmd(test_cmd) {
+        return Some(TestRun {
+            passed: false,
+            output_tail: format!(
+                "[blastguard] LLM 生成の test_cmd `{test_cmd}` を sh -c 実行前に拒否 \
+                 (fail-closed) — {reason}。破壊的コマンドはハーネスが実行しない。"
+            ),
+        });
+    }
     let out = std::process::Command::new("sh")
         .arg("-c")
         .arg(test_cmd)
@@ -575,6 +605,46 @@ mod tests {
         assert!(ok.passed);
         let bad = run_test_cmd(tmp.path(), "false").expect("sh spawns");
         assert!(!bad.passed);
+    }
+
+    // ── trust boundary: LLM-generated test_cmd is validated before sh -c ──────
+
+    #[test]
+    fn destructive_test_cmd_is_refused_without_invoking_shell() {
+        // `test_cmd` is emitted by an LLM impl agent and handed to `sh -c`. A
+        // destructive payload (blastguard-flagged recursive rm) must be refused
+        // BEFORE the shell runs — the benign leading segment (`touch sentinel`)
+        // must never execute, proving the shell was not invoked.
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = tmp.path().join("ran.txt");
+        let victim = tmp.path().join("victim");
+        let payload = format!("touch {} ; rm -rf {}", sentinel.display(), victim.display());
+        let run = run_test_cmd(tmp.path(), &payload).expect("returns a refusal verdict");
+        assert!(!run.passed, "a refused command must not count as passed");
+        assert!(
+            run.output_tail.contains("blastguard"),
+            "refusal note names the guard: {}",
+            run.output_tail
+        );
+        assert!(
+            !sentinel.exists(),
+            "sh -c must NOT have run — the sentinel was created, so the payload executed"
+        );
+    }
+
+    #[test]
+    fn benign_test_cmd_passes_validation_and_runs() {
+        // A benign command passes blastguard and executes normally (side effect
+        // observable), so the validation gate does not get in the way of work.
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = tmp.path().join("ran.txt");
+        let cmd = format!("touch {}", sentinel.display());
+        let run = run_test_cmd(tmp.path(), &cmd).expect("benign command runs");
+        assert!(run.passed, "benign command should run and succeed");
+        assert!(
+            sentinel.exists(),
+            "benign command must actually execute via sh -c"
+        );
     }
 
     #[test]
