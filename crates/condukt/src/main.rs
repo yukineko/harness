@@ -11,6 +11,7 @@ mod checkpoint;
 mod config;
 mod consensus;
 mod editgate;
+mod gatelog;
 mod hooks;
 mod install;
 mod model;
@@ -387,6 +388,46 @@ enum PolicyAction {
         #[arg(long)]
         confidence: String,
     },
+    /// Non-interactively answer one question using the graded-autonomy policy.
+    /// On an `auto` verdict, prints `{"answered":true,"policy":"auto","chosen":
+    /// ...}` (the recommended option) and journals the choice, exit 0. On
+    /// `escalate` (exit 2) or `block` (exit 3), prints `{"answered":false,...}`
+    /// so the caller falls through to a real AskUserQuestion / refuses. Same
+    /// exit contract as `decide` (1 = invalid input: bad level or a --recommend
+    /// index with no matching --option).
+    Answer {
+        /// How much damage if this decision is wrong (low|medium|high).
+        #[arg(long)]
+        risk: String,
+        /// How easily the decision can be undone (low|medium|high).
+        #[arg(long)]
+        reversible: String,
+        /// How sure we are the decision is correct (low|medium|high).
+        #[arg(long)]
+        confidence: String,
+        /// The question being asked (recorded to the decision log on auto).
+        #[arg(long)]
+        question: String,
+        /// One choice; repeat `--option` for each. On auto the recommended one
+        /// is chosen.
+        #[arg(long = "option")]
+        options: Vec<String>,
+        /// 0-based index of the recommended option (chosen on auto).
+        #[arg(long, default_value_t = 0)]
+        recommend: usize,
+        /// Directory for the append-only decision log (default: the state dir).
+        #[arg(long)]
+        journal_dir: Option<PathBuf>,
+    },
+    /// Print the auto-answer audit trail (JSONL): every question the policy
+    /// self-answered without prompting a human. The review surface for
+    /// hands-off autonomy — gates are skipped, but each self-answer is logged
+    /// and inspectable here. Prints nothing (exit 0) if the log is absent.
+    Answers {
+        /// Directory holding the decision log (default: the state dir).
+        #[arg(long)]
+        journal_dir: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -563,30 +604,106 @@ fn run_user(cmd: Command) -> Result<()> {
 /// [`policy::Decision`] and exit with the documented contract (0=auto,
 /// 2=escalate, 3=block, 1=invalid input). Never panics: an unparseable level
 /// prints a message to stderr and exits 1.
-fn run_policy(action: PolicyAction) -> ! {
-    let PolicyAction::Decide {
-        risk,
-        reversible,
-        confidence,
-    } = action;
-    let parsed = policy::parse_level(&risk)
-        .zip(policy::parse_level(&reversible))
-        .zip(policy::parse_level(&confidence));
-    let ((risk, reversible), confidence) = match parsed {
-        Some(t) => t,
+/// Parse the three graded-autonomy levels or exit 1 (invalid input) — the
+/// shared front half of `policy decide` and `policy answer`.
+fn parse_policy_levels(
+    risk: &str,
+    reversible: &str,
+    confidence: &str,
+) -> (policy::Level, policy::Level, policy::Level) {
+    let parsed = policy::parse_level(risk)
+        .zip(policy::parse_level(reversible))
+        .zip(policy::parse_level(confidence));
+    match parsed {
+        Some(((r, rev), c)) => (r, rev, c),
         None => {
             eprintln!("condukt: --risk/--reversible/--confidence must each be low|medium|high");
             std::process::exit(1);
         }
-    };
-    let decision = policy::decide(risk, reversible, confidence);
-    println!("{decision}");
-    let code = match decision {
-        policy::Decision::Auto => 0,
-        policy::Decision::Escalate => 2,
-        policy::Decision::Block => 3,
-    };
-    std::process::exit(code);
+    }
+}
+
+fn run_policy(action: PolicyAction) -> ! {
+    match action {
+        PolicyAction::Decide {
+            risk,
+            reversible,
+            confidence,
+        } => {
+            let (risk, reversible, confidence) =
+                parse_policy_levels(&risk, &reversible, &confidence);
+            let decision = policy::decide(risk, reversible, confidence);
+            println!("{decision}");
+            let code = match decision {
+                policy::Decision::Auto => 0,
+                policy::Decision::Escalate => 2,
+                policy::Decision::Block => 3,
+            };
+            std::process::exit(code);
+        }
+        PolicyAction::Answer {
+            risk,
+            reversible,
+            confidence,
+            question,
+            options,
+            recommend,
+            journal_dir,
+        } => {
+            let (risk, reversible, confidence) =
+                parse_policy_levels(&risk, &reversible, &confidence);
+            let decision = policy::decide(risk, reversible, confidence);
+            let outcome = gatelog::answer_outcome(decision, &options, recommend);
+            match &outcome {
+                gatelog::AnswerOutcome::Answered {
+                    chosen,
+                    recommend_index,
+                } => {
+                    // Self-answer: record the choice for audit, then emit it.
+                    let dir = journal_dir.unwrap_or_else(|| config::Config::load().state_dir);
+                    let entry = gatelog::GateDecision {
+                        question,
+                        options: options.clone(),
+                        recommend_index: *recommend_index,
+                        chosen: chosen.clone(),
+                        policy: "auto".to_string(),
+                        created_at: state::now_secs(),
+                    };
+                    gatelog::append_decision(&dir, &entry);
+                    // Serialize `chosen` so quotes/backslashes in an option can't
+                    // break the JSON line.
+                    let chosen_json =
+                        serde_json::to_string(chosen).unwrap_or_else(|_| "\"\"".to_string());
+                    println!(
+                        "{{\"answered\":true,\"policy\":\"auto\",\"chosen\":{chosen_json},\"recommend_index\":{recommend_index}}}"
+                    );
+                }
+                gatelog::AnswerOutcome::Escalate => {
+                    println!("{{\"answered\":false,\"policy\":\"escalate\"}}");
+                }
+                gatelog::AnswerOutcome::Block => {
+                    println!("{{\"answered\":false,\"policy\":\"block\"}}");
+                }
+                gatelog::AnswerOutcome::Invalid => {
+                    eprintln!(
+                        "condukt: --recommend index {recommend} has no matching --option \
+                         (got {} option(s))",
+                        options.len()
+                    );
+                }
+            }
+            std::process::exit(outcome.exit_code());
+        }
+        PolicyAction::Answers { journal_dir } => {
+            let dir = journal_dir.unwrap_or_else(|| config::Config::load().state_dir);
+            for entry in gatelog::load_decisions(&dir) {
+                if let Ok(line) = serde_json::to_string(&entry) {
+                    println!("{line}");
+                }
+            }
+            std::process::exit(0);
+        }
+    }
 }
 
 fn run_worktree(cfg: &Config, cwd: &Path, action: WtAction) -> Result<()> {
