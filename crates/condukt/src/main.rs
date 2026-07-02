@@ -360,6 +360,31 @@ enum VerifyAction {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// Distill a target's *runtime* output into a structured RuntimeDigest
+    /// (exit code, panic/exception lines, stderr/stdout tails) as pretty JSON on
+    /// stdout, exit 0 — the phase-3 counterpart of `verify digest`. `--stdout`
+    /// / `--stderr` read from files; when `--stderr` is omitted stderr is read
+    /// from stdin (the primary input, mirroring `verify digest`). `--exit-code`
+    /// is threaded through verbatim (absent → null). With `--reflux` it instead
+    /// prints the verifier→worker reflux verdict (pass/fail + an embedded
+    /// runtime_digest on a runtime failure). Fail-soft: empty input yields an
+    /// empty digest and exits 0; the fix DECISION stays with the LLM worker.
+    Runtime {
+        /// File holding the target's stdout (empty stdout when omitted).
+        #[arg(long)]
+        stdout: Option<PathBuf>,
+        /// File holding the target's stderr; when omitted, stderr is read from
+        /// stdin (the primary input, symmetric to `verify digest`).
+        #[arg(long)]
+        stderr: Option<PathBuf>,
+        /// The target's process exit code (null when omitted, e.g. signal kill).
+        #[arg(long)]
+        exit_code: Option<i32>,
+        /// Print the reflux verdict (pass/fail + embedded runtime_digest on
+        /// failure) instead of the bare RuntimeDigest.
+        #[arg(long)]
+        reflux: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -459,6 +484,34 @@ fn run_user(cmd: Command) -> Result<()> {
                 };
                 let digest = verify::distill_failure(&raw);
                 println!("{}", serde_json::to_string_pretty(&digest)?);
+            }
+            VerifyAction::Runtime {
+                stdout,
+                stderr,
+                exit_code,
+                reflux,
+            } => {
+                // stdout: read the file when given, else empty. stderr: read the
+                // file when given, else read stdin (the primary input, so empty
+                // stdin fails soft to an empty digest and exit 0).
+                let stdout_raw = match stdout {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => String::new(),
+                };
+                let stderr_raw = match stderr {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => read_stdin(),
+                };
+                if reflux {
+                    let verdict =
+                        verify::runtime_reflux_verdict(&stdout_raw, &stderr_raw, exit_code);
+                    println!("{}", serde_json::to_string_pretty(&verdict)?);
+                } else {
+                    let digest = verify::distill_runtime(&stdout_raw, &stderr_raw, exit_code);
+                    println!("{}", serde_json::to_string_pretty(&digest)?);
+                }
             }
         },
         Command::Consensus { action } => run_consensus(&cfg, action)?,

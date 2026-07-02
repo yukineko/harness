@@ -151,6 +151,130 @@ fn tail_lines(s: &str, n: usize) -> String {
     lines[start..].join("\n")
 }
 
+/// A deterministic, structured distillation of a target's *runtime* signals.
+///
+/// The phase-2 companion [`FailureDigest`] distills a failing command's *test*
+/// output (failing test names, assertion evidence). `RuntimeDigest` is the
+/// phase-3 counterpart: it distills the signals from actually *running* the
+/// target — its exit code, any panic/exception evidence, and bounded tails of
+/// both output streams — so the verifier→worker reflux carries the runtime
+/// *why-it-broke*, not just a boolean. The FORMATTING here is deterministic
+/// Rust; only the fix DECISION is the LLM's job.
+///
+/// Exposed by the `condukt verify runtime` subcommand (symmetric to `verify
+/// digest`) and embedded into the verifier→worker reflux verdict on a runtime
+/// failure by [`runtime_reflux_verdict`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeDigest {
+    /// The process exit code, or `None` when unknown (e.g. signal termination).
+    pub exit_code: Option<i32>,
+    /// Panic / exception evidence lines (deduplicated, first-seen order, stderr
+    /// preferred). Matches `panicked at`, `thread '...' panicked`, `Exception`,
+    /// `Traceback`, and `Error:` markers.
+    pub panics: Vec<String>,
+    /// The last [`OUTPUT_TAIL_LINES`] lines of stderr, joined by `\n`.
+    pub stderr_tail: String,
+    /// The last [`OUTPUT_TAIL_LINES`] lines of stdout, joined by `\n`.
+    pub stdout_tail: String,
+}
+
+/// Distill a target's runtime output into a [`RuntimeDigest`].
+///
+/// Pure and deterministic: no LLM, no network, no filesystem, no clock. Handles
+/// empty / garbage / non-UTF8-ish input gracefully (empty vecs, whatever tail
+/// exists) and never panics.
+///
+/// - `exit_code`: threaded through verbatim (`None` when the caller could not
+///   determine one, e.g. signal termination).
+/// - `panics`: panic/exception evidence lines gathered from BOTH streams, with
+///   stderr scanned first so its lines win first-seen order. Deduplicated via
+///   the same policy as [`distill_failure`]. Markers: `panicked at`,
+///   `thread '...' panicked`, `Exception`, `Traceback`, `Error:`.
+/// - `stderr_tail` / `stdout_tail`: the last [`OUTPUT_TAIL_LINES`] lines of each
+///   stream (or all, if shorter).
+pub fn distill_runtime(stdout: &str, stderr: &str, exit_code: Option<i32>) -> RuntimeDigest {
+    let mut panics: Vec<String> = Vec::new();
+
+    let push_unique = |v: &mut Vec<String>, s: String| {
+        if !s.is_empty() && !v.contains(&s) {
+            v.push(s);
+        }
+    };
+
+    // Scan stderr first (preferred first-seen), then stdout, for panic/exception
+    // evidence. A line qualifies if it carries any recognised runtime marker.
+    for stream in [stderr, stdout] {
+        for line in stream.lines() {
+            let t = line.trim();
+            if is_panic_evidence(t) {
+                push_unique(&mut panics, t.to_string());
+            }
+        }
+    }
+
+    RuntimeDigest {
+        exit_code,
+        panics,
+        stderr_tail: tail_lines(stderr, OUTPUT_TAIL_LINES),
+        stdout_tail: tail_lines(stdout, OUTPUT_TAIL_LINES),
+    }
+}
+
+/// Build the verifier→worker reflux verdict for a target's *runtime* signals.
+///
+/// The phase-2 companion [`mechanical_skip_verdict`] embeds a [`FailureDigest`]
+/// under `"failure_digest"` when a mechanical *test* check fails; this is the
+/// phase-3 counterpart for a *runtime* failure. It is pure and deterministic:
+///
+/// - it decides pass/fail from the mechanical facts alone — a runtime failure is
+///   a non-zero exit code (`Some(c)` with `c != 0`) OR any panic/exception
+///   evidence in [`RuntimeDigest::panics`];
+/// - on failure it embeds the structured [`RuntimeDigest`] under `"runtime_digest"`
+///   so the reflux carries the runtime *why* (exit code, panic lines, and the
+///   stderr/stdout tails), not merely the boolean; the passing shape omits it.
+///
+/// The FORMATTING here is deterministic Rust; the verdict states only observable
+/// facts and carries NO fix decision — how to fix stays with the LLM worker.
+pub fn runtime_reflux_verdict(
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+) -> serde_json::Value {
+    let digest = distill_runtime(stdout, stderr, exit_code);
+    // Mechanical failure predicate: a non-zero exit OR any panic/exception line.
+    let nonzero_exit = digest.exit_code.is_some_and(|c| c != 0);
+    let runtime_failed = nonzero_exit || !digest.panics.is_empty();
+    let mut out = serde_json::json!({
+        "kind": "runtime",
+        "passed": !runtime_failed,
+    });
+    // Attach the deterministic structured digest ONLY on failure, mirroring the
+    // `failure_digest` embedding: the passing-case shape stays a bare boolean.
+    if runtime_failed {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert(
+                "runtime_digest".to_string(),
+                serde_json::to_value(&digest).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+    out
+}
+
+/// True iff a trimmed line looks like panic / exception evidence from a running
+/// process. Language-agnostic: covers Rust panics plus common Python/JVM/other
+/// exception markers. Empty lines never qualify.
+fn is_panic_evidence(t: &str) -> bool {
+    if t.is_empty() {
+        return false;
+    }
+    t.starts_with("panicked at")
+        || (t.starts_with("thread '") && t.contains("panicked"))
+        || t.contains("Exception")
+        || t.contains("Traceback")
+        || t.contains("Error:")
+}
+
 /// Known model tiers, cheapest → strongest.
 const TIERS: [&str; 3] = ["haiku", "sonnet", "opus"];
 
@@ -661,6 +785,191 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored";
         );
         // The raw output is still present alongside the digest.
         assert!(v_fail.get("output").is_some());
+    }
+
+    // ── Structured runtime digest (phase-3 runtime FB reflux) ─────────────
+
+    /// A representative failing run — non-zero exit, a panic line, and stderr
+    /// content — must surface ALL of (a) the exit code, (b) the panic evidence
+    /// line, and (c) the stderr tail. A neutered `distill_runtime` that dropped
+    /// exit_code / panics / stderr_tail would genuinely FAIL this.
+    #[test]
+    fn distill_runtime_surfaces_exit_panic_and_stderr() {
+        let stdout = "starting up\ndoing work\n";
+        let stderr = "\
+thread 'main' panicked at src/main.rs:10:5:
+index out of bounds: the len is 0 but the index is 3
+note: run with `RUST_BACKTRACE=1` for a backtrace";
+        let d = distill_runtime(stdout, stderr, Some(101));
+        // (a) the exit code is surfaced verbatim.
+        assert_eq!(d.exit_code, Some(101), "exit_code must be surfaced");
+        // (b) the panic evidence line is surfaced.
+        assert!(
+            d.panics.iter().any(|p| p.contains("panicked at")),
+            "expected the panic line in {:?}",
+            d.panics
+        );
+        // (c) the stderr tail retains the trailing stderr content.
+        assert!(
+            d.stderr_tail.contains("index out of bounds"),
+            "stderr_tail must retain trailing stderr: {:?}",
+            d.stderr_tail
+        );
+        // stdout tail is captured independently of stderr.
+        assert!(
+            d.stdout_tail.contains("doing work"),
+            "stdout_tail must retain trailing stdout: {:?}",
+            d.stdout_tail
+        );
+    }
+
+    /// Panic evidence is gathered from BOTH streams, deduplicated, with stderr
+    /// preferred first-seen. A line present in both streams appears once.
+    #[test]
+    fn distill_runtime_collects_from_both_streams_deduped() {
+        let shared = "Traceback (most recent call last):";
+        let stdout = format!("stdout noise\n{shared}\nError: boom from stdout");
+        let stderr = format!("{shared}\nException: kaboom");
+        let d = distill_runtime(&stdout, &stderr, None);
+        // The shared line is deduplicated to a single entry.
+        assert_eq!(
+            d.panics.iter().filter(|p| *p == shared).count(),
+            1,
+            "shared evidence must be deduplicated: {:?}",
+            d.panics
+        );
+        // stderr is scanned first, so its shared line wins first-seen order.
+        assert_eq!(
+            d.panics.first().map(String::as_str),
+            Some(shared),
+            "stderr evidence must be first-seen: {:?}",
+            d.panics
+        );
+        // Evidence from both streams is present.
+        assert!(d.panics.iter().any(|p| p.contains("Exception")));
+        assert!(d.panics.iter().any(|p| p.contains("Error:")));
+        // No exit code was provided.
+        assert_eq!(d.exit_code, None);
+    }
+
+    /// Empty input must not panic and must yield an empty digest.
+    #[test]
+    fn distill_runtime_empty_input_is_graceful() {
+        let d = distill_runtime("", "", None);
+        assert_eq!(d.exit_code, None);
+        assert!(d.panics.is_empty());
+        assert_eq!(d.stderr_tail, "");
+        assert_eq!(d.stdout_tail, "");
+    }
+
+    /// Garbage input — a long newline-free string and a dense symbol run — must
+    /// not panic and must yield no false-positive panics, but keep the tails.
+    #[test]
+    fn distill_runtime_garbage_input_is_graceful() {
+        let huge = "x".repeat(50_000);
+        let symbols = "�\u{0}\t!@#$%^&*()_+{}|:<>?~`-=[]\\;',./\u{1b}[31m";
+        let d = distill_runtime(&huge, symbols, Some(-1));
+        assert!(
+            d.panics.is_empty(),
+            "no marker present → no panics: {:?}",
+            d.panics
+        );
+        // Single-line (no `\n`) input is retained whole as the tail.
+        assert_eq!(d.stdout_tail, huge);
+        assert_eq!(d.stderr_tail, symbols);
+        assert_eq!(d.exit_code, Some(-1));
+    }
+
+    // ── Runtime reflux verdict (phase-3 verifier→worker reflux) ───────────
+
+    /// RED existence: a runtime failure — non-zero exit + a panic line + stderr
+    /// content — must produce a reflux verdict that carries, BEYOND the pass/fail
+    /// boolean, the runtime diagnostics: the exit code, the panic evidence line,
+    /// and the stderr tail. Neutering the `runtime_digest` embedding (dropping the
+    /// `obj.insert`) makes `.expect("runtime_digest")` panic → genuine FAIL; a
+    /// `distill_runtime` that dropped exit_code / panics / stderr_tail also FAILs.
+    #[test]
+    fn runtime_reflux_verdict_embeds_diagnostics_on_failure() {
+        let stdout = "booting\n";
+        let stderr = "\
+thread 'main' panicked at src/main.rs:10:5:
+index out of bounds: the len is 0 but the index is 3
+note: run with `RUST_BACKTRACE=1` for a backtrace";
+        let v = runtime_reflux_verdict(stdout, stderr, Some(101));
+        // The verdict states pass/fail, and this run is a failure.
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "non-zero exit + panic must be a runtime failure: {v}"
+        );
+        // BEYOND the boolean: the structured runtime digest is embedded.
+        let d = v
+            .get("runtime_digest")
+            .expect("a failing runtime verdict must carry a runtime_digest");
+        // (a) the exit code is surfaced.
+        assert_eq!(
+            d["exit_code"],
+            serde_json::json!(101),
+            "runtime_digest must surface the exit code: {v}"
+        );
+        // (b) the panic evidence line is surfaced.
+        assert!(
+            d["panics"].as_array().is_some_and(|a| a
+                .iter()
+                .any(|p| p.as_str().is_some_and(|s| s.contains("panicked at")))),
+            "runtime_digest must surface the panic line: {v}"
+        );
+        // (c) the stderr tail retains the trailing stderr content.
+        assert!(
+            d["stderr_tail"]
+                .as_str()
+                .is_some_and(|s| s.contains("index out of bounds")),
+            "runtime_digest must surface the stderr tail: {v}"
+        );
+    }
+
+    /// A clean run — exit 0, no panics — passes and omits the digest (the passing
+    /// shape stays a bare boolean, mirroring the failure_digest omission on pass).
+    #[test]
+    fn runtime_reflux_verdict_pass_omits_digest() {
+        let v = runtime_reflux_verdict("all good\n", "", Some(0));
+        assert_eq!(v["passed"], serde_json::json!(true));
+        assert!(
+            v.get("runtime_digest").is_none(),
+            "a passing runtime verdict must not carry a runtime_digest: {v}"
+        );
+    }
+
+    /// Panic evidence alone marks a failure even when the exit code is 0 (a
+    /// process can panic-catch and still exit 0): the reflux must still fail and
+    /// embed the digest so the panic reaches the worker.
+    #[test]
+    fn runtime_reflux_verdict_fails_on_panic_even_with_zero_exit() {
+        let v = runtime_reflux_verdict("", "thread 'worker' panicked at lib.rs:1:1", Some(0));
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "a panic must fail the runtime verdict regardless of exit code: {v}"
+        );
+        assert!(
+            v.get("runtime_digest").is_some(),
+            "the panic evidence must be embedded for the worker: {v}"
+        );
+    }
+
+    /// The reflux carries only observable facts — never a fix instruction. This
+    /// pins the LLM/Rust separation: no "how to fix" field leaks into the verdict.
+    #[test]
+    fn runtime_reflux_verdict_carries_no_fix_decision() {
+        let v = runtime_reflux_verdict("", "Error: boom", Some(2));
+        let obj = v.as_object().expect("verdict is a JSON object");
+        // Only the mechanical keys are present; nothing prescribing a fix.
+        for k in obj.keys() {
+            assert!(
+                matches!(k.as_str(), "kind" | "passed" | "runtime_digest"),
+                "unexpected key {k:?} — the verdict must stay fact-only (no fix decision): {v}"
+            );
+        }
     }
 
     /// Japanese behavioral markers are recognised too.
