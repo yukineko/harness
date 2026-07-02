@@ -38,6 +38,11 @@
 
 use serde::Serialize;
 
+/// The deterministic replan-attempt cap (phase-4 DoD#3): at most this many
+/// replans per task before the cascade fail-softs to user escalation. Keeps
+/// the replan loop finite (a replan that itself fails must not replan forever).
+pub const MAX_REPLANS: usize = 1;
+
 /// Known model tiers, cheapest → strongest. Kept local (rather than reusing
 /// `verify::TIERS`) since that table is private to `verify.rs` and this
 /// module's tier concern (top-tier detection) is narrower than the verifier's
@@ -102,6 +107,40 @@ pub struct FailureClassification {
     /// `consensus::Consensus::reason` / `verify::FailureDigest`'s design: the
     /// FORMATTING is deterministic Rust, the fix DECISION stays with the LLM).
     pub reason: String,
+}
+
+/// The three deterministic directives the reflux cascade can be given.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")] // -> "escalate_model" | "replan" | "escalate_to_user"
+pub enum Directive {
+    /// Retry with a stronger model tier (cap does not apply).
+    EscalateModel,
+    /// Hand back for re-decomposition (within cap).
+    Replan,
+    /// Replan cap exhausted: fail-soft to user escalation.
+    EscalateToUser,
+}
+
+/// The composed decision emitted to the /condukt cascade. Serialized as the
+/// output of `condukt replan handoff`. Carries `classification` at the top
+/// level for backward-compat with the existing skill jq
+/// (`.resolution // .classification.resolution`).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplanDirective {
+    /// The directive: escalate model, replan, or escalate to user.
+    pub directive: Directive,
+    /// The underlying classification (always present for backward-compat).
+    pub classification: FailureClassification,
+    /// The handoff instruction (Some only for Directive::Replan).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<ReplanHandoff>,
+    /// Current replan count for this task (how many times we've already replanned).
+    pub replan_count: usize,
+    /// The replan cap (= MAX_REPLANS).
+    pub cap: usize,
+    /// User escalation message (Some only for Directive::EscalateToUser).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_escalation: Option<String>,
 }
 
 /// Collapse a model string to its canonical tier keyword when recognised
@@ -273,6 +312,86 @@ pub fn build_replan_handoff(
         task_summary: task_summary.to_string(),
         instruction,
     })
+}
+
+/// Compose classify_failure (DoD#1) + build_replan_handoff (DoD#2) + the replan
+/// cap (DoD#3) into a single deterministic directive. Pure: no LLM, no I/O, no
+/// clock. This function decides *what to do* (escalate the model / replan / give
+/// up to the user); it NEVER performs the re-interpretation itself — producing a
+/// new decomposition stays the interpreter LLM's job. Never panics.
+///
+/// - EscalateModel classification  -> Directive::EscalateModel (cap does not apply).
+/// - Replan classification, replan_count <  MAX_REPLANS -> Directive::Replan (handoff Some).
+/// - Replan classification, replan_count >= MAX_REPLANS -> Directive::EscalateToUser
+///   (fail-soft: handoff None, user_escalation Some with a message explaining the
+///   replan budget is exhausted and the task is being handed to the user).
+pub fn decide_replan(
+    reason: &str,
+    failed_tests: &str,
+    diff: &str,
+    model_tier: &str,
+    done_criteria: &str,
+    task_summary: &str,
+    replan_count: usize,
+) -> ReplanDirective {
+    // Classify the failure once.
+    let classification = classify_failure(reason, failed_tests, model_tier);
+
+    match classification.resolution {
+        Resolution::EscalateModel => {
+            // Escalate model: cap does not apply.
+            ReplanDirective {
+                directive: Directive::EscalateModel,
+                classification,
+                handoff: None,
+                replan_count,
+                cap: MAX_REPLANS,
+                user_escalation: None,
+            }
+        }
+        Resolution::Replan => {
+            // Replan classification: check the cap.
+            if replan_count < MAX_REPLANS {
+                // Within cap: build the handoff and emit Directive::Replan.
+                let handoff = build_replan_handoff(
+                    reason,
+                    failed_tests,
+                    diff,
+                    model_tier,
+                    done_criteria,
+                    task_summary,
+                )
+                .expect("classification is Replan, so handoff should succeed");
+
+                ReplanDirective {
+                    directive: Directive::Replan,
+                    classification,
+                    handoff: Some(handoff),
+                    replan_count,
+                    cap: MAX_REPLANS,
+                    user_escalation: None,
+                }
+            } else {
+                // At or over cap: fail-soft to user escalation.
+                let user_escalation = format!(
+                    "replan cap ({} replan(s)) exhausted after {} attempt(s). Task is being escalated to user \
+                     rather than retried again. This is a fail-soft safety stop: the task could not resolve \
+                     even after being re-decomposed once (the maximum allowed replans). Manual intervention \
+                     or a different approach is needed.",
+                    MAX_REPLANS, replan_count
+                );
+
+                ReplanDirective {
+                    directive: Directive::EscalateToUser,
+                    classification,
+                    handoff: None,
+                    replan_count,
+                    cap: MAX_REPLANS,
+                    user_escalation: Some(user_escalation),
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -504,5 +623,253 @@ mod tests {
         // Empty model_tier is not top tier and empty reason has no
         // scope-mismatch marker → EscalateModel, but must not panic either way.
         assert!(result.is_err());
+    }
+
+    // ── decide_replan: 3-way directive ────────────────────────────────────
+
+    #[test]
+    fn replan_within_cap_emits_replan_with_handoff() {
+        let directive = decide_replan(
+            "scope mismatch: done_criteria requires files outside touched_files",
+            "foo::bar",
+            "diff --git a/x b/x",
+            "sonnet",
+            "the public API must be in crate root",
+            "wire the thing",
+            0, // replan_count = 0 (first replan, within cap)
+        );
+
+        assert_eq!(directive.directive, Directive::Replan);
+        assert_eq!(directive.classification.resolution, Resolution::Replan);
+        assert!(
+            directive.handoff.is_some(),
+            "Directive::Replan must carry Some(handoff)"
+        );
+        assert_eq!(
+            directive
+                .handoff
+                .as_ref()
+                .unwrap()
+                .classification
+                .resolution,
+            Resolution::Replan
+        );
+        assert!(
+            directive.user_escalation.is_none(),
+            "within-cap replan should not carry user_escalation"
+        );
+        assert_eq!(directive.replan_count, 0);
+        assert_eq!(directive.cap, MAX_REPLANS);
+    }
+
+    #[test]
+    fn replan_at_cap_degrades_to_user_escalation() {
+        let directive = decide_replan(
+            "scope mismatch: done_criteria unmet",
+            "foo::bar",
+            "diff --git a/x b/x",
+            "sonnet",
+            "some criteria",
+            "some task",
+            1, // replan_count = 1 (== MAX_REPLANS, at the cap)
+        );
+
+        assert_eq!(directive.directive, Directive::EscalateToUser);
+        assert_eq!(directive.classification.resolution, Resolution::Replan);
+        assert!(
+            directive.handoff.is_none(),
+            "Directive::EscalateToUser must not carry handoff"
+        );
+        assert!(
+            directive.user_escalation.is_some(),
+            "Directive::EscalateToUser must carry user_escalation"
+        );
+        let msg = directive.user_escalation.as_ref().unwrap();
+        assert!(!msg.is_empty(), "user_escalation message must not be empty");
+        assert!(
+            msg.to_lowercase().contains("cap"),
+            "user_escalation must mention cap: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("exhausted"),
+            "user_escalation must mention exhaustion: {msg}"
+        );
+        assert_eq!(directive.replan_count, 1);
+        assert_eq!(directive.cap, MAX_REPLANS);
+    }
+
+    #[test]
+    fn replan_over_cap_also_escalates_to_user() {
+        let directive = decide_replan(
+            "scope mismatch",
+            "foo::bar",
+            "diff",
+            "sonnet",
+            "criteria",
+            "task",
+            5, // replan_count = 5 (>> MAX_REPLANS)
+        );
+
+        assert_eq!(directive.directive, Directive::EscalateToUser);
+        assert!(directive.user_escalation.is_some());
+        assert_eq!(directive.replan_count, 5);
+    }
+
+    #[test]
+    fn escalate_model_ignores_replan_count() {
+        // An ordinary implementation bug at sonnet should escalate the model,
+        // regardless of replan_count.
+        let directive = decide_replan(
+            "assertion `left == right` failed",
+            "foo::bar",
+            "diff",
+            "sonnet",
+            "criteria",
+            "task",
+            5, // replan_count = 5 (doesn't matter)
+        );
+
+        assert_eq!(directive.directive, Directive::EscalateModel);
+        assert_eq!(
+            directive.classification.resolution,
+            Resolution::EscalateModel
+        );
+        assert!(directive.handoff.is_none());
+        assert!(directive.user_escalation.is_none());
+        assert_eq!(directive.replan_count, 5);
+        assert_eq!(directive.cap, MAX_REPLANS);
+    }
+
+    #[test]
+    fn decide_replan_is_deterministic() {
+        // Calling decide_replan twice with identical inputs produces identical output.
+        let input = (
+            "scope mismatch: touched_files too narrow",
+            "test_foo",
+            "diff HEAD",
+            "haiku",
+            "the task must edit file X",
+            "wire it up",
+            0,
+        );
+
+        let dir1 = decide_replan(
+            input.0, input.1, input.2, input.3, input.4, input.5, input.6,
+        );
+        let dir2 = decide_replan(
+            input.0, input.1, input.2, input.3, input.4, input.5, input.6,
+        );
+
+        assert_eq!(dir1, dir2, "identical inputs must produce identical output");
+    }
+
+    #[test]
+    fn decide_replan_does_not_produce_a_decomposition() {
+        // decide_replan only carries instruction text; it does not generate
+        // a new decomposition. The handoff carries .instruction (guidance)
+        // and failure_context, but no generated tasks/decomposition JSON.
+        let directive = decide_replan(
+            "scope mismatch",
+            "test_foo",
+            "diff",
+            "sonnet",
+            "criteria",
+            "task",
+            0,
+        );
+
+        if let Some(handoff) = &directive.handoff {
+            // The instruction must be non-empty (guidance text).
+            assert!(!handoff.instruction.is_empty());
+            // But it must not contain any JSON-like task decomposition.
+            // A minimal check: if it's a replan handoff, it should not have a
+            // "tasks" field with array structure (a full decomposition would).
+            let instr_lower = handoff.instruction.to_lowercase();
+            assert!(
+                !instr_lower.contains("\"tasks\"") || !instr_lower.contains("["),
+                "handoff.instruction must not carry generated decomposition: {}",
+                handoff.instruction
+            );
+            // The instruction must mention that a new decomposition is needed.
+            assert!(instr_lower.contains("new") || instr_lower.contains("different"));
+        }
+    }
+
+    #[test]
+    fn decide_replan_never_panics_on_empty_input() {
+        // Empty input should not panic.
+        let _ = decide_replan("", "", "", "", "", "", 0);
+        let _ = decide_replan("", "", "", "", "", "", usize::MAX);
+    }
+
+    #[test]
+    fn decide_replan_never_panics_on_garbage_input() {
+        let garbage = "\u{0}\t!@#$%^&*()_+{}|:<>?~`-=[]\\;',./";
+        let _ = decide_replan(garbage, garbage, garbage, garbage, garbage, garbage, 0);
+        let _ = decide_replan(
+            garbage,
+            garbage,
+            garbage,
+            garbage,
+            garbage,
+            garbage,
+            usize::MAX,
+        );
+    }
+
+    #[test]
+    fn decide_replan_carries_consistent_state() {
+        let directive = decide_replan(
+            "ordinary bug",
+            "tests",
+            "diff",
+            "opus",
+            "criteria",
+            "task",
+            3,
+        );
+
+        // All directives must carry replan_count and cap.
+        assert_eq!(directive.replan_count, 3);
+        assert_eq!(directive.cap, MAX_REPLANS);
+        // Classification must always be present.
+        assert!(!directive.classification.reason.is_empty());
+    }
+
+    #[test]
+    fn decide_replan_top_tier_replan_within_cap() {
+        // Top tier + still failing = Replan (even without scope-mismatch marker).
+        // Within cap: directive = Replan with handoff.
+        let directive = decide_replan(
+            "assertion `left == right` failed",
+            "foo::bar",
+            "diff",
+            "opus",
+            "criteria",
+            "task",
+            0,
+        );
+
+        assert_eq!(directive.directive, Directive::Replan);
+        assert!(directive.handoff.is_some());
+        assert!(directive.user_escalation.is_none());
+    }
+
+    #[test]
+    fn decide_replan_top_tier_replan_at_cap() {
+        // Top tier + still failing = Replan; at cap = EscalateToUser.
+        let directive = decide_replan(
+            "assertion `left == right` failed",
+            "foo::bar",
+            "diff",
+            "opus",
+            "criteria",
+            "task",
+            1, // == MAX_REPLANS
+        );
+
+        assert_eq!(directive.directive, Directive::EscalateToUser);
+        assert!(directive.handoff.is_none());
+        assert!(directive.user_escalation.is_some());
     }
 }
