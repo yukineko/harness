@@ -23,14 +23,18 @@
 //! call, no I/O, no clock — pure function of its arguments. How the resolution
 //! is *acted on* (spawning a replan vs. re-dispatching a stronger-model worker)
 //! is the `/condukt` SKILL orchestration's job, not this module's.
-
-// This module's classifier is deliberately unwired into the `/condukt` SKILL
-// cascade for now (out of scope for this task — see the module doc above),
-// so nothing in `main.rs` calls `classify_failure` yet. Silence the resulting
-// dead_code warnings the same way `verify.rs` does for its not-yet-wired
-// helpers (e.g. `parse_health_url`) rather than papering over them with a
-// synthetic caller.
-#![allow(dead_code)]
+//!
+//! phase-4 DoD#2 wires this classifier into the reflux cascade: when
+//! [`classify_failure`] resolves to [`Resolution::Replan`],
+//! [`build_replan_handoff`] formats the reflux facts into a [`ReplanHandoff`]
+//! that explicitly instructs the interpreter to produce a *brand-new*
+//! decomposition — a different approach, a different scope — rather than
+//! re-running the original decomposition verbatim (which would just
+//! reproduce the same failure). The `condukt replan handoff` CLI subcommand
+//! (see `main.rs`) exposes this to the `/condukt` skill's cascade, mirroring
+//! how `condukt verify digest` exposes `verify::distill_failure`: the
+//! FORMATTING here is deterministic Rust, the actual re-decomposition stays
+//! the interpreter LLM's job.
 
 use serde::Serialize;
 
@@ -183,6 +187,94 @@ pub fn classify_failure(
     }
 }
 
+/// A deterministic handoff for the `/condukt` skill's reflux cascade,
+/// produced only when [`classify_failure`] resolves to [`Resolution::Replan`].
+///
+/// Carries the reflux facts forward (so the interpreter has the failure
+/// context to reason about) plus an explicit [`Self::instruction`]: the
+/// interpreter must produce a **new** decomposition with a **different
+/// approach and different scope**, not re-run the original decomposition
+/// verbatim. Re-running the same task shape against the same failure would
+/// just reproduce it — that is precisely the case
+/// [`classify_failure`] has already ruled out an `EscalateModel` retry for.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplanHandoff {
+    /// The classification that triggered this handoff. Always carries
+    /// `resolution: Resolution::Replan` (see [`build_replan_handoff`]).
+    pub classification: FailureClassification,
+    /// The verifier/worker failure reason, carried forward verbatim.
+    pub reason: String,
+    /// The failing-test output, carried forward verbatim.
+    pub failed_tests: String,
+    /// The `git diff` of the failed attempt, carried forward verbatim.
+    pub diff: String,
+    /// The original task's `done_criteria`, carried forward verbatim (empty
+    /// string if not supplied — this function never panics on missing input).
+    pub done_criteria: String,
+    /// A short human summary of the original task, carried forward verbatim.
+    pub task_summary: String,
+    /// The explicit re-decomposition instruction for the interpreter
+    /// (Phase 1): produce a NEW decomposition — a different approach and a
+    /// different scope than the original — rather than re-running the
+    /// original decomposition as-is.
+    pub instruction: String,
+}
+
+/// Build a [`ReplanHandoff`] from a failing task's reflux facts, IF AND ONLY
+/// IF [`classify_failure`] resolves those facts to [`Resolution::Replan`].
+///
+/// Pure and deterministic: no LLM call, no I/O, no clock — a formatting
+/// function of its arguments only (mirrors `verify::distill_failure`'s
+/// design: the FORMATTING is deterministic Rust, the fix/re-decomposition
+/// DECISION stays with the LLM). Never panics on empty/garbage input.
+///
+/// - `Ok(handoff)` — the failure resolves to `Replan`; `handoff.instruction`
+///   explicitly tells the interpreter to build a NEW decomposition (different
+///   approach, different scope), not to re-run the original one.
+/// - `Err(classification)` — the failure resolves to `EscalateModel` instead;
+///   no handoff is built (there is nothing to replan yet), and the caller
+///   gets the classification back so it can still report the resolution.
+pub fn build_replan_handoff(
+    reason: &str,
+    failed_tests: &str,
+    diff: &str,
+    model_tier: &str,
+    done_criteria: &str,
+    task_summary: &str,
+) -> Result<ReplanHandoff, FailureClassification> {
+    let classification = classify_failure(reason, failed_tests, model_tier);
+    if classification.resolution != Resolution::Replan {
+        return Err(classification);
+    }
+
+    let summary_display = if task_summary.trim().is_empty() {
+        "(no task summary given)"
+    } else {
+        task_summary
+    };
+
+    let instruction = format!(
+        "REPLAN, do not retry: task \"{summary_display}\" failed under model_tier \
+         '{model_tier}' — {class_reason} Do NOT simply re-run the original decomposition \
+         (same tasks, same touched_files, same approach); that would reproduce the same \
+         failure. Instead, hand this failure_context (reason, failed_tests, diff, \
+         done_criteria below) back to the interpreter (Phase 1) and have it produce a BRAND \
+         NEW decomposition that takes a DIFFERENT APPROACH and a DIFFERENT SCOPE (different \
+         touched_files / task boundaries) than the original decomposition.",
+        class_reason = classification.reason,
+    );
+
+    Ok(ReplanHandoff {
+        classification,
+        reason: reason.to_string(),
+        failed_tests: failed_tests.to_string(),
+        diff: diff.to_string(),
+        done_criteria: done_criteria.to_string(),
+        task_summary: task_summary.to_string(),
+        instruction,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +407,102 @@ mod tests {
         let c = classify_failure("scope mismatch: done_criteria unmet", "", "opus");
         assert_eq!(c.resolution, Resolution::Replan);
         assert!(c.reason.to_lowercase().contains("top tier"), "{}", c.reason);
+    }
+
+    // ── build_replan_handoff ─────────────────────────────────────────────
+
+    #[test]
+    fn replan_resolution_builds_handoff_with_new_decomposition_instruction() {
+        let handoff = build_replan_handoff(
+            "scope mismatch: done_criteria requires editing files outside touched_files",
+            "foo::bar",
+            "diff --git a/x b/x",
+            "sonnet",
+            "the public API must live in crate root",
+            "wire the thing",
+        )
+        .expect("scope-mismatch reason at sonnet should resolve to Replan");
+
+        assert_eq!(handoff.classification.resolution, Resolution::Replan);
+
+        let instr = handoff.instruction.to_lowercase();
+        // Must explicitly ask for a NEW decomposition, not a re-run of the old one.
+        assert!(
+            instr.contains("do not") && instr.contains("re-run"),
+            "instruction must explicitly forbid re-running the original decomposition: {}",
+            handoff.instruction
+        );
+        assert!(
+            instr.contains("original decomposition"),
+            "instruction must name what NOT to repeat: {}",
+            handoff.instruction
+        );
+        assert!(
+            instr.contains("different approach"),
+            "instruction must demand a different approach: {}",
+            handoff.instruction
+        );
+        assert!(
+            instr.contains("different scope"),
+            "instruction must demand a different scope: {}",
+            handoff.instruction
+        );
+        assert!(
+            instr.contains("new decomposition") || instr.contains("brand new decomposition"),
+            "instruction must demand a new decomposition: {}",
+            handoff.instruction
+        );
+
+        // The failure_context is carried forward verbatim so the interpreter has it.
+        assert_eq!(
+            handoff.reason,
+            "scope mismatch: done_criteria requires editing files outside touched_files"
+        );
+        assert_eq!(handoff.failed_tests, "foo::bar");
+        assert_eq!(handoff.diff, "diff --git a/x b/x");
+        assert_eq!(
+            handoff.done_criteria,
+            "the public API must live in crate root"
+        );
+        assert_eq!(handoff.task_summary, "wire the thing");
+    }
+
+    #[test]
+    fn escalate_model_resolution_yields_no_handoff() {
+        // An ordinary implementation bug below the top tier resolves to
+        // EscalateModel — no handoff is built (there is nothing to replan
+        // yet), and the caller gets the classification back via Err.
+        let err = build_replan_handoff(
+            "assertion `left == right` failed",
+            "foo::bar",
+            "diff --git a/x b/x",
+            "sonnet",
+            "some done_criteria",
+            "some task",
+        )
+        .expect_err("ordinary implementation bug at sonnet should resolve to EscalateModel");
+        assert_eq!(err.resolution, Resolution::EscalateModel);
+    }
+
+    #[test]
+    fn top_tier_replan_handoff_also_builds() {
+        // Already at the top tier and still failing → Replan, even without a
+        // scope-mismatch-worded reason.
+        let handoff =
+            build_replan_handoff("assertion `left == right` failed", "", "", "opus", "", "")
+                .expect("top-tier-still-failing should resolve to Replan");
+        assert_eq!(handoff.classification.resolution, Resolution::Replan);
+        assert!(handoff
+            .instruction
+            .to_lowercase()
+            .contains("new decomposition"));
+    }
+
+    #[test]
+    fn build_replan_handoff_never_panics_on_empty_input() {
+        let result = build_replan_handoff("", "", "", "", "", "");
+        // Empty model_tier is not top tier and empty reason has no
+        // scope-mismatch marker → EscalateModel, but must not panic either way.
+        assert!(result.is_err());
     }
 }

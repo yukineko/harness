@@ -71,6 +71,13 @@ enum Command {
         #[command(subcommand)]
         action: VerifyAction,
     },
+    /// Deterministic reflux-cascade helpers: classify a failing task's reflux
+    /// facts into "escalate the model" vs "replan" (formatting/classification
+    /// only; the fix/re-decomposition DECISION stays with the LLM).
+    Replan {
+        #[command(subcommand)]
+        action: ReplanAction,
+    },
     /// Multi-sample self-consistency: plan an opt-in fan-out, or tally N verifier
     /// verdicts for one task into a majority winner + escalate-to-opus decision.
     Consensus {
@@ -421,6 +428,27 @@ enum VerifyAction {
 }
 
 #[derive(Subcommand)]
+enum ReplanAction {
+    /// Classify a failing task's reflux facts (JSON on stdin or --file:
+    /// `{"reason":...,"failed_tests":...,"diff":...,"model_tier":...,
+    /// "done_criteria":...,"task_summary":...}`, all fields optional/default
+    /// empty) into `escalate_model` vs `replan`, and — ONLY when the
+    /// resolution is `replan` — build a `ReplanHandoff` that explicitly
+    /// instructs the interpreter to produce a NEW decomposition (different
+    /// approach, different scope) rather than re-running the original
+    /// decomposition. When the resolution is `escalate_model`, no handoff is
+    /// built; only the classification is printed (the cascade's existing
+    /// tier-escalation retry path handles that case, unchanged). Prints pretty
+    /// JSON on stdout, exit 0. Deterministic Rust formatting so the /condukt
+    /// skill's cascade can fold "what next?" into the reflux without an extra
+    /// LLM turn; the re-decomposition itself stays the interpreter's job.
+    Handoff {
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum PrAction {
     /// Prepare (dry-run) or, with --execute, open a PR via `gh pr create`.
     ///
@@ -563,6 +591,33 @@ fn run_user(cmd: Command) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&verdict)?);
             }
         },
+        Command::Replan { action } => match action {
+            ReplanAction::Handoff { file } => {
+                let raw = match file {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => read_stdin(),
+                };
+                let input: ReplanHandoffInput = if raw.trim().is_empty() {
+                    ReplanHandoffInput::default()
+                } else {
+                    serde_json::from_str(&raw).context("parsing replan handoff JSON")?
+                };
+                match replan::build_replan_handoff(
+                    &input.reason,
+                    &input.failed_tests,
+                    &input.diff,
+                    &input.model_tier,
+                    &input.done_criteria,
+                    &input.task_summary,
+                ) {
+                    Ok(handoff) => println!("{}", serde_json::to_string_pretty(&handoff)?),
+                    Err(classification) => {
+                        println!("{}", serde_json::to_string_pretty(&classification)?)
+                    }
+                }
+            }
+        },
         Command::Consensus { action } => run_consensus(&cfg, action)?,
         Command::Init => init(&cfg)?,
         Command::Install { dry_run } => {
@@ -672,6 +727,22 @@ enum ConsensusInput {
         threshold: Option<f64>,
     },
     Bare(Vec<consensus::Verdict>),
+}
+
+/// JSON input for `replan handoff`: the reflux facts plus the original
+/// task's done_criteria/summary. All fields optional, defaulting to empty
+/// strings (mirrors `failure_context`'s shape used elsewhere in the /condukt
+/// skill's cascade; `model_tier`/`done_criteria`/`task_summary` are the extra
+/// fields this subcommand needs beyond the bare `failure_context`).
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct ReplanHandoffInput {
+    reason: String,
+    failed_tests: String,
+    diff: String,
+    model_tier: String,
+    done_criteria: String,
+    task_summary: String,
 }
 
 fn run_consensus(cfg: &Config, action: ConsensusAction) -> Result<()> {
