@@ -211,9 +211,18 @@ fn gated_task_is_isolated_and_never_batched() {
 /// Category legend used in the per-file notes:
 ///   HDR   = `allowed-tools:` front-matter (declares the tool, not a prompt).
 ///   PROSE = invariant text / heading that names the tool but does not prompt.
-///   DEGRADE = a prompt the skill explicitly SKIPS/downgrades when
-///             `condukt state autonomy-check` exits 0 (so it does NOT fire under
-///             autonomy — invariant-compatible).
+///   DEGRADE = a prompt the skill routes through `condukt policy answer` under
+///             autonomy (task 98be79b2): an `auto` verdict self-answers it with
+///             the recommended option (no prompt, journaled to
+///             `gate-decisions.jsonl`), while an `escalate` verdict — or the
+///             fail-safe fallback (invalid input / an old binary whose missing
+///             `answer` subcommand yields clap exit 2) — re-emits the prompt.
+///             Under `condukt state autonomy-check` exit 1 (non-autonomous) it
+///             fires as before. Invariant-compatible: routine gates auto-answer,
+///             genuine-judgment ones escalate.
+///   ESCALATE = a gate deliberately routed to the `escalate` verdict (low
+///             confidence / higher risk) so it re-Asks even under autonomy — the
+///             retained 質疑 channel (e.g. flow `pivot`).
 ///   BLOCKED = the sanctioned (a) worker-blocked stop (fires under autonomy: OK).
 ///   GATED   = the sanctioned (b) deploy/push GATED approval (fires: OK).
 ///   HOTL    = a human-in-the-loop prompt on a manually-invoked / non-autonomy
@@ -223,29 +232,34 @@ fn gated_task_is_isolated_and_never_batched() {
 ///             two-stop invariant does not govern them; they are pinned here
 ///             only so a NEW prompt cannot sneak in unaudited.
 ///
-/// condukt SKILL (17): HDR x1 (L5) + PROSE/heading x3 (L18 invariant, L225
-///   heading) + DEGRADE x? (Phase 3 agreement L231/L232/L239, confidence gate
-///   L243 rides on the non-autonomous agreement prompt) + BLOCKED x1 (L344
-///   worker `blocked` escalation) + GATED context (conflict-check safety stop
-///   L265/L272/L276) + HOTL (resume L45/L47, issue discovery L114/L116,
-///   open_questions L188, manual cancel L666).
-/// flow SKILL (13): HDR x1 (L5) + PROSE/switch x? (L55/L62/L63/L65 autonomy
-///   switch) + DEGRADE x? (gate table L69/L70/L71/L72, lock L102, pivot L225,
-///   3-failure L236, summary L248 — all "縮退 / Ask しない" under autonomy).
-///   flow states the invariant literally at L250 (see prose pin below).
-/// scout SKILL (7): HDR x1 (L5) + PROSE x1 (L41 invariant) + heading (L144) +
-///   DEGRADE (Phase 4 selection L153/L155, auto-handoff L189, L216) — all
-///   skipped under autonomy.
+/// condukt SKILL (20): HDR x1 + PROSE x4 (invariant #1 now documents the
+///   policy-answer routing contract — auto self-answers / escalate re-Asks /
+///   block refuses — spanning several lines, plus the Phase 3 heading) + DEGRADE
+///   (Phase 3 agreement routed through `condukt policy answer` with
+///   schedule-derived risk/confidence: auto skips the prompt, escalate/fallback
+///   re-emits it; the confidence gate rides on it) + BLOCKED x1 (worker
+///   `blocked` escalation) + GATED context (conflict-check safety stop x3) +
+///   HOTL (resume x2, issue discovery x2, open_questions x1, manual cancel x1).
+/// flow SKILL (10): HDR x1 + PROSE (Step 0.5 documents the policy-answer routing
+///   contract: the autonomy switch plus the exit 0/2/3 branches that name
+///   `AskUserQuestion` on escalate/fallback) + DEGRADE (lock gate, 3-failure —
+///   auto self-answers, escalate/fallback re-Asks) + ESCALATE (pivot: routed to
+///   `escalate` as a genuine strategic-judgment 質疑). flow states the residual-
+///   stops invariant literally (see prose pin below).
+/// scout SKILL (8): HDR x1 + PROSE x1 (invariant) + heading x1 + DEGRADE (Phase 4
+///   selection routed through `condukt policy answer`: auto adopts top-N,
+///   escalate/fallback re-emits the multiSelect prompt; plus auto-handoff and
+///   the hard-rule prose) — all skipped/answered under autonomy.
 /// compass SKILL (3): HDR (L5) + PROSE (L17) + HOTL (L52). compass is a human
 ///   reorientation layer, not part of the autonomy self-driving loop.
 /// tdd SKILL (1): HOTL (L39, optional confirmation while authoring a test).
 /// hypothesis add SKILL (1): HOTL (L14, prompt for a missing argument).
 const ASK_ALLOWLIST: &[(&str, usize)] = &[
     ("compass/skills/compass/SKILL.md", 3),
-    ("condukt/skills/condukt/SKILL.md", 17),
-    ("flow/skills/flow/SKILL.md", 13),
+    ("condukt/skills/condukt/SKILL.md", 20),
+    ("flow/skills/flow/SKILL.md", 10),
     ("hypothesis/skills/add/SKILL.md", 1),
-    ("scout/skills/scout/SKILL.md", 7),
+    ("scout/skills/scout/SKILL.md", 8),
     ("tdd/skills/tdd/SKILL.md", 1),
 ];
 

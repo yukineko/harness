@@ -143,20 +143,33 @@ L3 は「他プロジェクトが現にやっている」根拠の URL を必ず
 
 ### Phase 4 — 合意（AskUserQuestion / HOTL）
 
-合意提示の前に autonomy モードを決定論的に確認する（condukt Phase 3 と同じスイッチを共有する）:
+合意提示の前に、この選別ゲートを **`condukt policy answer` に通す**（condukt / flow と**同一**の shim。
+まずグローバルな autonomy スイッチで縮退可否を確認し、autonomous なら per-gate verdict で判定する）:
 
 ```bash
 condukt state autonomy-check   # autonomous なら exit 0 + {"autonomous":true}、そうでなければ exit 1 + {"autonomous":false}
 ```
 
-- **exit 1（非 autonomous・既定）** → 従来どおり。スコア上位の施策（既定 8〜12 件）を
-  `AskUserQuestion`（multiSelect）で提示し、**backlog に積むものを選ばせる**。各選択肢に
+- **exit 1（非 autonomous・既定）／ autonomy-check 未対応（exit 127）** → 従来どおり。スコア上位の施策
+  （既定 8〜12 件）を `AskUserQuestion`（multiSelect）で提示し、**backlog に積むものを選ばせる**。各選択肢に
   `severity/effort/lens/priority` を要約表示する（後方互換。既定では必ず選別 Ask が出る）。
-- **exit 0（autonomous）** → 選別の `AskUserQuestion` を**省略**し、スコア上位 N 件（既定 top 8、
-  `p0`/`p1` を優先）を**そのまま採用**して Phase 5 へ auto-queue する。採用した施策一覧は
-  「autonomy: top-N を自動採用」として**サマリで明示**する（黙って積まない）。ただし安全側の不変:
+- **exit 0（autonomous）** → 選別ゲートを policy-answer に掛ける。施策採用は low-risk・可逆（backlog 項目は
+  後で除去できる）なので既定 verdict は **auto**:
+  ```bash
+  OUT=$(condukt policy answer --risk low --reversible high --confidence high \
+          --question "scout 施策のうち backlog に積むものは?" \
+          --option "top-N を自動採用" --option "選別を人手に返す" --recommend 0 2>/dev/null)
+  case $? in
+    0) : ;;  # auto: 選別 Ask を省略し、スコア上位 N 件（既定 top 8、p0/p1 優先）を採用して Phase 5 へ auto-queue（自答は監査ログに残る）
+    2) : ;;  # escalate: 上の exit 1 と同じ AskUserQuestion（multiSelect）で選ばせる
+    3) : ;;  # block: 積まずに停止する
+    *) : ;;  # 旧バイナリ（`answer` 無しの clap exit 2 も case 2 に落ちて安全）/ 不正入力 → 安全側 = AskUserQuestion
+  esac
+  ```
+  採用した施策一覧は「autonomy: top-N を自動採用」として**サマリで明示**し、`condukt policy answers` で監査できる
+  （黙って積まない）。安全側の不変:
   - `--dry-run` は autonomy でも**必ずここで停止**する（選別省略は「停止しない」ではない）。
-  - `condukt` バイナリが無い / `autonomy-check` 未対応なら非 autonomous とみなし、従来どおり Ask を出す。
+  - `condukt` バイナリが無い / `answer` 未対応なら非 autonomous とみなし、従来どおり Ask を出す。
 
 `--dry-run` ならここで停止し、提示だけで終了。
 

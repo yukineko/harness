@@ -16,7 +16,14 @@ allowed-tools: Task, AskUserQuestion, Bash(condukt:*), Bash(fugu-router:*), Bash
 ## 不変条件 (外さない)
 
 1. **合意は main loop のみ** — `AskUserQuestion` はこの skill (main) でしか使えない。合意未了の
-   タスクを実装に渡さない。
+   タスクを実装に渡さない。autonomous モードでは各 human gate をまず **`condukt policy answer`**
+   (flow / scout と同一の shim) に通し、`auto`(exit 0) は printed `chosen` を自答 (Ask 撤去・
+   `gate-decisions.jsonl` に追記) / `escalate`(exit 2) は従来 `AskUserQuestion` (残す 質疑) /
+   `block`(exit 3) は拒否、その他 (exit 1・旧バイナリの clap exit 2・exit 127) は安全側に
+   `AskUserQuestion` へ落とす。合意 (Phase 3) は schedule 由来の risk/confidence で graded 判定し、
+   genuine な判断ゲート — resume 選択 (Phase 0)・`open_questions` (Phase 1)・conflict (Phase 3.5)・
+   worker `blocked` (Phase 5) — は低 confidence/高 risk を与えて **escalate** に倒す (＝人に聞く)。
+   自答履歴は `condukt policy answers` で監査できる。
 2. **GATED は子に実行も承認もさせない** — deploy 等 `class:"gated"` のタスクは `condukt schedule`
    が `gated` に分離する。実装フェーズの対象外。承認はユーザーから main で得る。
 3. **共有ファイルは直列** — `condukt schedule` が `shared_globs` 設定と file 衝突解析で `serial` に
@@ -227,16 +234,37 @@ condukt schedule --file <json.routed>  # → {batches, serial, gated, warnings}
 
 ### Phase 3 — 合意 (main loop / AskUserQuestion)
 
-**autonomy ゲート判定 (合意 Ask の要否)**: 合意提示の前に autonomy モードを決定論的に確認する:
+**autonomy ゲート判定 (合意 Ask の要否)**: 合意提示の前に、合意ゲートを **`condukt policy answer` に通す**
+(flow / scout と**同一**の shim。5f7d706b で出荷済み)。まずグローバルな autonomy スイッチで縮退可否を確認する:
 ```bash
 condukt state autonomy-check   # autonomous なら exit 0 + {"autonomous":true}、そうでなければ exit 1 + {"autonomous":false}
 ```
-- **exit 1 (非 autonomous・既定)** → 従来どおり。下記の `AskUserQuestion` で合意を取る（後方互換。既定では必ず合意 Ask が出る）。
-- **exit 0 (autonomous)** → 合意の `AskUserQuestion` を**省略**し、`schedule` 結果 (並列バッチ / serial / gated) を
-  **そのまま採用**して Phase 3.5 へ進む。ただし次は autonomy でも縮退させない（安全側の不変）:
+- **exit 1 (非 autonomous・既定)／ autonomy-check 未対応 (exit 127)** → 従来どおり。下記の `AskUserQuestion` で
+  合意を取る（後方互換。既定では必ず合意 Ask が出る）。
+- **exit 0 (autonomous)** → 合意ゲートを policy-answer に掛ける。**risk/confidence は schedule の内容から導く**
+  (graded: 安全な計画は auto、危うい計画は escalate):
+  - `class:"gated"` タスクを含む、または `confidence:"low"` タスクを含む → `RISK=medium CONF=low`
+    (→ 既定 verdict **escalate** ＝ 合意を人に返す)。
+  - それ以外 (全 parallel/serial かつ confidence high/medium のみ) → `RISK=low CONF=high`
+    (→ 既定 verdict **auto** ＝ 合意 Ask を省略)。
+  ```bash
+  # gated タスク／low-confidence タスクの有無で $RISK・$CONF を決める（上記ルール）。
+  OUT=$(condukt policy answer --risk "$RISK" --reversible high --confidence "$CONF" \
+          --question "この schedule で実装に進む?" \
+          --option "この計画で進む" --option "計画を見直す" --recommend 0 2>/dev/null)
+  case $? in
+    0) : ;;  # auto: 合意 Ask を省略し schedule (並列バッチ / serial / gated) をそのまま採用して Phase 3.5 へ（自答は監査ログに残る）
+    2) : ;;  # escalate: 下記の AskUserQuestion で合意を取る（gated/low-confidence を含む計画は人に返る）
+    3) : ;;  # block: 実装に進まず停止する
+    *) : ;;  # 旧バイナリ（`answer` 無しの clap exit 2 も case 2 に落ちて安全）/ 不正入力 → 安全側 = AskUserQuestion
+  esac
+  ```
+  auto で省略しても次は autonomy でも縮退させない（安全側の不変）:
   - `--dry-run` は autonomy でも**必ずここで停止**する（合意省略は「停止しない」ではない）。
   - `class: "gated"` タスク (deploy/push 等) は autonomy でも実装・承認の対象外のまま (Phase 8 でユーザー承認)。
-  - `confidence: low`/`medium` のタスクは合意を省略しても**ログに明示**し、後段の Phase 6 検証ゲートで担保する。
+  - `confidence: low`/`medium` のタスクは合意を省略しても**ログに明示**し、後段の Phase 6 検証ゲートで担保する
+    (なお上記ルールでは low-confidence を含む計画は escalate になり合意 Ask が出る)。
+  自答・エスカレートの履歴は `condukt policy answers` で監査できる。
 
 合意を取る場合 (非 autonomous):
 `schedule` 結果 (並列バッチ / serial / gated) を `AskUserQuestion` で提示し合意を取る。割り直しが
