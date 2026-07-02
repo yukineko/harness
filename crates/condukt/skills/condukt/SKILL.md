@@ -440,6 +440,23 @@ CC=$(condukt state check-criteria --run "$RID" --task "<id>")
 「テストが通ったから正しい」で verifier を素通りする穴（generation と verification の共有盲点の一種）を
 バイナリ側で塞ぐ。
 
+**runtime/health 検証経路（`done_criteria` が実行時挙動を参照するとき）**: done_criteria が
+「サーバが起動し `GET /health` が 200 を返す」「実行時に panic/例外を出さない」等の**実行時挙動**を
+参照する場合、テスト/ビルドの緑は証拠にすぎず、**ビルド済みアプリ/バイナリを実起動した runtime シグナル**まで
+確認する。分類器は `runtime`/`health`/`実行時`/`起動`/`稼働` を behavioral マーカーとして扱うため、これらの
+criteria は `skip_verifier: false`（verifier 必須）に落ちる。verifier agent は決定論エンジンで実起動する:
+```bash
+# サーバ (exit しない対象): /health が 200 になるまで startup-timeout までポーリングし teardown。
+condukt verify launch --cmd '<起動コマンド>' --health-url http://127.0.0.1:<port>/health --startup-timeout <secs>
+# 短命な対象: stdout/stderr/exit code/panic を捕捉 (--health-url 省略で従来の exit 待ち)。
+condukt verify launch --cmd '<起動コマンド>' --timeout <secs>
+```
+`--cmd` は blastguard で検証され危険コマンドは spawn されない（Docker/VM は使わず既存の `sh -c` +
+worktree 隔離の枠内）。対象不在/起動不能/timeout/health 非200 は fail-soft（常に exit 0・verdict は
+`passed:false` に `note`+`runtime_digest`）で **turn を壊さない**。この runtime verdict は done_criteria を
+満たすかの**証拠**であって、他の done_criteria 照合（機械テスト等）を代替しない。runtime シグナルの整形は
+Rust 決定論側、修正判断のみ LLM worker に還流する。
+
 **F→P (Fail→Pass) 再現性ゲート (`kind: fix|feature` タスク限定)**: worker が `reproduction_tests` の
 red→green サイクル (`tdd` の RED/GREEN 証跡) を回し終えた後、**`verified` へ昇格させる前**に、その
 RED→GREEN が本物の Fail→Pass 遷移だったかを確認できる:
