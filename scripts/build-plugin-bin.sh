@@ -23,14 +23,20 @@ pkg="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "crates/$plugin/Ca
 pkg="${pkg:-$plugin}"
 binname="${3:-$pkg}"
 
+# Ask cargo where it actually puts artifacts rather than assuming ./target —
+# CARGO_TARGET_DIR or a target-dir override in .cargo/config.toml (e.g.
+# redirecting off a full C: drive under WSL) changes this.
+target_dir="$(cargo metadata --no-deps --format-version=1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+target_dir="${target_dir:-$PWD/target}"
+
 if [ -n "$target" ]; then
   rustc_triple="$target"
   cargo build --release -p "$pkg" --target "$target"
-  src="target/$target/release/$binname"
+  src="$target_dir/$target/release/$binname"
 else
   rustc_triple="$(rustc -vV | sed -n 's/^host: //p')"
   cargo build --release -p "$pkg"
-  src="target/release/$binname"
+  src="$target_dir/release/$binname"
 fi
 
 # normalize <triple> -> <os>-<arch>
