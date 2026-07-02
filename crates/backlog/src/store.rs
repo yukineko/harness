@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::task::{new_id, Task, STATUS_DONE, STATUS_FAILED, STATUS_PENDING};
 
@@ -48,6 +49,115 @@ pub fn save(path: &Path, tasks: &[Task]) -> Result<()> {
     Ok(())
 }
 
+// ---- tasks-file-scoped advisory lock ----------------------------------------
+//
+// A per-tasks-file advisory lock that serializes the read-modify-write critical
+// section of the mutators (requeue_expired / add / mark_* / edit) so two
+// concurrent callers on the SAME file cannot lost-update each other. `save` is
+// already atomic (temp+rename, no torn file), but the load→modify→save WINDOW is
+// unguarded, so without this lock the last writer clobbers a concurrent change.
+//
+// This is DELIBERATELY NOT `crate::lock`: that is the single GLOBAL `/flow`
+// run.lock (exclusive, errors on a live holder). Wrapping the unattended
+// SessionStart requeue in the global lock would skip requeue whenever a real
+// `/flow` session held it, and make an interactive session see a phantom
+// "another session active". This lock is keyed on the tasks-file path, is
+// BLOCKING (bounded), and is fail-soft (degrades to unprotected best-effort
+// rather than erroring), so it never breaks a turn.
+
+/// Sibling lockfile path for a tasks file (e.g. `tasks.toml` -> `tasks.toml.lock`).
+fn tasks_lock_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(".lock");
+    PathBuf::from(s)
+}
+
+/// A lockfile older than this (by mtime) is treated as abandoned by a crashed
+/// holder and reaped, so a dead holder never deadlocks the SessionStart hook.
+/// The critical section is a single load-modify-save (sub-millisecond), so a
+/// live holder is never falsely reaped.
+const TASKS_LOCK_STALE_SECS: u64 = 5;
+/// Bounded blocking-acquire budget: attempts × sleep ≈ 150ms worst case.
+const TASKS_LOCK_MAX_ATTEMPTS: u32 = 50;
+const TASKS_LOCK_SLEEP: Duration = Duration::from_millis(3);
+
+/// RAII guard for the tasks-file-scoped advisory lock. Removes the lockfile on
+/// EVERY drop path — Ok return, Err return, or panic-unwind — so the lock is
+/// always released.
+struct TasksLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for TasksLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Is the lockfile obviously stale (older than [`TASKS_LOCK_STALE_SECS`])?
+fn tasks_lock_is_stale(lock_path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(lock_path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    match modified.elapsed() {
+        Ok(age) => age.as_secs() >= TASKS_LOCK_STALE_SECS,
+        // Clock skew (mtime in the future): don't reap.
+        Err(_) => false,
+    }
+}
+
+/// Try to acquire the tasks-file-scoped advisory lock, BLOCKING (bounded) until
+/// the current holder releases. Acquisition is atomic: `create_new` (O_EXCL)
+/// means exactly one racer can create the lockfile; the loser retries. An
+/// obviously-stale lockfile (crashed holder) is reaped so it never deadlocks.
+///
+/// Returns `Some(guard)` on success, or `None` if the lock could not be acquired
+/// within the budget — the caller must then degrade to a best-effort unprotected
+/// operation (fail-soft) rather than erroring.
+fn try_acquire_tasks_lock(path: &Path) -> Option<TasksLockGuard> {
+    let lock_path = tasks_lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    for _ in 0..TASKS_LOCK_MAX_ATTEMPTS {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            // We won the atomic create — we hold the lock.
+            Ok(_f) => return Some(TasksLockGuard { path: lock_path }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Held by someone else. Reap it if abandoned, else wait & retry.
+                if tasks_lock_is_stale(&lock_path) {
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
+                std::thread::sleep(TASKS_LOCK_SLEEP);
+                continue;
+            }
+            // Unexpected FS error — degrade to best-effort (never error out).
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Run `f` while holding the tasks-file-scoped advisory lock. If the lock cannot
+/// be acquired within the bounded budget, degrade to running `f` UNPROTECTED
+/// (fail-soft: never return `Err` purely because of lock contention). The guard
+/// is dropped — and thus the lock released — on every exit path, including when
+/// `f` returns `Err` or panics-unwinds.
+fn with_tasks_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    // `_guard` is `Some` when we hold the lock, `None` on fail-soft degrade.
+    // Either way it drops (releasing the lock if held) when this fn returns.
+    let _guard = try_acquire_tasks_lock(path);
+    f()
+}
+
 /// タスクを追加して保存。生成した id を返す。weight は 0.0 (= 既定の優先順位)。
 /// weight を明示したい呼び出し元は [`add_with_weight`] を使う。
 ///
@@ -78,23 +188,25 @@ pub fn add_with_weight(
     weight: f64,
     now: i64,
 ) -> Result<String> {
-    let mut tasks = load(path)?;
-    let id = new_id(title, now);
-    let task = Task {
-        id: id.clone(),
-        title: title.to_string(),
-        project: project.to_string(),
-        tags,
-        status: STATUS_PENDING.to_string(),
-        notes: notes.to_string(),
-        created_at: now,
-        updated_at: now,
-        defer_until: None,
-        weight,
-    };
-    tasks.push(task);
-    save(path, &tasks)?;
-    Ok(id)
+    with_tasks_lock(path, || {
+        let mut tasks = load(path)?;
+        let id = new_id(title, now);
+        let task = Task {
+            id: id.clone(),
+            title: title.to_string(),
+            project: project.to_string(),
+            tags,
+            status: STATUS_PENDING.to_string(),
+            notes: notes.to_string(),
+            created_at: now,
+            updated_at: now,
+            defer_until: None,
+            weight,
+        };
+        tasks.push(task);
+        save(path, &tasks)?;
+        Ok(id)
+    })
 }
 
 /// pending/failed タスクを優先度順 (priority() 昇順、同優先度は created_at 昇順) で返す。
@@ -144,58 +256,68 @@ fn queue_order(a: &Task, b: &Task) -> std::cmp::Ordering {
 /// defer_until <= now のタスクの defer_until を None にクリアして status を "pending" に戻す。
 /// 変更したタスクの件数を返す。
 pub fn requeue_expired(path: &Path, now: i64) -> Result<usize> {
-    let mut tasks = load(path)?;
-    let mut count = 0usize;
-    for task in tasks.iter_mut() {
-        if let Some(defer_until) = task.defer_until {
-            if defer_until <= now {
-                task.defer_until = None;
-                task.status = STATUS_PENDING.to_string();
-                task.updated_at = now;
-                count += 1;
+    // Serialize the load-modify-save against concurrent mutators on the same
+    // file. Fail-soft: if the scoped lock cannot be acquired, `with_tasks_lock`
+    // still runs the body unprotected, so this never starts returning Err where
+    // it previously returned Ok, and never blocks the SessionStart hook.
+    with_tasks_lock(path, || {
+        let mut tasks = load(path)?;
+        let mut count = 0usize;
+        for task in tasks.iter_mut() {
+            if let Some(defer_until) = task.defer_until {
+                if defer_until <= now {
+                    task.defer_until = None;
+                    task.status = STATUS_PENDING.to_string();
+                    task.updated_at = now;
+                    count += 1;
+                }
             }
         }
-    }
-    if count > 0 {
-        save(path, &tasks)?;
-    }
-    Ok(count)
+        if count > 0 {
+            save(path, &tasks)?;
+        }
+        Ok(count)
+    })
 }
 
 /// id で特定のタスクを done に更新して保存。見つからなければエラー。
 pub fn mark_done(path: &Path, id: &str) -> Result<()> {
-    let mut tasks = load(path)?;
-    let task = tasks
-        .iter_mut()
-        .find(|t| t.id == id)
-        .ok_or_else(|| anyhow!("task not found: {}", id))?;
-    task.status = STATUS_DONE.to_string();
-    // updated_at はシステム時刻で更新（呼び出し元が now を持たないため現在時刻を使う）
-    task.updated_at = now_unix();
-    save(path, &tasks)
+    with_tasks_lock(path, || {
+        let mut tasks = load(path)?;
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or_else(|| anyhow!("task not found: {}", id))?;
+        task.status = STATUS_DONE.to_string();
+        // updated_at はシステム時刻で更新（呼び出し元が now を持たないため現在時刻を使う）
+        task.updated_at = now_unix();
+        save(path, &tasks)
+    })
 }
 
 /// id で特定のタスクを failed に更新。reason を notes に追記。
 /// defer_until を now + 172800 (2日) に設定してタスクを一時保留にする。
 pub fn mark_failed(path: &Path, id: &str, reason: Option<&str>) -> Result<()> {
-    let mut tasks = load(path)?;
-    let task = tasks
-        .iter_mut()
-        .find(|t| t.id == id)
-        .ok_or_else(|| anyhow!("task not found: {}", id))?;
-    task.status = STATUS_FAILED.to_string();
-    if let Some(r) = reason {
-        if task.notes.is_empty() {
-            task.notes = r.to_string();
-        } else {
-            task.notes.push('\n');
-            task.notes.push_str(r);
+    with_tasks_lock(path, || {
+        let mut tasks = load(path)?;
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or_else(|| anyhow!("task not found: {}", id))?;
+        task.status = STATUS_FAILED.to_string();
+        if let Some(r) = reason {
+            if task.notes.is_empty() {
+                task.notes = r.to_string();
+            } else {
+                task.notes.push('\n');
+                task.notes.push_str(r);
+            }
         }
-    }
-    let now = now_unix();
-    task.defer_until = Some(now + 172_800);
-    task.updated_at = now;
-    save(path, &tasks)
+        let now = now_unix();
+        task.defer_until = Some(now + 172_800);
+        task.updated_at = now;
+        save(path, &tasks)
+    })
 }
 
 /// フィールドの一部を更新して保存。None のフィールドは変更しない。
@@ -207,25 +329,27 @@ pub fn edit(
     notes: Option<&str>,
     status: Option<&str>,
 ) -> Result<()> {
-    let mut tasks = load(path)?;
-    let task = tasks
-        .iter_mut()
-        .find(|t| t.id == id)
-        .ok_or_else(|| anyhow!("task not found: {}", id))?;
-    if let Some(v) = title {
-        task.title = v.to_string();
-    }
-    if let Some(v) = tags {
-        task.tags = v;
-    }
-    if let Some(v) = notes {
-        task.notes = v.to_string();
-    }
-    if let Some(v) = status {
-        task.status = v.to_string();
-    }
-    task.updated_at = now_unix();
-    save(path, &tasks)
+    with_tasks_lock(path, || {
+        let mut tasks = load(path)?;
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or_else(|| anyhow!("task not found: {}", id))?;
+        if let Some(v) = title {
+            task.title = v.to_string();
+        }
+        if let Some(v) = tags {
+            task.tags = v;
+        }
+        if let Some(v) = notes {
+            task.notes = v.to_string();
+        }
+        if let Some(v) = status {
+            task.status = v.to_string();
+        }
+        task.updated_at = now_unix();
+        save(path, &tasks)
+    })
 }
 
 /// タスク一覧を返す。フィルタは all None で全件。
@@ -487,6 +611,102 @@ mod tests {
         // next でも取得できるようになる
         let t = next(&path, None, None).unwrap();
         assert!(t.is_some());
+    }
+
+    /// F→P regression oracle for the TOCTOU lost-update race in
+    /// `requeue_expired`. Many threads concurrently requeue the same expired
+    /// tasks while one thread does an independent `add_with_weight` on the SAME
+    /// file. On the unprotected load-modify-save, one side's write clobbers the
+    /// other (a requeue drops the newly-added task, or the add re-persists the
+    /// stale still-deferred state) — so this is reliably RED before the scoped
+    /// lock and GREEN after. Repeated over several iterations to force the race.
+    #[test]
+    fn requeue_expired_no_lost_update_under_concurrency() {
+        use std::sync::{Arc, Barrier};
+
+        for iter in 0..20 {
+            let path = tmp_path();
+
+            // Seed several expired, non-pending tasks (defer_until in the past
+            // relative to now=1000, status=failed).
+            let mut seed = Vec::new();
+            for i in 0..6 {
+                seed.push(Task {
+                    id: format!("exp{i}"),
+                    title: format!("expired-{i}"),
+                    project: "/repo".to_string(),
+                    tags: vec![],
+                    status: STATUS_FAILED.to_string(),
+                    notes: String::new(),
+                    created_at: 100,
+                    updated_at: 100,
+                    defer_until: Some(500),
+                    weight: 0.0,
+                });
+            }
+            save(&path, &seed).unwrap();
+
+            const N: usize = 12;
+            // N requeue threads + 1 concurrent-add thread all rendezvous here.
+            let barrier = Arc::new(Barrier::new(N + 1));
+            let path = Arc::new(path);
+            let added_title = format!("concurrent-add-{iter}");
+
+            let mut handles = Vec::with_capacity(N + 1);
+            for _ in 0..N {
+                let path = Arc::clone(&path);
+                let barrier = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    // Must never error (fail-soft) even under contention.
+                    requeue_expired(path.as_path(), 1000).expect("requeue must not error");
+                }));
+            }
+            {
+                let path = Arc::clone(&path);
+                let barrier = Arc::clone(&barrier);
+                let added_title = added_title.clone();
+                handles.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    add_with_weight(path.as_path(), &added_title, "/repo", vec![], "", 0.0, 2000)
+                        .expect("add must not error");
+                }));
+            }
+            for h in handles {
+                h.join().expect("thread join");
+            }
+
+            let final_tasks = load(path.as_path()).unwrap();
+
+            // 1. No expired task lost its requeue: all 6 present AND pending.
+            let expired: Vec<&Task> = final_tasks
+                .iter()
+                .filter(|t| t.id.starts_with("exp"))
+                .collect();
+            assert_eq!(
+                expired.len(),
+                6,
+                "iter {iter}: expired tasks were dropped (lost update)"
+            );
+            for t in &expired {
+                assert_eq!(
+                    t.status, "pending",
+                    "iter {iter}: expired task {} lost its requeue",
+                    t.id
+                );
+                assert!(
+                    t.defer_until.is_none(),
+                    "iter {iter}: expired task {} still deferred",
+                    t.id
+                );
+            }
+
+            // 2. The concurrently-added task survived (was not clobbered).
+            assert!(
+                final_tasks.iter().any(|t| t.title == added_title),
+                "iter {iter}: concurrently-added task was lost (lost-update race)"
+            );
+        }
     }
 
     #[test]
