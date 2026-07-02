@@ -992,21 +992,13 @@ fn run_state(cfg: &Config, cwd: &Path, action: StateAction) -> Result<()> {
             }
 
             // Purely mechanical criteria: the verifier may be skipped iff the
-            // command passes. A failing mechanical check fails this gate.
-            let cmd = cls
-                .mechanical_cmd
-                .expect("skip_eligible implies a mechanical command");
-            let (passed, output) = run_mechanical(&cmd, &run_dir);
-            let out = serde_json::json!({
-                "mechanical": true,
-                "behavioral": false,
-                "passed": passed,
-                "skip_verifier": passed,
-                "cmd": cmd,
-                "output": output,
-            });
+            // command passes. A failing mechanical check fails this gate. If the
+            // skip_eligible invariant is ever violated (no command), this fails
+            // soft to skip_verifier:false rather than panicking an unattended run.
+            let (out, gate_failed) =
+                verify::mechanical_skip_verdict(&cls, |cmd| run_mechanical(cmd, &run_dir));
             println!("{}", serde_json::to_string(&out)?);
-            if !passed {
+            if gate_failed {
                 std::process::exit(1);
             }
         }

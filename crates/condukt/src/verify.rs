@@ -137,6 +137,50 @@ pub fn classify_criteria(done_criteria: &str) -> Classification {
     }
 }
 
+/// Build the verify-gate verdict for the purely-mechanical branch.
+///
+/// [`classify_criteria`] sets `skip_eligible` only when `mechanical_cmd.is_some()`,
+/// so a `skip_eligible` classification with no command is supposed to be impossible.
+/// If that invariant is ever violated (schema drift, external JSON, a future
+/// refactor) we must NOT panic in an unattended run — a panic there breaks the turn.
+/// Instead we fail soft: emit a verdict that refuses to skip the verifier, since
+/// running the verifier is the safe side.
+///
+/// `run` runs the mechanical command, returning `(passed, output)`; it is only
+/// invoked when a command actually exists.
+///
+/// Returns `(verdict_json, gate_failed)`. `gate_failed` is true only when a real
+/// mechanical command was run and failed (the caller then fails this gate). A
+/// missing command never fails the gate — the verifier still runs.
+pub fn mechanical_skip_verdict(
+    cls: &Classification,
+    run: impl FnOnce(&[String]) -> (bool, String),
+) -> (serde_json::Value, bool) {
+    let Some(cmd) = cls.mechanical_cmd.as_ref() else {
+        // Invariant-violating input: skip_eligible with no command. Fail soft —
+        // refuse to skip the verifier rather than panicking an unattended run.
+        let out = serde_json::json!({
+            "mechanical": true,
+            "behavioral": cls.behavioral,
+            "passed": false,
+            "skip_verifier": false,
+            "reason": "skip_eligible classification carried no mechanical command; \
+                       refusing to skip the verifier (safe side)",
+        });
+        return (out, false);
+    };
+    let (passed, output) = run(cmd);
+    let out = serde_json::json!({
+        "mechanical": true,
+        "behavioral": false,
+        "passed": passed,
+        "skip_verifier": passed,
+        "cmd": cmd,
+        "output": output,
+    });
+    (out, !passed)
+}
+
 /// Extract a runnable command from a done_criteria string for mechanical gate
 /// checking. Returns `None` when no mechanical check can be derived (the LLM
 /// verifier is then required). This is intentionally about *runnability* only;
@@ -291,6 +335,62 @@ mod tests {
         let c = classify_criteria("the README documents the new flag");
         assert!(c.mechanical_cmd.is_none());
         assert!(!c.skip_eligible);
+    }
+
+    // ── Fail-soft: invariant-violating skip_eligible must not panic ────────
+
+    /// A `skip_eligible` classification whose `mechanical_cmd` is `None` violates
+    /// the classifier invariant (e.g. from schema drift / external JSON). The
+    /// verdict builder must NOT panic; it must refuse to skip the verifier
+    /// (`skip_verifier == false`), carry a `reason`, and not fail the gate.
+    #[test]
+    fn skip_eligible_without_command_fails_soft() {
+        let cls = Classification {
+            behavioral: false,
+            mechanical_cmd: None,
+            skip_eligible: true,
+        };
+        // The runner must never be called when there is no command.
+        let (verdict, gate_failed) = mechanical_skip_verdict(&cls, |_cmd| {
+            panic!("runner must not be invoked when there is no mechanical command");
+        });
+        assert_eq!(
+            verdict["skip_verifier"],
+            serde_json::json!(false),
+            "invariant-violating input must NOT skip the verifier (safe side)"
+        );
+        assert!(
+            verdict.get("reason").and_then(|r| r.as_str()).is_some(),
+            "the verdict must carry a machine-readable reason: {verdict}"
+        );
+        assert!(
+            !gate_failed,
+            "a missing command must not fail the gate — the verifier still runs"
+        );
+    }
+
+    /// Valid case: `skip_eligible` with a real command runs it; `skip_verifier`
+    /// tracks the command result and a failing command fails the gate.
+    #[test]
+    fn skip_eligible_with_command_runs_and_tracks_result() {
+        let cls = Classification {
+            behavioral: false,
+            mechanical_cmd: Some(vec!["cargo".to_string(), "test".to_string()]),
+            skip_eligible: true,
+        };
+        // Passing command → skip the verifier, gate not failed.
+        let (v_pass, failed_pass) =
+            mechanical_skip_verdict(&cls, |cmd| (true, format!("ran {cmd:?}")));
+        assert_eq!(v_pass["skip_verifier"], serde_json::json!(true));
+        assert_eq!(v_pass["passed"], serde_json::json!(true));
+        assert_eq!(v_pass["cmd"], serde_json::json!(["cargo", "test"]));
+        assert!(!failed_pass);
+
+        // Failing command → do not skip, gate fails.
+        let (v_fail, failed_fail) = mechanical_skip_verdict(&cls, |_cmd| (false, "boom".into()));
+        assert_eq!(v_fail["skip_verifier"], serde_json::json!(false));
+        assert_eq!(v_fail["passed"], serde_json::json!(false));
+        assert!(failed_fail, "a failing mechanical check must fail the gate");
     }
 
     /// Japanese behavioral markers are recognised too.
