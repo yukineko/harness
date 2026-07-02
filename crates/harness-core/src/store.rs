@@ -389,15 +389,28 @@ pub fn load_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
 /// file or the complete new one, never a truncated middle (the failure mode of
 /// the previous `fs::write`, which truncated in place before writing).
 pub fn save_json<T: serde::Serialize>(path: &Path, val: &T) {
+    let Ok(s) = serde_json::to_string(val) else {
+        return;
+    };
+    save_bytes(path, s.as_bytes());
+}
+
+/// Durably write raw `bytes` to `path` — the crash-safe primitive behind
+/// [`save_json`], usable directly for non-JSON payloads (e.g. a marker file
+/// holding a bare path). Writes to a sibling temp, fsyncs it, then renames over
+/// `path`, so a crash / power loss / process kill can only ever expose complete
+/// data — the reader sees either the old file or the whole new one, never a
+/// truncated middle (the failure mode of a plain in-place `fs::write`).
+///
+/// Best-effort and panic-free (never break a turn): creates parent dirs, and on
+/// any write/rename failure removes the temp and returns without erroring.
+pub fn save_bytes(path: &Path, bytes: &[u8]) {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let Ok(s) = serde_json::to_string(val) else {
-        return;
-    };
 
     // Sibling temp name, unique across processes (pid) and across concurrent
     // calls in this process (monotonic counter) so two writers can't clobber a
@@ -408,14 +421,14 @@ pub fn save_json<T: serde::Serialize>(path: &Path, val: &T) {
     let fname = path
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("store.json");
+        .unwrap_or("store.tmp");
     let tmp = path.with_file_name(format!(".{fname}.tmp.{}.{seq}", std::process::id()));
 
     // Write fully + fsync the temp before renaming, so the rename can only ever
     // expose complete data even across a power loss / process kill.
     let wrote = (|| -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(s.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()?;
         Ok(())
     })();
@@ -486,6 +499,64 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn save_bytes_roundtrips_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("harness-savebytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("marker");
+
+        // Exact bytes written, parent dirs created on demand.
+        save_bytes(&path, b"/notes/distill-abc.md");
+        assert_eq!(std::fs::read(&path).unwrap(), b"/notes/distill-abc.md");
+
+        // Overwrite with shorter content — reader sees the whole new value, not a
+        // torn mix of old+new (the in-place fs::write failure mode).
+        save_bytes(&path, b"/x");
+        assert_eq!(std::fs::read(&path).unwrap(), b"/x");
+
+        // A successful write renames the temp away — no `.tmp.` sibling lingers.
+        let temps: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(temps.is_empty(), "temp must be renamed away: {temps:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_bytes_concurrent_same_path_is_atomic() {
+        use std::sync::Arc;
+        let dir =
+            std::env::temp_dir().join(format!("harness-savebytes-conc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = Arc::new(dir.join("marker"));
+
+        // Each writer writes a distinct full-size content concurrently. Because
+        // every write goes through its own temp + rename, the final file must
+        // equal EXACTLY one writer's whole content — never a truncated or
+        // interleaved blend (durability guard for the distill marker).
+        let contents: Vec<Vec<u8>> = (0..8u8)
+            .map(|i| vec![b'A' + i; 4096 + i as usize])
+            .collect();
+        std::thread::scope(|s| {
+            for c in &contents {
+                let p = Arc::clone(&path);
+                s.spawn(move || save_bytes(&p, c));
+            }
+        });
+        let final_bytes = std::fs::read(&*path).unwrap();
+        assert!(
+            contents.contains(&final_bytes),
+            "final file must be exactly one writer's full content; got {} bytes",
+            final_bytes.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A throwaway store rooted under the temp dir, isolated per test name + pid.

@@ -32,7 +32,7 @@ use crate::config::Config;
 use crate::hooks::guard::safe_session;
 use crate::hooks::restore::{has_section, REQUIRED_SECTIONS};
 use harness_core::hook::HookInput;
-use harness_core::store::{session_tag, Store};
+use harness_core::store::{save_bytes, session_tag, Store};
 use harness_core::transcript::{self, Turn};
 
 /// How much of the conversation we feed the distiller. Far more generous than the
@@ -146,9 +146,13 @@ pub fn run_bg(session_id: &str, transcript_path: &str, cwd: &Path, cfg: &Config)
     };
 
     // Signal the next guard turn to re-inject this note (post-compact recovery).
-    let _ = std::fs::create_dir_all(&cfg.state_dir);
-    let _ = std::fs::write(
-        marker_path(cfg, session_id),
+    // Durable write (temp + fsync + rename): the note is already persisted, so a
+    // crash mid-marker-write must never leave a torn/half pointer that the next
+    // turn can't parse — the marker is either the complete note path or absent
+    // (falling back to the deterministic rescue note). `save_bytes` also creates
+    // the parent state dir.
+    save_bytes(
+        &marker_path(cfg, session_id),
         path.to_string_lossy().as_bytes(),
     );
 
