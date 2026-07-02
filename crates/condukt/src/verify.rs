@@ -14,6 +14,12 @@
 //!    is only *evidence handed to* the verifier, never a substitute for it. When
 //!    classification is ambiguous we fail toward RUNNING the verifier (safe side).
 
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use wait_timeout::ChildExt;
+
 /// How many trailing lines of raw output to retain in [`FailureDigest::output_tail`].
 const OUTPUT_TAIL_LINES: usize = 20;
 
@@ -273,6 +279,131 @@ fn is_panic_evidence(t: &str) -> bool {
         || t.contains("Exception")
         || t.contains("Traceback")
         || t.contains("Error:")
+}
+
+/// Launch `cmd` as a real subprocess inside the blastguard-validated envelope,
+/// capture its runtime signals, and reflux them through the existing
+/// deterministic verdict path. This is the IO-bearing companion to the pure
+/// [`runtime_reflux_verdict`]: formatting stays with that one function, so this
+/// launcher never re-implements digest shaping.
+///
+/// The command is run through `sh -c` (no Docker/VM/sandbox — the existing
+/// `sh -c` + `wait-timeout` envelope is the whole isolation story) with a
+/// bounded timeout.
+///
+/// **never-break-a-turn**: this function never `panic!`/`unwrap`/`expect`s on an
+/// external-input or absent-tool path. Every branch returns a verdict (JSON):
+///
+/// - **blastguard `Deny`**: the command is refused *fail-closed* and is NEVER
+///   spawned — a fail-soft runtime-failure verdict carries the refusal reason in
+///   its stderr tail. No shell runs, so a destructive payload cannot execute.
+/// - **spawn failure** (missing target / not executable): a fail-soft failure
+///   verdict (`exit_code` null, stderr carries the error, `note = "spawn-error"`).
+/// - **timeout**: the child is killed; a fail-soft failure verdict (`exit_code`
+///   null, `note = "timeout"`).
+/// - **normal exit**: stdout/stderr/exit code are refluxed through
+///   [`runtime_reflux_verdict`], whose pass/fail predicate decides the verdict.
+///
+/// The verdict carries only observable facts (pass/fail, the runtime digest, and
+/// a mechanical `note` for the fail-soft branches) — never a fix decision. How
+/// to fix stays with the LLM worker.
+pub fn launch_and_reflux(cmd: &str, timeout_secs: u64) -> serde_json::Value {
+    // (a) blastguard gate — validate BEFORE spawning, reusing the same pure
+    // detector the PreToolUse hook uses (no reimplementation). A flagged command
+    // is refused fail-closed and never reaches the shell.
+    let input = serde_json::json!({ "command": cmd });
+    if let blastguard::model::Decision::Deny(reason) =
+        blastguard::detect::detect("Bash", Some(&input))
+    {
+        let stderr = format!(
+            "[blastguard] launch command `{cmd}` refused before sh -c (fail-closed) — {reason}"
+        );
+        return fail_soft_launch_verdict("", &stderr, None, "blastguard-denied");
+    }
+
+    // (b) spawn via `sh -c`, piping both streams so we can capture them.
+    let timeout = timeout_secs.max(1);
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            // Fail-soft: the target could not even be started. No panic.
+            let stderr = format!("failed to spawn `{cmd}`: {e}");
+            return fail_soft_launch_verdict("", &stderr, None, "spawn-error");
+        }
+    };
+
+    // (c) wait with a timeout; a timed-out child is killed and reaped.
+    match child.wait_timeout(Duration::from_secs(timeout)) {
+        Ok(Some(status)) => {
+            // (d) normal exit — read both streams and reflux through the pure fn.
+            let (stdout, stderr) = read_child_streams(&mut child);
+            runtime_reflux_verdict(&stdout, &stderr, status.code())
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stderr = format!("launch of `{cmd}` timed out after {timeout}s and was killed");
+            fail_soft_launch_verdict("", &stderr, None, "timeout")
+        }
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stderr = format!("failed to wait on `{cmd}`: {e}");
+            fail_soft_launch_verdict("", &stderr, None, "wait-error")
+        }
+    }
+}
+
+/// Build a fail-soft launch verdict that is ALWAYS a failure, regardless of the
+/// [`runtime_reflux_verdict`] predicate (which keys off exit code / panic
+/// markers that the fail-soft branches — deny / spawn-error / timeout — may not
+/// carry). It mirrors the runtime verdict shape (`kind` + `passed` + an embedded
+/// `runtime_digest`) and adds a mechanical `note` naming the fail-soft cause.
+fn fail_soft_launch_verdict(
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+    note: &str,
+) -> serde_json::Value {
+    let digest = distill_runtime(stdout, stderr, exit_code);
+    let mut out = serde_json::json!({
+        "kind": "runtime",
+        "passed": false,
+        "note": note,
+    });
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert(
+            "runtime_digest".to_string(),
+            serde_json::to_value(&digest).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    out
+}
+
+/// Read a finished child's piped stdout/stderr into lossy-UTF8 strings. The
+/// child has already exited when this is called (so the bounded pipe buffers
+/// hold everything), and read errors degrade to whatever was captured — never a
+/// panic.
+fn read_child_streams(child: &mut std::process::Child) -> (String, String) {
+    let mut stdout_buf = Vec::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_end(&mut stdout_buf);
+    }
+    let mut stderr_buf = Vec::new();
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_end(&mut stderr_buf);
+    }
+    (
+        String::from_utf8_lossy(&stdout_buf).into_owned(),
+        String::from_utf8_lossy(&stderr_buf).into_owned(),
+    )
 }
 
 /// Known model tiers, cheapest → strongest.
@@ -970,6 +1101,133 @@ note: run with `RUST_BACKTRACE=1` for a backtrace";
                 "unexpected key {k:?} — the verdict must stay fact-only (no fix decision): {v}"
             );
         }
+    }
+
+    // ── Real process launch + fail-soft (phase-3 DoD#3) ───────────────────
+
+    /// RED existence: a blastguard-flagged command (recursive rm) must be
+    /// refused BEFORE `sh -c` runs. The benign leading segment (`touch sentinel`)
+    /// must never execute — the surviving-absent sentinel proves the shell was
+    /// not invoked. Neuter oracle: removing the blastguard gate lets the shell
+    /// run, so the sentinel is created (this test's `!exists` FAILs) and the
+    /// benign rm-on-missing exits 0 (`passed` becomes true → FAILs too).
+    #[test]
+    fn launch_refuses_destructive_command_without_spawning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = tmp.path().join("ran.txt");
+        let victim = tmp.path().join("victim");
+        let payload = format!("touch {} ; rm -rf {}", sentinel.display(), victim.display());
+        let v = launch_and_reflux(&payload, 5);
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "a refused command must not count as passed: {v}"
+        );
+        assert_eq!(v["note"], serde_json::json!("blastguard-denied"));
+        let d = v
+            .get("runtime_digest")
+            .expect("a refusal must carry a runtime_digest");
+        assert!(
+            d["stderr_tail"]
+                .as_str()
+                .is_some_and(|s| s.contains("blastguard")),
+            "the refusal reason must name the guard: {v}"
+        );
+        assert!(
+            !sentinel.exists(),
+            "sh -c must NOT have run — a created sentinel would prove the payload executed"
+        );
+    }
+
+    /// RED existence: a benign (blastguard-allowed) command that exits non-zero
+    /// and writes stderr must reflux a runtime FAILURE whose digest carries the
+    /// diagnostics BEYOND the boolean — the exit code and the stderr tail.
+    /// Neuter oracle: dropping the `runtime_digest` embed makes `.expect` panic;
+    /// dropping the exit-code reflux makes the `exit_code == 3` assert FAIL.
+    #[test]
+    fn launch_refluxes_runtime_failure_with_diagnostics() {
+        let v = launch_and_reflux("echo boom >&2; exit 3", 5);
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "a non-zero exit is a runtime failure: {v}"
+        );
+        let d = v
+            .get("runtime_digest")
+            .expect("a runtime failure must carry a runtime_digest");
+        assert_eq!(
+            d["exit_code"],
+            serde_json::json!(3),
+            "the exit code must be refluxed: {v}"
+        );
+        assert!(
+            d["stderr_tail"]
+                .as_str()
+                .is_some_and(|s| s.contains("boom")),
+            "the stderr tail must carry the diagnostic beyond the boolean: {v}"
+        );
+    }
+
+    /// Fail-soft: an absent / unstartable target must NOT panic — it must return
+    /// a runtime-failure verdict. Neuter oracle: an `unwrap`/`?` on the child's
+    /// exit path would panic here instead of yielding a verdict.
+    #[test]
+    fn launch_absent_target_fails_soft_without_panic() {
+        let v = launch_and_reflux("this_binary_does_not_exist_zzq --nope", 5);
+        assert_eq!(v["kind"], serde_json::json!("runtime"));
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "an unstartable target must fail soft to a failure: {v}"
+        );
+        assert!(
+            v.get("runtime_digest").is_some(),
+            "a fail-soft verdict still carries a digest: {v}"
+        );
+    }
+
+    /// Fail-soft: a long-running command hit with a short timeout must be killed
+    /// and reported as a timeout WITHOUT panicking (and the test finishes in ~1s,
+    /// not ~5s). Neuter oracle: a plain `child.wait()` (no timeout/kill) would
+    /// block for the full sleep and return exit 0, so `passed:false` / the
+    /// `note == "timeout"` assert FAILs (and the test no longer finishes fast).
+    #[test]
+    fn launch_timeout_fails_soft_with_note() {
+        let v = launch_and_reflux("sleep 5", 1);
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "a timed-out launch must fail soft: {v}"
+        );
+        assert_eq!(
+            v["note"],
+            serde_json::json!("timeout"),
+            "the timeout note must be set: {v}"
+        );
+        let d = v
+            .get("runtime_digest")
+            .expect("a timeout must carry a digest");
+        assert_eq!(
+            d["exit_code"],
+            serde_json::Value::Null,
+            "no exit code is known on a timeout: {v}"
+        );
+    }
+
+    /// A benign command that exits 0 cleanly must pass, and the passing shape
+    /// omits the digest (mirroring the pure `runtime_reflux_verdict` pass shape).
+    #[test]
+    fn launch_benign_command_passes() {
+        let v = launch_and_reflux("echo ok", 5);
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(true),
+            "a clean exit-0 command must pass: {v}"
+        );
+        assert!(
+            v.get("runtime_digest").is_none(),
+            "the passing shape must omit the runtime_digest: {v}"
+        );
     }
 
     /// Japanese behavioral markers are recognised too.
