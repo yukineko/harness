@@ -279,6 +279,31 @@
       }
     },
     {
+      "name": "ship",
+      "description": "Shipping-ritual nudge for Claude Code: deterministically detect unshipped state (uncommitted changes, unmerged condukt/* branches, leftover worktrees, unpushed commits, stale plugin binaries) and remind you to commit・merge・push・rebuild. A /ship skill and a fail-soft SessionEnd hook surface the checklist; only the plugin-rebuild step is auto-runnable — commit/merge/push stay human-gated. Subscription-native (no API key).",
+      "version": "0.1.0",
+      "category": "workflow",
+      "keywords": [
+        "hooks",
+        "git",
+        "shipping",
+        "session",
+        "plugins",
+        "rust"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/yukineko/claude-harnesses/tree/main/crates/ship",
+      "author": {
+        "name": "yukineko"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/yukineko/claude-harnesses.git",
+        "path": "crates/ship",
+        "ref": "main"
+      }
+    },
+    {
       "name": "donegate",
       "description": "Completion-verification gate for Claude Code: on Stop, run your acceptance commands as subprocesses and block the stop until every required check is green, feeding failures back for an auto-fix loop. Subscription-native (one hook + bundled Rust binary, no API key).",
       "version": "0.1.3",

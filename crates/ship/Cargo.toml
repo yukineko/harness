@@ -1,0 +1,21 @@
+[package]
+rust-version.workspace = true
+name = "ship"
+version = "0.1.0"
+edition = "2021"
+description = "nudge the commit・merge・push・plugin-update shipping ritual; detect unshipped state; subscription-native"
+license = "MIT"
+
+[[bin]]
+name = "ship"
+path = "src/main.rs"
+
+[dependencies]
+harness-core = { path = "../harness-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
