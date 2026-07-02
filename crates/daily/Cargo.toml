@@ -15,7 +15,7 @@ harness-core = { path = "../harness-core" }
 clap = { version = "4", features = ["derive"] }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-dirs = "5"
+dirs = "6"
 
 [dev-dependencies]
 tempfile = { workspace = true }
