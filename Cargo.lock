@@ -283,6 +283,7 @@ name = "condukt"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "blastguard",
  "chrono",
  "clap",
  "globset",
@@ -293,6 +294,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "wait-timeout",
 ]
 
 [[package]]

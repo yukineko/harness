@@ -385,6 +385,22 @@ enum VerifyAction {
         #[arg(long)]
         reflux: bool,
     },
+    /// Launch a real target process inside the blastguard-validated envelope and
+    /// reflux its runtime signals (stdout/stderr/exit code) through the same
+    /// verdict path as `verify runtime --reflux`. The `--cmd` is validated with
+    /// blastguard BEFORE spawning; a flagged/destructive command is refused
+    /// fail-closed (never run). Absent/unstartable targets and timeouts fail
+    /// soft — the turn is never broken. The pass/fail + runtime_digest verdict is
+    /// printed as pretty JSON and the process ALWAYS exits 0 (fail-soft); the fix
+    /// DECISION stays with the LLM worker.
+    Launch {
+        /// The command to launch (run via `sh -c`). Required.
+        #[arg(long)]
+        cmd: String,
+        /// Timeout in seconds before the launched process is killed (fail-soft).
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -512,6 +528,12 @@ fn run_user(cmd: Command) -> Result<()> {
                     let digest = verify::distill_runtime(&stdout_raw, &stderr_raw, exit_code);
                     println!("{}", serde_json::to_string_pretty(&digest)?);
                 }
+            }
+            VerifyAction::Launch { cmd, timeout } => {
+                // Fail-soft by contract: launch_and_reflux never panics and always
+                // returns a verdict, so we always print it and exit 0.
+                let verdict = verify::launch_and_reflux(&cmd, timeout);
+                println!("{}", serde_json::to_string_pretty(&verdict)?);
             }
         },
         Command::Consensus { action } => run_consensus(&cfg, action)?,
