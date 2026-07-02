@@ -83,6 +83,15 @@ pub struct HookInput {
 impl HookInput {
     /// Parse a hook payload from a raw stdin string. Returns None on empty/invalid
     /// input so callers can stay silent (never break the user's turn).
+    ///
+    /// DoS note: deeply nested JSON (`{"a":{"a":…}}`) cannot exhaust the stack.
+    /// `serde_json::from_str` enforces a recursion limit (128 levels by default);
+    /// input nested past it is *rejected* — this returns None rather than
+    /// recursing to a stack overflow. Do NOT swap in a deserializer with
+    /// `.disable_recursion_limit()` or the DoS guard is lost (see
+    /// `deep_nesting_is_rejected_not_stack_overflow`). Combined with the
+    /// [`MAX_STDIN_BYTES`] read cap, both size- and depth-based stdin DoS are
+    /// bounded.
     pub fn parse(raw: &str) -> Option<Self> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -196,6 +205,39 @@ mod tests {
         assert_eq!(h.session_id, "S");
         assert_eq!(h.tool_name, "Read");
         assert_eq!(h.prompt, ""); // missing field → default, never a parse failure
+    }
+
+    #[test]
+    fn deep_nesting_is_rejected_not_stack_overflow() {
+        // A hostile hook payload nested far past serde_json's recursion limit
+        // (128) must be rejected gracefully — parse returns None — rather than
+        // recursing into a stack overflow (DoS). This pins the guard so a future
+        // refactor to a `.disable_recursion_limit()` deserializer, or a custom
+        // recursive parser without a depth bound, is caught here.
+        for depth in [500usize, 5_000, 100_000] {
+            let mut payload = String::with_capacity(depth * 14 + 1);
+            for _ in 0..depth {
+                payload.push_str("{\"tool_input\":");
+            }
+            payload.push('1');
+            for _ in 0..depth {
+                payload.push('}');
+            }
+            // Must not panic / overflow the stack, and must reject the input.
+            let parsed =
+                std::panic::catch_unwind(|| HookInput::parse(&payload)).unwrap_or_else(|_| {
+                    panic!("depth {depth}: parse panicked/overflowed instead of rejecting")
+                });
+            assert!(
+                parsed.is_none(),
+                "depth {depth}: over-nested payload must be rejected (None), got Some"
+            );
+        }
+
+        // Sanity: nesting within the limit still parses (the guard rejects only
+        // the pathological depth, not ordinary nested tool_input).
+        let shallow = r#"{"tool_name":"Edit","tool_input":{"a":{"b":{"c":1}}}}"#;
+        assert!(HookInput::parse(shallow).is_some());
     }
 
     #[test]
