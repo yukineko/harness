@@ -107,9 +107,19 @@ fn gate_command() {
 }
 
 fn today_str() -> String {
-    // Use chrono for reliable UTC date.
-    use chrono::Utc;
-    Utc::now().format("%Y-%m-%d").to_string()
+    // Daily budget resets at LOCAL midnight (matching session-insights' daily key),
+    // not UTC midnight — otherwise the reset rolls over at 09:00 for +09:00 (JST) users
+    // instead of local midnight.
+    date_key(chrono::Local::now())
+}
+
+/// Format the daily-reset key (`YYYY-MM-DD`) from a timezone-aware instant.
+/// Pure + tz-generic so the local-vs-UTC calendar boundary is unit-testable.
+fn date_key<Tz: chrono::TimeZone>(now: chrono::DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    now.format("%Y-%m-%d").to_string()
 }
 
 fn init(force: bool) -> anyhow::Result<()> {
@@ -154,4 +164,26 @@ fn status(args: StatusArgs) {
     println!("daily.block_usd:    {:.2}", cfg.daily_block_usd);
     println!();
     println!("today ({today}):     ${day_usd:.4} spent");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::date_key;
+    use chrono::{FixedOffset, TimeZone, Utc};
+
+    #[test]
+    fn date_key_follows_the_carried_local_offset_not_utc() {
+        // 2026-01-01T23:30:00Z is still Jan 1 in UTC, but Jan 2 at +09:00 (JST 08:30).
+        // The daily-reset key must follow the LOCAL calendar day, so a +09:00 user's
+        // budget rolls over at local midnight — not at 09:00 (UTC midnight).
+        let instant = Utc.with_ymd_and_hms(2026, 1, 1, 23, 30, 0).unwrap();
+        assert_eq!(date_key(instant), "2026-01-01", "UTC view is Jan 1");
+
+        let jst = FixedOffset::east_opt(9 * 3600).unwrap();
+        assert_eq!(
+            date_key(instant.with_timezone(&jst)),
+            "2026-01-02",
+            "at +09:00 the local calendar day is already Jan 2"
+        );
+    }
 }
