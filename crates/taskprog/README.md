@@ -7,13 +7,13 @@ current across sessions so the agent always resumes with full context:
 
 - On **SessionStart** it injects the progress file as `additionalContext`, so a
   fresh session immediately knows what's done, what's pending, and what's blocked.
-- On **SessionEnd** it prompts the agent to update the file with what just happened.
+- On **Stop** it prompts the agent to update the file with what just happened.
 
 This closes the HOTL handoff loop: the human sits at the boundaries (review the
 progress file, redirect), and each session picks up exactly where the last left
 off — no manual re-briefing.
 
-Subscription-native: one Rust binary, two hooks (SessionStart + SessionEnd), no API key.
+Subscription-native: one Rust binary, two hooks (SessionStart + Stop), no API key.
 
 ## What it manages
 
@@ -54,7 +54,7 @@ taskprog install
 
 ```sh
 taskprog session-start   # SessionStart hook: inject progress file (reads stdin JSON)
-taskprog stop            # SessionEnd hook: prompt the agent to update the file
+taskprog stop            # Stop hook: prompt the agent to update the file
 taskprog show            # print the current progress file
 taskprog write --cwd .   # write progress.md from stdin
 taskprog init            # write a starter taskprog.toml

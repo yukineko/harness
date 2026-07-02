@@ -46,7 +46,7 @@ altitude than a specguard canon:
 | `definition_of_done` | observable done conditions (same vocabulary as condukt's `done_criteria`) | re-carved when blurry |
 | `measuring_stick` | how to measure the next move (default: *defensibility × closeness-to-goal ÷ cost*) | project-fixed |
 | `current_gap` | goal − reality summary (regenerated each round) | recomputed every round |
-| `next_action` | the first physical step on resume (written by the SessionEnd breadcrumb) | updated each SessionEnd |
+| `next_action` | the first physical step on resume (written by the Stop breadcrumb) | updated each Stop |
 | `parked` | pointers to deferred work (the bodies live in taskprog progress.md) | appended by routing |
 
 ## The C1–C5 freshness gates
@@ -129,7 +129,7 @@ never break a turn):
 | Hook | Event | What it does |
 |---|---|---|
 | **`compass nudge`** | `SessionStart` (startup/resume/clear) | runs the C1/C2 deterministic floor only (no LLM) and prints a one-line nudge if the charter is absent, blurry, or drift-suspect — "run `/compass` to re-ground." |
-| **`compass breadcrumb`** | `SessionEnd` | reads the assistant's final message, extracts an explicit ```` ```compass-next ```` block, and writes it into `charter.next_action`. No LLM, never guesses; if there's no explicit block it does nothing. |
+| **`compass breadcrumb`** | `Stop` | reads the assistant's final message, extracts an explicit ```` ```compass-next ```` block, and writes it into `charter.next_action`. No LLM, never guesses; if there's no explicit block it does nothing. |
 
 ## Subcommand surface
 
@@ -138,7 +138,7 @@ The binary is thin and deterministic:
 | Subcommand | Purpose |
 |---|---|
 | `compass nudge [--json]` | SessionStart freshness nudge (C1/C2 floor); `--json` emits `{fresh, reason}` so a downstream driver (e.g. flow) can gate on the same floor |
-| `compass breadcrumb` | SessionEnd hook: write the next physical step into the charter |
+| `compass breadcrumb` | Stop hook: write the next physical step into the charter |
 | `compass evaluate` | print the C1/C2 open questions as JSON; init/load carve state |
 | `compass apply --answer <JSON>` | fold one human answer in, re-check C1/C2, persist |
 | `compass carve-reset` | clear the persisted carve state (start fresh) |
@@ -233,7 +233,7 @@ a Mac.
 
 ```
 .claude-plugin/plugin.json     # plugin manifest (version 0.1.2)
-hooks/hooks.json               # SessionStart=nudge / SessionEnd=breadcrumb → ${CLAUDE_PLUGIN_ROOT}/bin/compass
+hooks/hooks.json               # SessionStart=nudge / Stop=breadcrumb → ${CLAUDE_PLUGIN_ROOT}/bin/compass
 skills/compass/SKILL.md        # the /compass skill (drives the carve loop)
 bin/compass                    # POSIX launcher → compass-<os>-<arch>
 bin/compass-<os>-<arch>        # prebuilt binaries
@@ -310,7 +310,7 @@ right_size     = ["s", "m"]
 ### 2 つの hook
 
 - **SessionStart = `compass nudge`** — C1/C2 の決定的 floor のみ（LLM 不使用）。charter が無い/霞む/drift 疑いなら一行 nudge。
-- **SessionEnd = `compass breadcrumb`** — 本体応答から ```` ```compass-next ```` ブロックを抽出し `charter.next_action` へ書き戻す（推測しない）。
+- **Stop = `compass breadcrumb`** — 本体応答から ```` ```compass-next ```` ブロックを抽出し `charter.next_action` へ書き戻す（推測しない）。
 
 ### 導入
 
