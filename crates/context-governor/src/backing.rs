@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::handlers::BackingStore;
 use crate::types::{ContextItem, ItemBody, ItemId, Lane, StoreKey};
-use harness_core::store::{project_key, safe_session, save_json};
+use harness_core::store::{context_state_dir, save_json};
 use harness_core::transcript::recent_turns;
 
 /// Fixed handle for the singleton transcript snapshot slot. `snapshot_transcript`
@@ -39,36 +39,16 @@ impl TranscriptBackingStore {
     /// turn's handler. Directory-creation failures degrade (best-effort) rather
     /// than propagating.
     pub fn open(cwd: &str) -> anyhow::Result<Self> {
-        let base = std::env::var("CONTEXT_GOVERNOR_STATE_DIR")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = std::env::var("HOME")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| ".".to_string());
-                PathBuf::from(home).join(".context-governor")
-            });
-
-        // Repo standard env var is CLAUDE_CODE_SESSION_ID. Unset/empty → "default".
-        let session = std::env::var("CLAUDE_CODE_SESSION_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| safe_session(&s))
-            .unwrap_or_else(|| safe_session("default"));
-
-        // Canonicalize cwd before deriving the project key so the ledger path is
-        // stable regardless of the caller's path *string* form (symlinks like
-        // macOS /var→/private/var, trailing slash, relative vs absolute). The
-        // reader (session-insights) derives its key from std::env::current_dir(),
-        // which the OS already canonicalizes, so without this the writer (hook
-        // cwd) and reader could land in different dirs for the same logical repo.
-        let cwd_path = Path::new(cwd);
-        let cwd_canonical = cwd_path
-            .canonicalize()
-            .unwrap_or_else(|_| cwd_path.to_path_buf());
-        let state_dir = base.join(project_key(&cwd_canonical)).join(session);
+        // Session-scoped state dir via the shared derivation (base env +
+        // canonicalize + project_key + safe_session). Centralizing this in
+        // `harness_core::store::context_state_dir` keeps the backing store, the
+        // ledger writer, and the session-insights reader from drifting on the
+        // path — canonicalization (macOS /var→/private/var, trailing slash,
+        // relative vs absolute) and the "default" unset-session fallback are
+        // applied identically for all three. Repo standard env var is
+        // CLAUDE_CODE_SESSION_ID; unset/empty → "default".
+        let sid = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+        let state_dir = context_state_dir(Path::new(cwd), &sid);
 
         // Best-effort: never Err on a normal path (the bin .expect()s open()).
         let _ = std::fs::create_dir_all(&state_dir);

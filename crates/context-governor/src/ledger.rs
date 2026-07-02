@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::types::{ItemId, StoreKey};
 use harness_core::metrics;
-use harness_core::store::{project_key, safe_session};
+use harness_core::store::{context_state_dir, safe_session};
 
 /// Default upper bound on rows kept in `ledger.jsonl`. The ledger is append-only
 /// and otherwise grows without limit on long sessions (one line per hook
@@ -75,25 +75,17 @@ pub struct LedgerNode {
 /// beside the backing store for the same project+session. Returns
 /// `(state_dir, session)`.
 fn resolve_state(cwd: &str) -> (PathBuf, String) {
-    let base = std::env::var("CONTEXT_GOVERNOR_STATE_DIR")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| ".".to_string());
-            PathBuf::from(home).join(".context-governor")
-        });
-
-    let session = std::env::var("CLAUDE_CODE_SESSION_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|s| safe_session(&s))
-        .unwrap_or_else(|| safe_session("default"));
-
-    let state_dir = base.join(project_key(Path::new(cwd))).join(session.clone());
+    // Delegate the drift-prone path assembly (base env + canonicalize +
+    // project_key) to the shared `context_state_dir`, so the ledger writer, the
+    // backing store, and the session-insights reader can never diverge. The
+    // session string is returned alongside for row tagging.
+    let sid = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+    let state_dir = context_state_dir(Path::new(cwd), &sid);
+    let session = if sid.is_empty() {
+        safe_session("default")
+    } else {
+        safe_session(&sid)
+    };
     (state_dir, session)
 }
 

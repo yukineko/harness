@@ -58,6 +58,56 @@ pub fn safe_session(id: &str) -> String {
     }
 }
 
+/// Base directory for the context-governor ledger state, shared by the
+/// context-governor *writer* and the session-insights *reader*. Resolves
+/// `CONTEXT_GOVERNOR_STATE_DIR` when set and non-empty, else
+/// `$HOME/.context-governor` (`./.context-governor` when `HOME` is unset/empty).
+///
+/// Centralized here so the writer and reader can never drift on the base path.
+pub fn context_ledger_base() -> PathBuf {
+    std::env::var("CONTEXT_GOVERNOR_STATE_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| ".".to_string());
+            PathBuf::from(home).join(".context-governor")
+        })
+}
+
+/// Session-scoped state directory for the context ledger:
+/// `<`[`context_ledger_base`]`>/<`[`project_key`]`(canonical cwd)>/<`[`safe_session`]`(sid)>`.
+///
+/// `cwd` is canonicalized *before* the project key is derived, so symlink,
+/// trailing-slash, and relative-vs-absolute differences in the caller's cwd
+/// string resolve to the same key — this is the single canonicalize step both
+/// the writer and reader now share (previously the ledger writer skipped it,
+/// letting it drift from the canonicalizing reader). An empty `sid` maps to the
+/// `"default"` session, matching the writer's unset-`CLAUDE_CODE_SESSION_ID`
+/// fallback.
+pub fn context_state_dir(cwd: &Path, sid: &str) -> PathBuf {
+    let session = if sid.is_empty() {
+        safe_session("default")
+    } else {
+        safe_session(sid)
+    };
+    let cwd_canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    context_ledger_base()
+        .join(project_key(&cwd_canonical))
+        .join(session)
+}
+
+/// Full path to the append-only context `ledger.jsonl` for `cwd` / `sid` — the
+/// single source of truth that context-governor (writer) and session-insights
+/// (reader) both delegate to, so the two can never derive different paths for
+/// the same logical repo + session.
+pub fn ledger_path(cwd: &Path, sid: &str) -> PathBuf {
+    context_state_dir(cwd, sid).join("ledger.jsonl")
+}
+
 /// Short, stable tag for a session id, embedded in note filenames so a session
 /// can deterministically find its own notes even when sibling sessions write
 /// into the same project dir in parallel. Empty id → "nosess".
@@ -382,6 +432,61 @@ pub fn save_json<T: serde::Serialize>(path: &Path, val: &T) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shared ledger-path derivation must canonicalize cwd before the project
+    /// key, so a symlinked cwd resolves to the *target's* key — this is what keeps
+    /// the context-governor writer and the session-insights reader from drifting
+    /// when their cwd strings differ. Asserts only the base-independent path tail
+    /// (`<project_key>/<session>/ledger.jsonl`) so it never races env-mutating
+    /// tests. Would fail if the canonicalize step were dropped (the symlink's own
+    /// basename would produce a different key).
+    #[test]
+    fn ledger_path_canonicalizes_cwd_and_defaults_empty_session() {
+        let base = std::env::temp_dir().join(format!("harness-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("realrepo");
+        std::fs::create_dir_all(&real).expect("mk real dir");
+
+        #[cfg(unix)]
+        let link = {
+            let link = base.join("linkrepo");
+            std::os::unix::fs::symlink(&real, &link).expect("symlink");
+            link
+        };
+        #[cfg(not(unix))]
+        let link = real.clone();
+
+        let canonical = real.canonicalize().expect("canonicalize real");
+        let expected_tail = Path::new(&project_key(&canonical))
+            .join(safe_session("sess-1"))
+            .join("ledger.jsonl");
+
+        // Symlinked cwd must canonicalize onto the target's key.
+        let p_link = ledger_path(&link, "sess-1");
+        assert!(
+            p_link.ends_with(&expected_tail),
+            "symlinked cwd must canonicalize to the target key: {p_link:?} !~ {expected_tail:?}"
+        );
+        // Real cwd yields the same tail (writer/reader agree).
+        let p_real = ledger_path(&real, "sess-1");
+        assert!(
+            p_real.ends_with(&expected_tail),
+            "real cwd tail: {p_real:?}"
+        );
+
+        // Empty session id → the "default" session component (writer's
+        // unset-CLAUDE_CODE_SESSION_ID fallback).
+        let default_tail = Path::new(&project_key(&canonical))
+            .join(safe_session("default"))
+            .join("ledger.jsonl");
+        let p_default = ledger_path(&real, "");
+        assert!(
+            p_default.ends_with(&default_tail),
+            "empty sid must map to 'default': {p_default:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// A throwaway store rooted under the temp dir, isolated per test name + pid.
     fn temp_store(name: &str) -> (Store, PathBuf) {

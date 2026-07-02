@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use harness_core::store::{project_key, safe_session};
+use harness_core::store::ledger_path;
 
 /// Joined view of context-governor window health for one project+session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -57,38 +57,18 @@ impl ContextHealthSummary {
 /// then summarize it. Fail-soft: a missing/empty/corrupt ledger yields a zeroed
 /// summary (with `ledger_path` populated for messaging), never a panic.
 pub fn summarize(cwd: &Path) -> ContextHealthSummary {
-    let path = ledger_path(cwd);
+    let path = ledger_path_for(cwd);
     summarize_jsonl(&path)
 }
 
-/// Derive the ledger path for `cwd`, mirroring context-governor's writer exactly.
-fn ledger_path(cwd: &Path) -> PathBuf {
-    let base = std::env::var("CONTEXT_GOVERNOR_STATE_DIR")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| ".".to_string());
-            PathBuf::from(home).join(".context-governor")
-        });
-
-    let session = std::env::var("CLAUDE_CODE_SESSION_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|s| safe_session(&s))
-        .unwrap_or_else(|| safe_session("default"));
-
-    // Canonicalize cwd before the project key so this reader and the
-    // context-governor writer (backing::open) derive the *same* key for the same
-    // logical repo even when their cwd strings differ (symlinks, trailing slash,
-    // relative vs absolute). Both sides apply the identical canonicalize→key step.
-    let cwd_canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    base.join(project_key(&cwd_canonical))
-        .join(session)
-        .join("ledger.jsonl")
+/// Derive the ledger path for `cwd` via the shared
+/// [`harness_core::store::ledger_path`] — the single source of truth the
+/// context-governor writer also delegates to, so this reader can never drift
+/// from the writer (base env, canonicalize→project_key, and the "default"
+/// unset-session fallback are all applied identically).
+fn ledger_path_for(cwd: &Path) -> PathBuf {
+    let sid = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+    ledger_path(cwd, &sid)
 }
 
 /// Aggregate a ledger JSONL file at `path`. Pure function of the path (no env), so
