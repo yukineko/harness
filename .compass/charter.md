@@ -1,26 +1,25 @@
 ## north_star
-ideate→implement→verify (scout→backlog→flow→condukt) を人間0介入で完走できる autonomy モードを設ける。停止は (a) 情報不足=worker blocked と (b) 外向き不可逆=deploy/push 承認 の2種のみ。それ以外の AskUserQuestion(機械的承認＋意図的HOTL不変)は autonomy 有効時に決定論的既定へ縮退させる。
+今の autonomy を「並列・無人でも壊れない土台」にする。scout・condukt・flow の autonomy 縮退は達成済み——次はその上で回るコードが、状態競合・LLM生成コードの実行・schema drift に対して安全であることを保証する。Devin 等は到達目標ではなく指標(参照点)であり、土台が堅くなった上で相性の良い良機能(サンドボックス実行・ランタイムFB・GitHub連携 等)を取捨選択して取り込む。
 
 ## definition_of_done
-- 共通の autonomy スイッチ (各バイナリが読む autonomous:bool config か env) が存在し、無効(既定)時は現行の全 AskUserQuestion が従来どおり出る(後方互換)
-- autonomy 有効時: scout Phase4 選別 Ask を省き top-N を auto-queue する経路がある
-- autonomy 有効時: condukt Phase3 分解合意 Ask を省き schedule 結果をそのまま採用する経路がある
-- autonomy 有効時: flow の pivot-check=auto-persevere / lock競合・resume選択・連続失敗 を決定論的に解決し AskUserQuestion を出さない
-- autonomy 有効時に残る停止は worker blocked と deploy/push GATED 承認の2種のみ (テストまたは skill 監査で確認)
-- e2e: 1つの scout 施策が人間0介入で backlog→condukt実装→verify done まで到達する実証手順が green
-- cargo test --workspace 全 pass
+- condukt state の read-modify-write (pause_run・resume_run・StateAction Set) が file-lock で直列化され、2プロセス並列 RMW の lost-update 再現テストが green
+- specguard forge の LLM生成 test_cmd が shell 実行前に blastguard の detect で検証され、破壊的コマンド payload を reject する単体テストが green
+- condukt verify ゲートの skip_eligible 前提を検証する expect が graceful error に置換され、不変違反の入力で panic せず理由返却するテストが green
+- orphan worktree cleanup が dirty state でも force 除去でき、次サイクルに孤児を残さないテストが green
+- cargo test workspace 全 pass
 
 ## measuring_stick
 擁護可能性 × ゴールへの接近距離 ÷ コスト
 
 ## current_gap
-全13 human-gate が今も無条件 AskUserQuestion を出す。autonomy を選択的に縮退させる共通スイッチ機構が未実装で、各バイナリ(scout/condukt/flow)は「今 autonomous か」を決定論的に読む手段を持たない。最大の関門は condukt Phase3 分解合意——ここを縮退できれば scout選別・flow pivot も同じ縮退パターンを再利用できる。keystone = autonomy スイッチ + condukt Phase3 auto-agree の最小スライスで縮退パターンを1本 validate すること。
+condukt state の並列 RMW が file-lock 無しで lost-update しうる(TOCTOU)。autonomy+worktree 並列を無人で回す前提が崩れる最大の穴。ここを塞ぐのが土台堅牢化の keystone。
 
 ## next_action
-keystone: condukt に autonomy スイッチを追加する。(1) condukt config に autonomous:bool (default false) + env override、(2) 既存 condukt state check-criteria に倣い condukt state autonomy-check サブコマンドで skill が決定論的に読めるようにする、(3) autonomous 有効時のみ condukt SKILL.md Phase3 の分解合意 AskUserQuestion をスキップし schedule 結果をそのまま採用、無効時は従来どおり、(4) 分岐を検証するテスト。size=m。scout auto-queue と flow pivot は同パターンで後続。
+keystone: condukt state の RMW を file-lock で直列化する。backlog の既存 lock パターン(create_new atomicity)を踏襲し pause_run・resume_run・StateAction Set を保護、2プロセス並列 RMW の lost-update 再現テストを追加。size=m。後続(parked)で test_cmd 検証・expect fail-soft・orphan cleanup。
 
 ## parked
-- scout Phase4 auto-queue (autonomy 有効時に top-N を選別Ask無しで backlog add)
-- flow autonomy: pivot auto-persevere / lock競合・resume・連続失敗 の決定論解決
-- e2e 実証手順: scout施策1件を人間0介入で done まで通す検証
+- LLM生成test_cmd の blastguard 検証(コマンド注入トラストバウンダリ)
+- verify ゲート expect の fail-soft 化
+- orphan worktree の force-cleanup
+- (土台の上・指標を見つつ取捨選択) サンドボックス実行・ランタイムFB・GitHub連携・コードRAG・SWE-bench・cross-task学習
 
