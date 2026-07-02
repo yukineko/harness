@@ -603,19 +603,16 @@ fn run_user(cmd: Command) -> Result<()> {
                 } else {
                     serde_json::from_str(&raw).context("parsing replan handoff JSON")?
                 };
-                match replan::build_replan_handoff(
+                let directive = replan::decide_replan(
                     &input.reason,
                     &input.failed_tests,
                     &input.diff,
                     &input.model_tier,
                     &input.done_criteria,
                     &input.task_summary,
-                ) {
-                    Ok(handoff) => println!("{}", serde_json::to_string_pretty(&handoff)?),
-                    Err(classification) => {
-                        println!("{}", serde_json::to_string_pretty(&classification)?)
-                    }
-                }
+                    input.replan_count,
+                );
+                println!("{}", serde_json::to_string_pretty(&directive)?);
             }
         },
         Command::Consensus { action } => run_consensus(&cfg, action)?,
@@ -734,6 +731,8 @@ enum ConsensusInput {
 /// strings (mirrors `failure_context`'s shape used elsewhere in the /condukt
 /// skill's cascade; `model_tier`/`done_criteria`/`task_summary` are the extra
 /// fields this subcommand needs beyond the bare `failure_context`).
+/// `replan_count` tracks how many times this task has been replanned (default 0,
+/// backward-compatible).
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 struct ReplanHandoffInput {
@@ -743,6 +742,7 @@ struct ReplanHandoffInput {
     model_tier: String,
     done_criteria: String,
     task_summary: String,
+    replan_count: usize,
 }
 
 fn run_consensus(cfg: &Config, action: ConsensusAction) -> Result<()> {
