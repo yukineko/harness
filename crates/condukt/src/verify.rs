@@ -161,11 +161,9 @@ fn tail_lines(s: &str, n: usize) -> String {
 /// *why-it-broke*, not just a boolean. The FORMATTING here is deterministic
 /// Rust; only the fix DECISION is the LLM's job.
 ///
-/// Wiring this into a subcommand / real process spawn is a separate step; this
-/// type and [`distill_runtime`] are the pure, testable core.
-// Wiring into a subcommand / process spawn is parked (a later step); until then
-// the pure core is exercised only by its unit tests, so silence dead-code here.
-#[allow(dead_code)]
+/// Exposed by the `condukt verify runtime` subcommand (symmetric to `verify
+/// digest`) and embedded into the verifier→worker reflux verdict on a runtime
+/// failure by [`runtime_reflux_verdict`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeDigest {
     /// The process exit code, or `None` when unknown (e.g. signal termination).
@@ -194,7 +192,6 @@ pub struct RuntimeDigest {
 ///   `thread '...' panicked`, `Exception`, `Traceback`, `Error:`.
 /// - `stderr_tail` / `stdout_tail`: the last [`OUTPUT_TAIL_LINES`] lines of each
 ///   stream (or all, if shorter).
-#[allow(dead_code)] // wired into a subcommand in a later step; see RuntimeDigest.
 pub fn distill_runtime(stdout: &str, stderr: &str, exit_code: Option<i32>) -> RuntimeDigest {
     let mut panics: Vec<String> = Vec::new();
 
@@ -223,10 +220,50 @@ pub fn distill_runtime(stdout: &str, stderr: &str, exit_code: Option<i32>) -> Ru
     }
 }
 
+/// Build the verifier→worker reflux verdict for a target's *runtime* signals.
+///
+/// The phase-2 companion [`mechanical_skip_verdict`] embeds a [`FailureDigest`]
+/// under `"failure_digest"` when a mechanical *test* check fails; this is the
+/// phase-3 counterpart for a *runtime* failure. It is pure and deterministic:
+///
+/// - it decides pass/fail from the mechanical facts alone — a runtime failure is
+///   a non-zero exit code (`Some(c)` with `c != 0`) OR any panic/exception
+///   evidence in [`RuntimeDigest::panics`];
+/// - on failure it embeds the structured [`RuntimeDigest`] under `"runtime_digest"`
+///   so the reflux carries the runtime *why* (exit code, panic lines, and the
+///   stderr/stdout tails), not merely the boolean; the passing shape omits it.
+///
+/// The FORMATTING here is deterministic Rust; the verdict states only observable
+/// facts and carries NO fix decision — how to fix stays with the LLM worker.
+pub fn runtime_reflux_verdict(
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+) -> serde_json::Value {
+    let digest = distill_runtime(stdout, stderr, exit_code);
+    // Mechanical failure predicate: a non-zero exit OR any panic/exception line.
+    let nonzero_exit = digest.exit_code.is_some_and(|c| c != 0);
+    let runtime_failed = nonzero_exit || !digest.panics.is_empty();
+    let mut out = serde_json::json!({
+        "kind": "runtime",
+        "passed": !runtime_failed,
+    });
+    // Attach the deterministic structured digest ONLY on failure, mirroring the
+    // `failure_digest` embedding: the passing-case shape stays a bare boolean.
+    if runtime_failed {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert(
+                "runtime_digest".to_string(),
+                serde_json::to_value(&digest).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+    out
+}
+
 /// True iff a trimmed line looks like panic / exception evidence from a running
 /// process. Language-agnostic: covers Rust panics plus common Python/JVM/other
 /// exception markers. Empty lines never qualify.
-#[allow(dead_code)] // used by `distill_runtime`, itself pending subcommand wiring.
 fn is_panic_evidence(t: &str) -> bool {
     if t.is_empty() {
         return false;
@@ -841,6 +878,98 @@ note: run with `RUST_BACKTRACE=1` for a backtrace";
         assert_eq!(d.stdout_tail, huge);
         assert_eq!(d.stderr_tail, symbols);
         assert_eq!(d.exit_code, Some(-1));
+    }
+
+    // ── Runtime reflux verdict (phase-3 verifier→worker reflux) ───────────
+
+    /// RED existence: a runtime failure — non-zero exit + a panic line + stderr
+    /// content — must produce a reflux verdict that carries, BEYOND the pass/fail
+    /// boolean, the runtime diagnostics: the exit code, the panic evidence line,
+    /// and the stderr tail. Neutering the `runtime_digest` embedding (dropping the
+    /// `obj.insert`) makes `.expect("runtime_digest")` panic → genuine FAIL; a
+    /// `distill_runtime` that dropped exit_code / panics / stderr_tail also FAILs.
+    #[test]
+    fn runtime_reflux_verdict_embeds_diagnostics_on_failure() {
+        let stdout = "booting\n";
+        let stderr = "\
+thread 'main' panicked at src/main.rs:10:5:
+index out of bounds: the len is 0 but the index is 3
+note: run with `RUST_BACKTRACE=1` for a backtrace";
+        let v = runtime_reflux_verdict(stdout, stderr, Some(101));
+        // The verdict states pass/fail, and this run is a failure.
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "non-zero exit + panic must be a runtime failure: {v}"
+        );
+        // BEYOND the boolean: the structured runtime digest is embedded.
+        let d = v
+            .get("runtime_digest")
+            .expect("a failing runtime verdict must carry a runtime_digest");
+        // (a) the exit code is surfaced.
+        assert_eq!(
+            d["exit_code"],
+            serde_json::json!(101),
+            "runtime_digest must surface the exit code: {v}"
+        );
+        // (b) the panic evidence line is surfaced.
+        assert!(
+            d["panics"].as_array().is_some_and(|a| a
+                .iter()
+                .any(|p| p.as_str().is_some_and(|s| s.contains("panicked at")))),
+            "runtime_digest must surface the panic line: {v}"
+        );
+        // (c) the stderr tail retains the trailing stderr content.
+        assert!(
+            d["stderr_tail"]
+                .as_str()
+                .is_some_and(|s| s.contains("index out of bounds")),
+            "runtime_digest must surface the stderr tail: {v}"
+        );
+    }
+
+    /// A clean run — exit 0, no panics — passes and omits the digest (the passing
+    /// shape stays a bare boolean, mirroring the failure_digest omission on pass).
+    #[test]
+    fn runtime_reflux_verdict_pass_omits_digest() {
+        let v = runtime_reflux_verdict("all good\n", "", Some(0));
+        assert_eq!(v["passed"], serde_json::json!(true));
+        assert!(
+            v.get("runtime_digest").is_none(),
+            "a passing runtime verdict must not carry a runtime_digest: {v}"
+        );
+    }
+
+    /// Panic evidence alone marks a failure even when the exit code is 0 (a
+    /// process can panic-catch and still exit 0): the reflux must still fail and
+    /// embed the digest so the panic reaches the worker.
+    #[test]
+    fn runtime_reflux_verdict_fails_on_panic_even_with_zero_exit() {
+        let v = runtime_reflux_verdict("", "thread 'worker' panicked at lib.rs:1:1", Some(0));
+        assert_eq!(
+            v["passed"],
+            serde_json::json!(false),
+            "a panic must fail the runtime verdict regardless of exit code: {v}"
+        );
+        assert!(
+            v.get("runtime_digest").is_some(),
+            "the panic evidence must be embedded for the worker: {v}"
+        );
+    }
+
+    /// The reflux carries only observable facts — never a fix instruction. This
+    /// pins the LLM/Rust separation: no "how to fix" field leaks into the verdict.
+    #[test]
+    fn runtime_reflux_verdict_carries_no_fix_decision() {
+        let v = runtime_reflux_verdict("", "Error: boom", Some(2));
+        let obj = v.as_object().expect("verdict is a JSON object");
+        // Only the mechanical keys are present; nothing prescribing a fix.
+        for k in obj.keys() {
+            assert!(
+                matches!(k.as_str(), "kind" | "passed" | "runtime_digest"),
+                "unexpected key {k:?} — the verdict must stay fact-only (no fix decision): {v}"
+            );
+        }
     }
 
     /// Japanese behavioral markers are recognised too.
