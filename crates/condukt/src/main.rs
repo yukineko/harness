@@ -63,6 +63,12 @@ enum Command {
         #[command(subcommand)]
         action: StateAction,
     },
+    /// Deterministic verifier-stage helpers (formatting only; the fix DECISION
+    /// stays with the LLM worker).
+    Verify {
+        #[command(subcommand)]
+        action: VerifyAction,
+    },
     /// Multi-sample self-consistency: plan an opt-in fan-out, or tally N verifier
     /// verdicts for one task into a majority winner + escalate-to-opus decision.
     Consensus {
@@ -333,6 +339,19 @@ enum StateAction {
     },
 }
 
+#[derive(Subcommand)]
+enum VerifyAction {
+    /// Distill raw test/verifier output (stdin or --file) into a structured
+    /// FailureDigest (failing tests, assertion diffs, output tail) as pretty
+    /// JSON on stdout, exit 0. Deterministic Rust formatting so the /condukt
+    /// skill can fold the *why* — not just pass/fail — into the retry reflux
+    /// prompt; the fix DECISION stays with the LLM worker.
+    Digest {
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -389,6 +408,17 @@ fn run_user(cmd: Command) -> Result<()> {
         }
         Command::Worktree { action } => run_worktree(&cfg, &cwd, action)?,
         Command::State { action } => run_state(&cfg, &cwd, action)?,
+        Command::Verify { action } => match action {
+            VerifyAction::Digest { file } => {
+                let raw = match file {
+                    Some(p) => std::fs::read_to_string(&p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                    None => read_stdin(),
+                };
+                let digest = verify::distill_failure(&raw);
+                println!("{}", serde_json::to_string_pretty(&digest)?);
+            }
+        },
         Command::Consensus { action } => run_consensus(&cfg, action)?,
         Command::Init => init(&cfg)?,
         Command::Install { dry_run } => {
