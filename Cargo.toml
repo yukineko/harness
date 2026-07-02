@@ -27,7 +27,7 @@ anyhow     = "1"
 toml       = "0.8"
 chrono     = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tempfile   = "3"
-sha2       = "0.10"
+sha2       = "0.11"
 
 # 同梱バイナリ用の最適化プロファイル。各メンバーが個別に持っていた同一の
 # [profile.release] をここへ一元化（ワークスペースではルートのみ有効）。
