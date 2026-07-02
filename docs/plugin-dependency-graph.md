@@ -186,10 +186,10 @@ the DAG edges above). Sorted alphabetically.
 |---|---|---|---|
 | autoflow | always-on | `SessionStart`, `Stop` hooks | — |
 | backlog | manual | `/backlog` skill; `backlog` CLI | flow, scout, condukt |
-| beacon | event-scoped | `Notification`, `SessionEnd` hooks | — |
+| beacon | always-on | `Notification`, `Stop` hooks | — |
 | blastguard | always-on | `PreToolUse` hook | — |
 | budgetguard | always-on | `Stop` hook | flow |
-| compass | always-on | `SessionEnd`, `SessionStart` hooks; `/compass` skill | flow, scout, hypothesis, condukt (Phase 0-next, back-edge) |
+| compass | always-on | `SessionStart`, `Stop` hooks; `/compass` skill | flow, scout, hypothesis, condukt (Phase 0-next, back-edge) |
 | condukt | always-on | `SessionStart`, `Stop` hooks; `/condukt` skill; `condukt` CLI | flow, compass, scout |
 | context-governor | always-on | `PostToolUse`, `PreCompact`, `SessionStart`, `Stop`, `SubagentStop`, `UserPromptSubmit` hooks | — |
 | ctxrot | always-on | `PostToolUse`, `PreCompact`, `PreToolUse`, `SessionStart`, `Stop`, `UserPromptSubmit` hooks; `/ctx`, `/distill` skills | — |
@@ -201,7 +201,7 @@ the DAG edges above). Sorted alphabetically.
 | evalkit | manual | CLI only | condukt (indirect / CI consumer) |
 | flow | always-on | `SessionStart` hook; `/flow` skill | scout |
 | fugu-router | always-on | `UserPromptSubmit` hook; `/fugu-router` skill; `fugu-router` CLI | condukt, flow |
-| gauge | event-scoped | `SessionEnd` hook; `gauge` CLI | condukt |
+| gauge | always-on | `Stop` hook; `gauge` CLI | condukt |
 | harness-status | manual | CLI only; `/status` skill | — (library / inspection dashboard) |
 | hypothesis | always-on | `SessionStart` hook; `/hypothesis`, `/hypothesis:add` skills; `hypothesis` CLI | flow, condukt |
 | playbook | always-on | `UserPromptSubmit` hook | — (condukt's "playbook" search is fugu-router-mediated, **not** this plugin — see §4) |
@@ -212,16 +212,16 @@ the DAG edges above). Sorted alphabetically.
 | runbook | always-on | `UserPromptSubmit` hook | — |
 | schemaguard | manual | CLI only | condukt |
 | scout | manual | `/scout` skill | — (user-only entry point) |
-| session-insights | always-on | `PostToolUse`, `SessionEnd` hooks | — |
+| session-insights | always-on | `PostToolUse`, `Stop`, `SessionEnd` hooks | — |
 | specguard | always-on | `SessionStart` hook; `/specguard` skill; `specguard-auditor` agent; `specguard` CLI | condukt, scout |
 | stuckguard | always-on | `PostToolUse` hook | — |
-| taskprog | always-on | `SessionEnd`, `SessionStart` hooks; `/taskprog` skill | compass |
+| taskprog | always-on | `SessionStart`, `Stop` hooks; `/taskprog` skill | compass |
 | tdd | always-on | `Stop` hook; `/tdd` skill | — (condukt mentions but does not invoke it) |
 | tracekit | manual | CLI only | condukt |
 | trajectoryeval | manual | CLI only | condukt |
 
-Counts reconcile with `plugin-activation-scopes.md`: **always-on 23 ·
-event-scoped 2 · manual 10 · total 35** (library crates `harness-core`,
+Counts reconcile with `plugin-activation-scopes.md`: **always-on 25 ·
+event-scoped 0 · manual 10 · total 35** (library crates `harness-core`,
 `mutategate` excluded). The activation-scope / entry-point columns are taken
 verbatim from `harness-status plugins`; the "+ skill / + CLI / + agent" suffixes
 only add the secondary surfaces that make the "Called-by" invocations possible
