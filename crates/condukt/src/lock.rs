@@ -22,7 +22,15 @@ use crate::config::Config;
 use crate::store::{project_key, repo_root};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Process-wide monotonic counter so two threads in the SAME process (identical
+/// pid, and possibly an identical `now_unix_nanos()` under a coarse clock) never
+/// derive the same private temp-lock name. Without it a nanos collision makes the
+/// loser's `create_new` fail `AlreadyExists`, degrading it to unlocked — the exact
+/// race this lock exists to prevent.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct LockInfo {
@@ -140,9 +148,10 @@ impl RunLock {
             Err(_) => return RunLock { path: None },
         };
         let tmp_path = path.with_extension(format!(
-            "lock.tmp.{}.{}",
+            "lock.tmp.{}.{}.{}",
             std::process::id(),
-            now_unix_nanos()
+            now_unix_nanos(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         {
             use std::io::Write;
