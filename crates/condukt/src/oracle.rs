@@ -29,6 +29,49 @@ pub fn interpret_oracle_stdout(stdout: &str) -> (bool, Option<String>) {
     }
 }
 
+/// Build the `check_oracle` verdict from a parsed `(valid, transition)` pair.
+///
+/// The crux of the Fail→Pass gate's fallback contract: a `tdd oracle` run that
+/// completes and parses is *not* automatically a trustworthy reject signal.
+/// `transition == "unknown"` means the proof pair was incomplete (missing RED
+/// or GREEN artifact — `has_red`/`has_green` false), i.e. an oracle *could not
+/// be generated* for this task. Per the charter DoD ("オラクル生成不能時の
+/// fallback") that is a *can't-generate* condition and must degrade to the
+/// legacy `done_criteria` gate (`fallback: true` → `enforce_fp_gate` Allows),
+/// NOT hard-reject. Only a *complete* proof pair that ran the wrong direction
+/// (`fail_to_fail` / `pass_to_pass` / `pass_to_fail` — a real, trustworthy
+/// verdict) keeps `fallback: false` so the gate rejects it.
+///
+/// Split out as a pure function so the unknown→fallback vs wrong-direction→
+/// reject distinction is unit-testable without spawning `tdd`.
+pub fn verdict_from_oracle(valid: bool, transition: Option<&str>) -> serde_json::Value {
+    // "unknown" == incomplete proofs == oracle could not be generated. Degrade
+    // to the legacy gate rather than treating "no proofs" as a definitive
+    // "invalid oracle" reject. (A valid FailToPass is never "unknown", so the
+    // `!valid` guard is belt-and-suspenders.)
+    let is_unknown = transition == Some("unknown");
+    if is_unknown && !valid {
+        return serde_json::json!({
+            "required": true,
+            "valid_fp_oracle": false,
+            "fallback": true,
+            "transition": "unknown",
+            "reason": "no valid Fail→Pass proofs recorded (oracle could not be generated) — degrade to legacy done_criteria gate",
+        });
+    }
+    serde_json::json!({
+        "required": true,
+        "valid_fp_oracle": valid,
+        "fallback": false,
+        "transition": transition,
+        "reason": if valid {
+            "fail-to-pass oracle confirmed"
+        } else {
+            "tdd oracle reported a complete but non-fail-to-pass transition"
+        },
+    })
+}
+
 /// Decide whether `task_id` (whose worktree is `run_dir`) carries a valid
 /// Fail→Pass reproduction oracle, deferring to `tdd oracle --task <id>` run in
 /// `run_dir`. Pure aside from the one external process spawn; never panics.
@@ -80,17 +123,7 @@ pub fn check_oracle(
                 });
             }
             let (valid, transition) = interpret_oracle_stdout(&stdout);
-            serde_json::json!({
-                "required": true,
-                "valid_fp_oracle": valid,
-                "fallback": false,
-                "transition": transition,
-                "reason": if valid {
-                    "fail-to-pass oracle confirmed"
-                } else {
-                    "tdd oracle did not report a valid fail-to-pass transition"
-                },
-            })
+            verdict_from_oracle(valid, transition.as_deref())
         }
         Err(e) => serde_json::json!({
             "required": true,
@@ -158,5 +191,59 @@ mod tests {
         let (valid, transition) = interpret_oracle_stdout("not json");
         assert!(!valid);
         assert_eq!(transition, None);
+    }
+
+    // --- verdict_from_oracle: unknown (no proofs) → fallback, not reject ------
+
+    /// THE FIX (b209f2d9): a `tdd oracle` verdict of `transition:"unknown"`
+    /// (incomplete proofs = oracle could-not-be-generated) must degrade to the
+    /// legacy gate (`fallback:true`), which `enforce_fp_gate` then Allows —
+    /// rather than being treated as a definitive invalid-oracle reject.
+    #[test]
+    fn unknown_transition_degrades_to_fallback_not_reject() {
+        let v = verdict_from_oracle(false, Some("unknown"));
+        assert_eq!(v["required"], true);
+        assert_eq!(v["valid_fp_oracle"], false);
+        assert_eq!(
+            v["fallback"], true,
+            "no-proofs unknown must fall back, got: {v}"
+        );
+        // And the gate must Allow (degrade to done_criteria), never Reject.
+        assert!(matches!(
+            crate::state::enforce_fp_gate(&v),
+            crate::state::FpGateDecision::Allow(None)
+        ));
+    }
+
+    /// A *complete* proof pair that ran the wrong direction is a real,
+    /// trustworthy verdict — it must stay non-fallback so the gate rejects it.
+    #[test]
+    fn wrong_direction_transition_still_rejects() {
+        for name in ["fail_to_fail", "pass_to_pass", "pass_to_fail"] {
+            let v = verdict_from_oracle(false, Some(name));
+            assert_eq!(
+                v["fallback"], false,
+                "{name} is a real verdict, not fallback"
+            );
+            assert!(
+                matches!(
+                    crate::state::enforce_fp_gate(&v),
+                    crate::state::FpGateDecision::Reject
+                ),
+                "{name} must still Reject"
+            );
+        }
+    }
+
+    /// A valid Fail→Pass verdict is non-fallback and Allows with the true flag.
+    #[test]
+    fn valid_fail_to_pass_allows_with_flag() {
+        let v = verdict_from_oracle(true, Some("fail_to_pass"));
+        assert_eq!(v["valid_fp_oracle"], true);
+        assert_eq!(v["fallback"], false);
+        assert!(matches!(
+            crate::state::enforce_fp_gate(&v),
+            crate::state::FpGateDecision::Allow(Some(true))
+        ));
     }
 }
